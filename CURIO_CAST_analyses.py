@@ -1,5 +1,5 @@
 import numpy as np, pandas as pd, anndata as ad, scanpy as sc
-import sys, os, torch, CAST, warnings
+import sys, os, torch, CAST, shutil, warnings
 import matplotlib.pyplot as plt, seaborn as sns
 warnings.filterwarnings("ignore")
 
@@ -109,6 +109,7 @@ for data in datasets_ref:
     adatas_ref.append(adata)
 adata_ref = ad.concat(adatas_ref)
 adata_ref.var['gene_symbol'] = adata_ref.var.index
+adata_ref.write('output/CURIO/data/adata_ref.h5ad')
 
 query_dir = '../../spatial/Kalish/pregnancy-postpart/CURIO/rotate-split-raw'
 samples_query = [file.replace('.h5ad', '') for file in os.listdir(query_dir)]
@@ -119,12 +120,15 @@ for sample in samples_query:
     adata = ad.read_h5ad(f'{query_dir}/{sample}.h5ad')
     adata.obs['sample'] = sample
     adata.obs['source'] = 'CURIO'
-    adata.obs[['class', 'subclass', 'supertype', 
-               'parcellation_substructure']] = 'Unknown'
+    adata.obs[[
+        'class', 'class_color', 'subclass', 'subclass_color',
+        'supertype', 'supertype_color', 'parcellation_substructure',
+        'parcellation_substructure_color']] = 'Unknown'
     print(f'[{sample}] {adata.shape[0]} cells')
     adatas_query.append(adata)
 adata_query = sc.concat(adatas_query)
 adata_query.var['gene_symbol'] = adata_query.var.index
+adata_query.write('output/CURIO/data/adata_query.h5ad')
 
 adata_comb = ad.concat([adata_ref, adata_query])
 all_var = [a.var for a in [adata_ref, adata_query]]
@@ -143,26 +147,24 @@ exp_dict = {
     sample: adata_comb[adata_comb.obs['sample'] == sample]
     .layers['norm'] for sample in sample_names}
 
-embed_dict = CAST.CAST_MARK(coords_raw, exp_dict, 'output/CURIO/CAST-MARK')
-# embed_dict = torch.load('output/CURIO/CAST-MARK/demo_embed_dict.pt')
+# embed_dict = CAST.CAST_MARK(coords_raw, exp_dict, 'output/CURIO/CAST-MARK')
+# shutil.move('output/CURIO/CAST-MARK/demo_embed_dict.pt',
+#             'output/CURIO/data/demo_embed_dict.pt')
+embed_dict = torch.load('output/CURIO/data/demo_embed_dict.pt', 
+                        map_location='cpu')
 
 # https://github.com/wanglab-broad/CAST/blob/main/CAST/visualize.py#L7
 from sklearn.cluster import KMeans
 num_plot = len(sample_names)
 plot_row = int(np.floor(num_plot/5) + 1)
-embed_stack = embed_dict[sample_names[0]].cpu().detach().numpy()
-for i in range(1,num_plot):
-    embed_stack = np.row_stack(
-        (embed_stack,embed_dict[sample_names[i]].cpu().detach().numpy()))
-    
-print(f'Perform KMeans clustering on {embed_stack.shape[0]} cells...')
+embed_stack = np.vstack([embed_dict[name].cpu().detach().numpy()
+                        for name in sample_names])
 n_clust = 15
 kmeans = KMeans(n_clusters=n_clust, random_state=0).fit(embed_stack)
 cell_label = kmeans.labels_
 cluster_pl = sns.color_palette('Set3', len(np.unique(cell_label)))
-# np.random.shuffle(cluster_pl)
+np.random.shuffle(cluster_pl)
 
-print(f'Plotting the KMeans clustering results...')
 cell_label_idx = 0
 plt.figure(figsize=((30, 3.5*plot_row)))
 for j in range(num_plot):
@@ -190,13 +192,9 @@ for j in range(num_plot):
 plt.savefig(f'figures/CURIO/all_samples_trained_k{str(n_clust)}.png', dpi=200)
 
 adata_comb.obs[f'k{n_clust}_cluster'] = cell_label
-adata_comb.obs[f'k{n_clust}_cluster_cat'] = pd.Categorical(cell_label)
 color_map = {k: color for k, color in enumerate(cluster_pl.as_hex())}
 adata_comb.obs[f'k{n_clust}_cluster_colors'] = \
     pd.Series(cell_label).map(color_map).tolist()
-
-embed_stack = np.vstack([embed_dict[name].cpu().detach().numpy()
-                        for name in sample_names])
 adata_comb.obsm['CAST_MARK_embed'] = embed_stack
 
 sc.pp.pca(adata_comb, n_comps=30)
@@ -211,7 +209,7 @@ sc.pl.umap(adata_comb,
 plt.savefig('figures/CURIO/CAST_MARK_umap.png')
 
 adata_comb.layers['norm'] = np.array(adata_comb.layers['norm'])
-adata_comb.write('output/CURIO/data/adata_comb.h5ad')
+adata_comb.write('output/CURIO/data/adata_comb_mark.h5ad')
 torch.save(coords_raw, 'output/CURIO/data/coords_raw.pt')
 torch.save(exp_dict, 'output/CURIO/data/exp_dict.pt')
 
@@ -222,12 +220,12 @@ output_dir = 'output/CURIO/CAST-STACK'
 os.chdir(work_dir)
 os.makedirs(output_dir, exist_ok=True)
 
-adata_comb = ad.read_h5ad('output/CURIO/data/adata_comb.h5ad')
+adata_comb = ad.read_h5ad('output/CURIO/data/adata_comb_mark.h5ad')
 coords_raw = torch.load('output/CURIO/data/coords_raw.pt')
 embed_dict = torch.load('output/CURIO/CAST-MARK/demo_embed_dict.pt',
                         map_location='cpu')
 
-align_list = {
+query_reference_list = {
     'Preg1_1_L': ['Preg1_1_L', 'Zhuang-ABCA-1.060'],
     'Preg1_1_R': ['Preg1_1_R', 'Zhuang-ABCA-1.060'],
     'Preg1_2_L': ['Preg1_2_L', 'Zhuang-ABCA-1.060'],
@@ -240,9 +238,9 @@ align_list = {
     'Virg2_1_R': ['Virg2_1_R', 'Zhuang-ABCA-1.060']}
 
 coords_final = {}
-for rep in sorted(align_list.keys()):
+for sample in sorted(query_reference_list.keys()):
     params_dist = CAST.reg_params(
-        dataname = align_list[rep][0],
+        dataname = query_reference_list[sample][0],
         gpu = 0 if torch.cuda.is_available() else -1, 
         diff_step = 5,
         #### Affine parameters
@@ -261,11 +259,11 @@ for rep in sorted(align_list.keys()):
     params_dist.alpha_basis = torch.Tensor(
         [1/1000,1/1000,1/50,5,5]).reshape(5,1).to(params_dist.device)
     
-    coords_final[rep] = CAST.CAST_STACK(
-        coords_raw, embed_dict, output_dir, align_list[rep], 
+    coords_final[sample] = CAST.CAST_STACK(
+        coords_raw, embed_dict, output_dir, query_reference_list[sample], 
         params_dist, rescale=True)
 
-sample_names = list(coords_final.keys())
+sample_names = sorted(list(coords_final.keys()))
 adata_comb.obs.index = adata_comb.obs['sample'].astype(str) + '_' + \
     adata_comb.obs.index
 cell_index = adata_comb.obs.index[adata_comb.obs['source'] == 'CURIO']
@@ -276,8 +274,6 @@ coords_df = pd.DataFrame(
 adata_comb.obs = adata_comb.obs.join(coords_df)
 
 df = adata_comb.obs[adata_comb.obs['source'] == 'CURIO']
-cell_label = df['k15_cluster'].cat.codes.values
-cluster_pl = sns.color_palette('Set3', len(np.unique(cell_label)+1))
 num_plot = len(sample_names)
 
 plt.figure(figsize=((30, 15)))
@@ -287,9 +283,8 @@ for j in range(num_plot):
     col=coords_final0[:,0].tolist()
     row=coords_final0[:,1].tolist()
     current_index = df.index[df.index.str.contains(sample_names[j])]
-    plt.scatter(x=col, y=row,
-                color=df.loc[current_index, 'k15_cluster_colors'],
-                s=4)
+    plt.scatter(x=col, y=row, s=4,
+                color=df.loc[current_index, 'k15_cluster_colors'])
     plt.title(sample_names[j] + ' (KMeans, k = 15)', fontsize=20)
     plt.xticks(fontsize=20)
     plt.yticks(fontsize=20)
@@ -301,13 +296,129 @@ plt.savefig(
     f'figures/CURIO/all_samples_trained_k15_final.png', dpi=200)
 
 # torch.save(coords_final, 'output/CURIO/data/coords_final.pt')
-coords_final = torch.load('output/CURIO/data/coords_final.pt')
+# coords_final = torch.load('output/CURIO/data/coords_final.pt')
+# adata_comb.write('output/CURIO/data/adata_comb_stack.h5ad')
 
+# CAST_PROJECT #################################################################
 
-tmp = adata_comb.obs[adata_comb.obs['sample'] == 'Preg1_1_L']
+work_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
+output_dir = 'output/CURIO/CAST-PROJECT'
+os.chdir(work_dir)
+os.makedirs(output_dir, exist_ok=True)
+
+source_target_list = {
+    'Preg1_1_L': ['Zhuang-ABCA-1.060', 'Preg1_1_L'],
+    'Preg1_1_R': ['Zhuang-ABCA-1.060', 'Preg1_1_R'],
+    'Preg1_2_L': ['Zhuang-ABCA-1.060', 'Preg1_2_L'],
+    'Preg1_2_R': ['Zhuang-ABCA-1.060', 'Preg1_2_R'],
+    'Virg1_1_L': ['Zhuang-ABCA-1.060', 'Virg1_1_L'],
+    'Virg1_1_R': ['Zhuang-ABCA-1.060', 'Virg1_1_R'],
+    'Virg1_2_L': ['Zhuang-ABCA-1.060', 'Virg1_2_L'],
+    'Virg1_2_R': ['Zhuang-ABCA-1.060', 'Virg1_2_R'],
+    'Virg2_1_L': ['Zhuang-ABCA-1.060', 'Virg2_1_L'],
+    'Virg2_1_R': ['Zhuang-ABCA-1.060', 'Virg2_1_R']}
+
+adata_comb = ad.read_h5ad('output/CURIO/data/adata_comb_stack.h5ad')
+adata_comb = CAST.preprocess_fast(adata_comb, mode='default')
+batch_key = 'sample'
+color_dict = adata_comb.obs\
+    .drop_duplicates().set_index('class')['class_color']\
+    .to_dict()
+color_dict['Unknown'] = '#A9A9A9'
+
+adata_comb_refs = {}
+list_ts = {}
+for sample in source_target_list.keys():
+    print(sample)
+    source_sample, target_sample = source_target_list[sample]
+    output_dir_t = f'{output_dir}/{source_sample}_to_{target_sample}'
+    os.makedirs(output_dir_t, exist_ok=True)
+    adata_comb_refs[sample], list_ts[sample] = \
+    CAST.CAST_PROJECT(
+        sdata_inte=adata_comb[
+            np.isin(adata_comb.obs[batch_key], [source_sample, target_sample])],
+        use_highly_variable_t=False,  
+        source_sample=source_sample,
+        target_sample=target_sample, 
+        coords_source=np.array(
+            adata_comb[np.isin(adata_comb.obs[batch_key], source_sample),:]
+            .obs.loc[:,['x','y']]),
+        coords_target=np.array(
+            adata_comb[np.isin(adata_comb.obs[batch_key], target_sample),:]
+            .obs.loc[:,['x_final','y_final']]), # final coords
+        scaled_layer='log1p_norm_scaled',
+        batch_key=batch_key, 
+        source_sample_ctype_col='class', 
+        output_path=output_dir_t, 
+        integration_strategy='Harmony', 
+        color_dict=color_dict,
+        save_result=False
+)
+# torch.save(adata_comb_refs, 'output/CURIO/data/adata_comb_refs.pt')
+# torch.save(list_ts, 'output/CURIO/data/list_ts.pt')
+
+list_ts = torch.load('output/CURIO/data/list_ts.pt')
+
+new_obs = []; cell_ids = []
+for sample in source_target_list.keys():
+    source_sample, target_sample = source_target_list[sample]
+    project_ind = list_ts[sample][0].flatten()
+    cdist = list_ts[sample][2]
+    source_obs = adata_comb.obs[adata_comb.obs['sample'] == source_sample]
+    source_obs = source_obs[[
+        'class', 'subclass', 'supertype', 'class_color', 'subclass_color', 
+        'supertype_color', 'parcellation_substructure', 
+        'parcellation_substructure_color']]
+    source_obs = source_obs.iloc[project_ind].reset_index(drop=True)
+    target_obs = adata_comb.obs[adata_comb.obs['sample'] == target_sample]
+    target_index = target_obs.index
+    target_obs = target_obs[[
+        'sample', 'source', 'x', 'y', 'k15_cluster', 'k15_cluster_colors', 
+        'x_final', 'y_final']].reset_index(drop=True)
+    target_obs = pd.concat([target_obs, source_obs], axis=1)\
+        .set_index(target_index)
+    target_obs['cdist'] = cdist
+    new_obs.append(target_obs)
+
+new_obs = pd.concat(new_obs)
+adata_comb.obs['cdist'] = 0
+update_indices = adata_comb.obs.index.isin(new_obs.index)
+adata_comb.obs.loc[update_indices] = new_obs
+# adata_comb.write('output/CURIO/data/adata_comb_project.h5ad')
+# adata_comb = ad.read_h5ad('output/CURIO/data/adata_comb_project.h5ad')
+
+tmp = adata_comb.obs[(adata_comb.obs['sample'] == 'Preg1_1_L') & \
+    (adata_comb.obs['cdist'] < 0.1)]
+tmp['subclass'] = tmp['subclass'].cat.remove_unused_categories()
+color_map = tmp.drop_duplicates('subclass')\
+    .set_index('subclass')['subclass_color'].to_dict()
 plt.clf()
 plt.figure(figsize=((8, 8)))
-sns.scatterplot(data=tmp, x='x', y='y', c='black', s=0.8)
-plt.savefig('tmp.png')
+ax  = sns.scatterplot(data=tmp, x='x_final', y='y_final', linewidth=0,
+                hue='subclass', palette=color_map, s=20, legend=False)
+ax.set(xlabel=None, ylabel=None)
+sns.despine(bottom = True, left = True)
+plt.legend(fontsize=14, markerscale=3)
+plt.axis('equal')
+plt.xticks([])
+plt.yticks([])
+plt.tight_layout()
+plt.savefig('tmp.png', dpi=200)
 
-tmp['x'].corr(tmp['x_final'])
+
+tmp = adata_comb.obs[adata_comb.obs['sample'] == 'Zhuang-ABCA-1.060']
+tmp['subclass'] = tmp['subclass'].cat.remove_unused_categories()
+color_map = tmp.drop_duplicates('subclass')\
+    .set_index('subclass')['subclass_color'].to_dict()
+plt.clf()
+plt.figure(figsize=((12, 8)))
+ax  = sns.scatterplot(data=tmp, x='x', y='y', linewidth=0,
+                hue='subclass', palette=color_map, s=10, legend=False)
+ax.set(xlabel=None, ylabel=None)
+sns.despine(bottom = True, left = True)
+plt.legend(fontsize=9, markerscale=1)
+plt.axis('equal')
+plt.xticks([])
+plt.yticks([])
+plt.tight_layout()
+plt.savefig('tmp.png', dpi=200)
