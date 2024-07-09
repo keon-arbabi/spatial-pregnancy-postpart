@@ -122,7 +122,8 @@ for sample in samples_query:
     adata.obs['source'] = 'CURIO'
     adata.obs[[
         'class', 'class_color', 'subclass', 'subclass_color',
-        'supertype', 'supertype_color', 'parcellation_substructure',
+        'supertype', 'supertype_color', 'cluster', 'cluster_color',
+        'parcellation_substructure', 
         'parcellation_substructure_color']] = 'Unknown'
     print(f'[{sample}] {adata.shape[0]} cells')
     adatas_query.append(adata)
@@ -147,9 +148,10 @@ exp_dict = {
     sample: adata_comb[adata_comb.obs['sample'] == sample]
     .layers['norm'] for sample in sample_names}
 
-# embed_dict = CAST.CAST_MARK(coords_raw, exp_dict, 'output/CURIO/CAST-MARK')
-# shutil.move('output/CURIO/CAST-MARK/demo_embed_dict.pt',
-#             'output/CURIO/data/demo_embed_dict.pt')
+embed_dict = CAST.CAST_MARK(coords_raw, exp_dict, 'output/CURIO/CAST-MARK')
+shutil.move('output/CURIO/CAST-MARK/demo_embed_dict.pt',
+            'output/CURIO/data/demo_embed_dict.pt')
+
 embed_dict = torch.load('output/CURIO/data/demo_embed_dict.pt', 
                         map_location='cpu')
 
@@ -222,7 +224,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 adata_comb = ad.read_h5ad('output/CURIO/data/adata_comb_mark.h5ad')
 coords_raw = torch.load('output/CURIO/data/coords_raw.pt')
-embed_dict = torch.load('output/CURIO/CAST-MARK/demo_embed_dict.pt',
+embed_dict = torch.load('output/CURIO/data/demo_embed_dict.pt',
                         map_location='cpu')
 
 query_reference_list = {
@@ -295,9 +297,8 @@ for j in range(num_plot):
 plt.savefig(
     f'figures/CURIO/all_samples_trained_k15_final.png', dpi=200)
 
-# torch.save(coords_final, 'output/CURIO/data/coords_final.pt')
-# coords_final = torch.load('output/CURIO/data/coords_final.pt')
-# adata_comb.write('output/CURIO/data/adata_comb_stack.h5ad')
+torch.save(coords_final, 'output/CURIO/data/coords_final.pt')
+adata_comb.write('output/CURIO/data/adata_comb_stack.h5ad')
 
 # CAST_PROJECT #################################################################
 
@@ -319,6 +320,7 @@ source_target_list = {
     'Virg2_1_R': ['Zhuang-ABCA-1.060', 'Virg2_1_R']}
 
 adata_comb = ad.read_h5ad('output/CURIO/data/adata_comb_stack.h5ad')
+adata_comb_orig = adata_comb
 adata_comb = CAST.preprocess_fast(adata_comb, mode='default')
 batch_key = 'sample'
 color_dict = adata_comb.obs\
@@ -354,8 +356,8 @@ for sample in source_target_list.keys():
         color_dict=color_dict,
         save_result=False
 )
-# torch.save(adata_comb_refs, 'output/CURIO/data/adata_comb_refs.pt')
-# torch.save(list_ts, 'output/CURIO/data/list_ts.pt')
+torch.save(adata_comb_refs, 'output/CURIO/data/adata_comb_refs.pt')
+torch.save(list_ts, 'output/CURIO/data/list_ts.pt')
 
 list_ts = torch.load('output/CURIO/data/list_ts.pt')
 
@@ -367,8 +369,8 @@ for sample in source_target_list.keys():
     source_obs = adata_comb.obs[adata_comb.obs['sample'] == source_sample]
     source_obs = source_obs[[
         'class', 'subclass', 'supertype', 'class_color', 'subclass_color', 
-        'supertype_color', 'parcellation_substructure', 
-        'parcellation_substructure_color']]
+        'supertype_color', 'cluster', 'cluster_color',
+        'parcellation_substructure', 'parcellation_substructure_color']]
     source_obs = source_obs.iloc[project_ind].reset_index(drop=True)
     target_obs = adata_comb.obs[adata_comb.obs['sample'] == target_sample]
     target_index = target_obs.index
@@ -384,18 +386,18 @@ new_obs = pd.concat(new_obs)
 adata_comb.obs['cdist'] = 0
 update_indices = adata_comb.obs.index.isin(new_obs.index)
 adata_comb.obs.loc[update_indices] = new_obs
-# adata_comb.write('output/CURIO/data/adata_comb_project.h5ad')
-# adata_comb = ad.read_h5ad('output/CURIO/data/adata_comb_project.h5ad')
+adata_comb.X = adata_comb_orig.X
+adata_comb.write('output/CURIO/data/adata_comb_project.h5ad')
 
-tmp = adata_comb.obs[(adata_comb.obs['sample'] == 'Preg1_1_L') & \
-    (adata_comb.obs['cdist'] < 0.1)]
-tmp['subclass'] = tmp['subclass'].cat.remove_unused_categories()
-color_map = tmp.drop_duplicates('subclass')\
-    .set_index('subclass')['subclass_color'].to_dict()
+tmp = adata_comb.obs[(adata_comb.obs['sample'] == 'Preg1_1_L')]
+tmp['k15_cluster'] = tmp['k15_cluster'].astype('category')\
+    .cat.remove_unused_categories()
+color_map = tmp.drop_duplicates('k15_cluster')\
+    .set_index('k15_cluster')['k15_cluster_colors'].to_dict()
 plt.clf()
 plt.figure(figsize=((8, 8)))
 ax  = sns.scatterplot(data=tmp, x='x_final', y='y_final', linewidth=0,
-                hue='subclass', palette=color_map, s=20, legend=False)
+                hue='k15_cluster', palette=color_map, s=20, legend=True)
 ax.set(xlabel=None, ylabel=None)
 sns.despine(bottom = True, left = True)
 plt.legend(fontsize=14, markerscale=3)
@@ -404,7 +406,6 @@ plt.xticks([])
 plt.yticks([])
 plt.tight_layout()
 plt.savefig('tmp.png', dpi=200)
-
 
 tmp = adata_comb.obs[adata_comb.obs['sample'] == 'Zhuang-ABCA-1.060']
 tmp['subclass'] = tmp['subclass'].cat.remove_unused_categories()
@@ -422,3 +423,48 @@ plt.xticks([])
 plt.yticks([])
 plt.tight_layout()
 plt.savefig('tmp.png', dpi=200)
+
+# DELTA_ANALYSES ###############################################################
+
+from CAST import delta_cell_cal
+from scipy.spatial import KDTree
+
+adata_comb = ad.read_h5ad('output/CURIO/data/adata_comb_project.h5ad')
+
+tgt_indices = adata_comb.obs.query(
+    'source == "CURIO" and sample.str.contains("Preg")').index
+tgt_indices = tgt_indices[np.random.choice(
+    len(tgt_indices), size=len(tgt_indices)//3, replace=False)]
+ref_indices = adata_comb.obs.query(
+    'source == "CURIO" and sample.str.contains("Virg")').index
+
+coords_tgt = adata_comb.obs.loc[tgt_indices, ['x_final', 'y_final']].to_numpy()
+coords_ref = adata_comb.obs.loc[ref_indices, ['x_final', 'y_final']].to_numpy()
+ctype_tgt = adata_comb.obs.loc[tgt_indices, 'supertype'].to_list()
+ctype_ref = adata_comb.obs.loc[ref_indices, 'supertype'].to_list()
+
+niche_cols = adata_comb.obs.loc[ref_indices, 'k15_cluster_colors'].to_list()
+
+coords_all = np.vstack((coords_tgt, coords_ref))
+tree = KDTree(coords_all)
+median_rad = np.median(tree.query(coords_all, k=2)[0][:, 1])
+
+df_delta_cell_tgt, df_delta_cell_ref, df_delta_cell = \
+    delta_cell_cal(coords_tgt, coords_ref, ctype_tgt, ctype_ref, 
+                   radius_px= 30 * median_rad)
+
+df_delta_cell = df_delta_cell.applymap(
+    lambda x: np.log1p(x) if x > 0 else -np.log1p(-x))
+
+plt.clf()
+g = sns.clustermap(df_delta_cell.T,
+               figsize=(10, 24),
+               xticklabels=False,
+               yticklabels=1,
+               col_colors=niche_cols,
+               cmap='coolwarm', center=0) 
+g.ax_row_dendrogram.set_visible(False)
+g.ax_col_dendrogram.set_visible(False)
+plt.setp(g.ax_heatmap.get_yticklabels(), fontsize=5)
+plt.tight_layout()
+plt.savefig('figures/CURIO/delta_cell_all.png', dpi=300)
