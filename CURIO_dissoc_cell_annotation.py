@@ -43,20 +43,13 @@ levels = ['class', 'subclass', 'supertype', 'cluster']
 with Timer('Loading and cleaning CURIO single cell'):
     adata_comb = ad.read_h5ad(
         f'{working_dir}/output/CURIO/data/adata_comb_project.h5ad')
-    
-    obs = adata_comb.obs
-    ref_cell_types = {
-        level: [str(ct) for ct in obs[obs['sample'] == "Zhuang-ABCA-1.060"]
-                [level].value_counts()[lambda x: x >= 10].index
-                if str(ct) != 'Unknown']
-        for level in levels}
-    
+
     obs = adata_comb.obs
     ref_cell_types = {
         level: [str(ct) for ct in obs[
             (obs['sample'] == "Zhuang-ABCA-1.060") &
-            (obs['cdist'] <= obs['cdist'].quantile(0.75))
-        ][level].value_counts()[lambda x: x >= 10].index
+            (obs['cdist'] <= obs['cdist'].quantile(0.75))][level]\
+            .value_counts()[lambda x: x >= 10].index
         if str(ct) != 'Unknown']
         for level in levels
     }
@@ -169,26 +162,51 @@ with Timer('Plot embeddings'):
                 legend_kwargs={'fontsize': 'x-small'} 
                 if level == 'class' else None)
         
-sc_query.save(f'{working_dir}/output/CURIO/data/adata_ref_labelled.h5ad', 
+sc_query.save(f'{working_dir}/output/CURIO/data/adata_query_labelled.h5ad', 
               overwrite=True)
 
 sc_query = SingleCell(
-    f'{working_dir}/output/CURIO/data/adata_ref_labelled.h5ad')
+    f'{working_dir}/output/CURIO/data/adata_query_labelled.h5ad')
 
-tmp = adata_comb.obs[(adata_comb.obs['sample'] == 'Preg1_1_L')]
-tmp['k15_cluster'] = tmp['k15_cluster'].astype('category')\
-    .cat.remove_unused_categories()
-color_map = tmp.drop_duplicates('k15_cluster')\
-    .set_index('k15_cluster')['k15_cluster_colors'].to_dict()
+level = 'class'
+type = 'dissoc'
+df = sc_query.cast_obs({f'{level}_{type}': pl.String}).obs\
+    .filter(sample='Preg1_1_L')
+palette = dict(zip(df[f'{level}_{type}'], df[f'{level}_color_{type}']))
+
 plt.clf()
 plt.figure(figsize=((8, 8)))
-ax  = sns.scatterplot(data=tmp, x='x_final', y='y_final', linewidth=0,
-                hue='k15_cluster', palette=color_map, s=20, legend=True)
+ax  = sns.scatterplot(data=df, x='x_final', y='y_final', linewidth=0,
+                hue=f'{level}_{type}', palette=palette, s=20, legend=True)
 ax.set(xlabel=None, ylabel=None)
 sns.despine(bottom = True, left = True)
-plt.legend(fontsize=14, markerscale=3)
+plt.legend(fontsize=9, markerscale=3)
 plt.axis('equal')
 plt.xticks([])
 plt.yticks([])
 plt.tight_layout()
-plt.savefig('tmp.png', dpi=200)
+savefig(f'{working_dir}/figures/CURIO/spat_{level}_{type}.png', dpi=200)
+
+from scipy import sparse
+
+sc_comb = ad.read_h5ad(
+    f'{working_dir}/output/CURIO/data/adata_comb_project.h5ad')
+sc_comb.X = sparse.csr_matrix(sc_comb.X)
+sc_comb = SingleCell(sc_comb)
+
+df = sc_comb.cast_obs({level: pl.String}).obs\
+    .filter(sample='Zhuang-ABCA-1.060')
+palette = dict(zip(df[level], df[f'{level}_color']))
+
+plt.clf()
+plt.figure(figsize=((8, 8)))
+ax  = sns.scatterplot(data=df, x='x', y='y', linewidth=0,
+                       hue=level, palette=palette, s=20, legend=True)
+ax.set(xlabel=None, ylabel=None)
+sns.despine(bottom = True, left = True)
+plt.legend(fontsize=9, markerscale=3)
+plt.axis('equal')
+plt.xticks([])
+plt.yticks([])
+plt.tight_layout()
+savefig(f'{working_dir}/figures/CURIO/spat_{level}_ref.png', dpi=200)
