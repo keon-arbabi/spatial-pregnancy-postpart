@@ -47,8 +47,7 @@ with Timer('Loading and cleaning CURIO single cell'):
     obs = adata_comb.obs
     ref_cell_types = {
         level: [str(ct) for ct in obs[
-            (obs['sample'] == "Zhuang-ABCA-1.060") &
-            (obs['cdist'] <= obs['cdist'].quantile(0.75))][level]\
+            obs['sample'] == "Zhuang-ABCA-1.060"][level]\
             .value_counts()[lambda x: x >= 10].index
         if str(ct) != 'Unknown']
         for level in levels
