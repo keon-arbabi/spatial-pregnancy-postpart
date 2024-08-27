@@ -80,32 +80,6 @@ for d in datasets:
         'projects/def-wainberg/spatial/Zhuang/direct-downloads/'
         f'{d}-metadata.csv')
     
-# imputed update ###############################################################
-
-download_base = Path('projects/def-wainberg/spatial/Zhuang/abc-project-cache')
-abc_cache = AbcProjectCache.from_cache_dir(download_base)
-abc_cache.load_manifest('releases/20240831/manifest.json')
-
-abc_cache.current_manifest
-abc_cache.cache.manifest_file_names
-
-abc_cache.cache.manifest_file_names.append('releases/20240831/manifest.json')
-abc_cache.load_manifest('releases/20240831/manifest.json')
-
-cell = abc_cache.get_metadata_dataframe(
-    directory='MERFISH-C57BL6J-638850',
-    file_name='cell_metadata_with_cluster_annotation',
-    dtype={"cell_label": str,
-           "neurotransmitter": str}
-)
-cell.set_index('cell_label', inplace=True)
-
-imputed_h5ad_path = abc_cache.get_data_path('MERFISH-C57BL6J-638850-imputed')
-
-
-adata = anndata.read_h5ad(imputed_h5ad_path, backed='r')
-gene_list = ['Calb2', 'Baiap3', 'Lypd1']
-
 # plot slices ##################################################################
 
 figure_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart/figures'
