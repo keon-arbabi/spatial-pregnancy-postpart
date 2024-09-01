@@ -1,7 +1,7 @@
 import sys, os, warnings
 import numpy as np, pandas as pd, anndata as ad
 import matplotlib.pyplot as plt, seaborn as sns
-warnings.filterwarnings("ignore")
+warnings.filterwarnings('ignore')
 
 # Prep raw images ##############################################################
 
@@ -77,7 +77,7 @@ import numpy as np, pandas as pd, anndata as ad, scanpy as sc
 import matplotlib.pyplot as plt, seaborn as sns
 from scipy import sparse
 from sklearn.cluster import KMeans
-warnings.filterwarnings("ignore")
+warnings.filterwarnings('ignore')
 
 sys.path.append('/home/karbabi/projects/def-wainberg/karbabi/utils')
 from single_cell import SingleCell
@@ -158,9 +158,9 @@ else:
     r('''
     library(scDblFinder)
     library(BiocParallel)
-    path = "projects/def-wainberg/karbabi/spatial-pregnancy-postpart/"
-    sce = readRDS(paste0(path, "output/merfish/data/adata_query.rds"))
-    sce = scDblFinder(sce, samples="sample", BPPARAM=MulticoreParam())
+    path = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart/'
+    sce = readRDS(paste0(path, 'output/merfish/data/adata_query.rds'))
+    sce = scDblFinder(sce, samples='sample', BPPARAM=MulticoreParam())
     table(sce$scDblFinder.class)
     # singlet doublet
     #  944707  418018
@@ -188,16 +188,16 @@ plt.savefig(f'{working_dir}/figures/merfish/qc_doublets.png')
 # plot relationship between doublet score and number of detected genes 
 sns.jointplot(
     data=adata_query.obs,
-    x="n_genes_by_counts",
-    y="scDblFinder.score",
-    kind="hex")
+    x='n_genes_by_counts',
+    y='scDblFinder.score',
+    kind='hex')
 plt.savefig(f'{working_dir}/figures/merfish/qc_joint.png')
 
 # normalize 
 sc.pp.normalize_total(adata_query, target_sum=1e4)
 sc.pp.log1p(adata_query, base=2)
 # save
-# adata_query.write(f'{working_dir}/output/merfish/data/adata_query.h5ad')
+adata_query.write(f'{working_dir}/output/merfish/data/adata_query.h5ad')
 
 ######################################
 
@@ -258,7 +258,7 @@ plt.savefig(f'{working_dir}/figures/merfish/zeng_reference.png',
 # save 
 adata_ref.X = adata_ref.X.astype(np.float32) # this is buggy, run twice
 adata_ref.X = sparse.csr_matrix(adata_ref.X)
-# adata_ref.write(f'{working_dir}/output/merfish/data/adata_ref.h5ad')
+adata_ref.write(f'{working_dir}/output/merfish/data/adata_ref.h5ad')
 
 ######################################
 
@@ -283,7 +283,7 @@ def plot_slices(sample_names, coords_raw, cell_label, cluster_pl, n_clust):
             coords[:, 0], coords[:, 1],
             c=cell_type, cmap=plt.cm.colors.ListedColormap(cluster_pl),
             s=size, edgecolors='none')
-        plt.title(f"{sample} (KMeans, k = {n_clust})", fontsize=20)
+        plt.title(f'{sample} (KMeans, k = {n_clust})', fontsize=20)
         plt.axis('equal')
         plt.xticks([])
         plt.yticks([])
@@ -295,10 +295,18 @@ adata_query = ad.read_h5ad(
     f'{working_dir}/output/merfish/data/adata_query.h5ad')
 adata_ref = ad.read_h5ad(
     f'{working_dir}/output/merfish/data/adata_ref.h5ad')
+
+# combine, keepingly only the same metadat columns and genes
+sample_names = sorted(set(adata_query.obs['sample'].unique()) |
+                      set(adata_ref.obs['sample'].unique()))
+# CRUICIAL
 adata_comb = ad.concat([adata_query, adata_ref], axis=0, merge='same')
+adata_comb.obs['sample'] = pd.Categorical(
+    adata_comb.obs['sample'], categories=sample_names, ordered=True)
+adata_comb = adata_comb[adata_comb.obs.sort_values('sample').index]
+adata_comb = adata_comb.copy()
 
 # get the coordinates and expression data for each sample
-sample_names = sorted(adata_comb.obs['sample'].unique())
 coords_raw = {
     s: np.array(adata_comb.obs[['x', 'y']])[adata_comb.obs['sample']==s]
     for s in sample_names}
@@ -317,13 +325,14 @@ embed_dict_dup = CAST.CAST_MARK(
     f'{working_dir}/output/merfish/CAST-MARK')
 
 # remove duplicated embeddings 
-embed_dict = {k.split('_dup')[0]: v.cpu().detach().numpy() 
+embed_dict = {k.split('_dup')[0]: v.cpu().detach() 
               for k, v in embed_dict_dup.items()}
-embed_stack = np.vstack([embed_dict[name] for name in sample_names])
+embed_stack = np.vstack([embed_dict[name].numpy() for name in sample_names])
 
-# plot 
+# k-means cluster on cast embeddings
+# and plot 
 for n_clust in range(6, 20 + 1, 2):
-    print(f"Clustering with k={n_clust}")
+    print(f'Clustering with k={n_clust}')
     kmeans = KMeans(n_clusters=n_clust, random_state=0).fit(embed_stack)
     cell_label = kmeans.labels_
     cluster_pl = sns.color_palette('Set3', n_clust)
@@ -337,102 +346,63 @@ for n_clust in range(6, 20 + 1, 2):
     adata_comb.obs[f'k{n_clust}_cluster_colors'] = \
         pd.Series(cell_label).map(color_map).tolist()
 
-# # save
-# torch.save(coords_raw, f'{working_dir}/output/merfish/data/coords_raw.pt')
-# torch.save(exp_dict, f'{working_dir}/output/merfish/data/exp_dict.pt')
-# torch.save(embed_dict, f'{working_dir}/output/merfish/data/embed_dict.pt')
-# adata_comb.write(f'{working_dir}/output/merfish/data/adata_comb_cast_mark.h5ad')
+# save
+torch.save(coords_raw, f'{working_dir}/output/merfish/data/coords_raw.pt')
+torch.save(exp_dict, f'{working_dir}/output/merfish/data/exp_dict.pt')
+torch.save(embed_dict, f'{working_dir}/output/merfish/data/embed_dict.pt')
+adata_comb.write(f'{working_dir}/output/merfish/data/adata_comb_cast_mark.h5ad')
 
 # CAST_STACK ###################################################################
 
 import numpy as np, pandas as pd, anndata as ad, scanpy as sc
 import sys, os, torch, CAST, warnings
 import matplotlib.pyplot as plt, seaborn as sns
-warnings.filterwarnings("ignore")
-
-sys.path.append('/home/karbabi/projects/def-wainberg/karbabi/utils')
-from utils import debug
-debug(third_party=True)
+warnings.filterwarnings('ignore')
 
 # set paths 
 working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-STACK', exist_ok=True)
 
-def plot_slices(adata_comb, coords_raw, n_clust):
+def plot_slices(adata_comb, coords, n_clust):
     color_col = f'k{n_clust}_cluster_colors'
-    samples = adata_comb.obs['sample'].unique()
+    samples = coords.keys()
     num_samples = len(samples)
     rows = int(np.ceil(num_samples / 5))
     fig, axes = plt.subplots(rows, 5, figsize=(25, 5*rows))
     axes = axes.flatten()
     for ax, sample in zip(axes, samples):
         sample_data = adata_comb[adata_comb.obs['sample'] == sample]
-        coords = coords_raw[sample]
+        coords_i = coords[sample]
         colors = sample_data.obs[color_col]
-
-        ax.scatter(coords[:, 0], coords[:, 1], c=colors, s=1, edgecolor='none')
+        ax.scatter(coords_i[:, 0], coords_i[:, 1], 
+                   c=colors, s=1, edgecolor='none')
         ax.set_title(sample)
         ax.axis('off')
     for ax in axes[num_samples:]:
         ax.axis('off')
     plt.tight_layout()
-    plt.savefig(f'figures/merfish/all_samples_k{n_clust}_simple.png')
-    plt.close(fig)
-
-# match each query to its reference based on the consine similarity 
-# of their cast-embeddings 
-def map_closest_embeddings(embed_dict):
-    query_keys = [k for k in embed_dict if not k.startswith('C57BL6J-638850')]
-    ref_keys = [k for k in embed_dict if k.startswith('C57BL6J-638850')]
-    query_reference_list = {}
-   
-    for query in query_keys:
-        query_embed = torch.from_numpy(embed_dict[query]).float()
-        query_norm = torch.norm(query_embed, dim=1, keepdim=True)
-        max_sim = -1
-        closest_ref = None
-        for ref in ref_keys:
-            ref_embed = torch.from_numpy(embed_dict[ref]).float()
-            ref_norm = torch.norm(ref_embed, dim=1, keepdim=True)
-           
-            sim = torch.mm(query_embed, ref_embed.t()) / \
-                torch.mm(query_norm, ref_norm.t())
-            mean_sim = torch.mean(sim).item()
-            if mean_sim > max_sim:
-                max_sim, closest_ref = mean_sim, ref
-       
-        query_reference_list[query] = [query, closest_ref]
-        print(f"Closest reference for {query}: {closest_ref}")   
-    return query_reference_list
-
-def split_query_reference_list(query_reference_list, coords_raw_keys):
-    split_list = {}
-    for key in coords_raw_keys:
-        if not key.startswith('C57BL6J-638850'):
-            base_key = '_'.join(key.split('_')[:-1])
-            if base_key in query_reference_list:
-                split_list[key] = [key, query_reference_list[base_key][1]]
-    return split_list
+    return plt.gcf()
 
 # split the data randomly, while remembering the original cell order
 # this is because a single image requires too much GPU mem
 def split_dicts(coords_raw, embed_dict, n_split, seed=42):
     torch.manual_seed(seed)
     indices_dict = {}
-    new_coords = {}; new_embeds = {}
+    new_coords = {}; new_embeds = {}; query_reference_list = {}
     for key in coords_raw:
         if not key.startswith('C57BL6J-638850'):
             indices = torch.randperm(coords_raw[key].shape[0])
             indices_dict[key] = indices  
             splits = torch.tensor_split(indices, n_split)
             for i, split in enumerate(splits, 1):
-                new_key = f"{key}_{i}"
+                new_key = f'{key}_{i}'
                 new_coords[new_key] = coords_raw[key][split]
                 new_embeds[new_key] = embed_dict[key][split]
+                query_reference_list[new_key] = [new_key, 'C57BL6J-638850.47_R']
         else:
             new_coords[key] = coords_raw[key]
             new_embeds[key] = embed_dict[key]
-    return new_coords, new_embeds, indices_dict
+    return new_coords, new_embeds, indices_dict, query_reference_list
 
 # after the final coordinates are determined, collapse back at the sample level 
 def collapse_dicts(coords_final, indices_dict):
@@ -444,7 +414,7 @@ def collapse_dicts(coords_final, indices_dict):
             full_array = torch.zeros((len(indices), 2), dtype=torch.float32)
             start_idx = 0
             for i in range(1, len(coords_final) + 1):
-                key = f"{base_key}_{i}"
+                key = f'{base_key}_{i}'
                 if key in coords_final:
                     split_data = coords_final[key][key]
                     end_idx = start_idx + len(split_data)
@@ -462,15 +432,9 @@ coords_raw = torch.load(
 embed_dict = torch.load(
     f'{working_dir}/output/merfish/data/embed_dict.pt')
 
-# get sample mappings
-query_reference_list = map_closest_embeddings(embed_dict)
-
 # split data 
-coords_raw, embed_dict, indices_dict = \
+coords_raw, embed_dict, indices_dict, query_reference_list  = \
       split_dicts(coords_raw, embed_dict, n_split=3)
-
-query_reference_list = split_query_reference_list(
-    query_reference_list, coords_raw.keys())
 
 # run cast-stack, parameters modified for default are commented 
 coords_final_split = {}
@@ -480,7 +444,7 @@ for sample in sorted(query_reference_list.keys()):
         gpu = 0 if torch.cuda.is_available() else -1, 
         diff_step = 5,
         #### Affine parameters
-        iterations=100, # 500
+        iterations=200, # 500
         dist_penalty1=0,
         bleeding=500,
         d_list=[3,2,1,1/2,1/3],
@@ -514,68 +478,287 @@ coords_df = pd.DataFrame(
     coords_stack, columns=['x_final', 'y_final'], index=cell_index)
 adata_comb.obs = adata_comb.obs.join(coords_df)
 
-df = adata_comb.obs[adata_comb.obs['source'] == 'merfish']
-num_plot = len(sample_names)
-plt.figure(figsize=((30, 15)))
-for j in range(num_plot):
-    plt.subplot(4, 5, j+1)
-    coords_final0 = coords_final[sample_names[j]]
-    col=coords_final0[:,0].tolist()
-    row=coords_final0[:,1].tolist()
-    current_index = df.index[df.index.str.contains(sample_names[j])]
-    plt.scatter(x=col, y=row, s=4,
-                color=df.loc[current_index, 'k16_cluster_colors'])
-    plt.title(sample_names[j] + ' (KMeans, k = 16)', fontsize=20)
-    plt.xticks(fontsize=20)
-    plt.yticks(fontsize=20)
-    plt.axis('equal')
-    plt.xticks([])
-    plt.yticks([])
-    plt.tight_layout()
-plt.savefig(
-    f'{working_dir}/figures/merfish/all_samples_k16_final.png', dpi=50)
+plot_slices(adata_comb, coords_final, n_clust=16)
+plt.savefig(f'{working_dir}/figures/merfish/all_samples_k16_final.png',
+            dpi=300)
 
 adata_comb.write(
     f'{working_dir}/output/merfish/data/adata_comb_cast_stack.h5ad')
 
 # CAST_PROJECT #################################################################
 
-import numpy as np, pandas as pd, anndata as ad, scanpy as sc
-import sys, os, torch, CAST, warnings
+import sys, os, torch, pickle, warnings
 import matplotlib.pyplot as plt, seaborn as sns
-warnings.filterwarnings("ignore")
+import numpy as np
+import pandas as pd
+import anndata as ad
+import scanpy as sc
 
-sys.path.append('/home/karbabi/projects/def-wainberg/karbabi/utils')
-from utils import debug
-debug(third_party=True) 
+sys.path.insert(0, 'projects/def-wainberg/karbabi/CAST')
+import CAST
+print(CAST.__file__)
+
+warnings.filterwarnings('ignore')
 
 working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-PROJECT', exist_ok=True)
 
+# load data
 coords_final = torch.load(
     f'{working_dir}/output/merfish/data/coords_final.pt', map_location='cpu')
-source_target_list = {
-    key: [key, 'Zhuang-ABCA-1.060'] for key in coords_final.keys()}
-
 adata_comb = ad.read_h5ad(
     f'{working_dir}/output/merfish/data/adata_comb_cast_stack.h5ad')
-adata_comb.X = adata_comb.layers['counts']
-adata_comb = CAST.preprocess_fast(adata_comb, mode='default')
+
+# scale data separately for each source 
+sc.pp.scale(adata_comb, zero_center = True, 
+            mask_obs=(adata_comb.obs['source'] == 'Zeng-ABCA-Reference'))
+sc.pp.scale(adata_comb, zero_center = True, 
+            mask_obs=(adata_comb.obs['source'] == 'merfish'))
+adata_comb.layers['log1p_norm_scaled'] = adata_comb.X.copy()
+
 batch_key = 'sample'
+level = 'subclass'
+sample = 'CTRL1_L'
+source_sample = 'C57BL6J-638850.47_R'
+target_sample = sample
+
 color_dict = adata_comb.obs\
-    .drop_duplicates().set_index('class')['class_color']\
+    .drop_duplicates()\
+    .set_index(level)[f'{level}_color']\
     .to_dict()
 color_dict['Unknown'] = '#A9A9A9'
 
-adata_comb_refs = {}; list_ts = {}
+adata_subset = adata_comb[
+    adata_comb.obs['sample'].isin([source_sample, target_sample])].copy()
 
+# Run Harmony integration on the subset
+adata_subset = CAST.Harmony_integration(
+    sdata_inte=adata_subset,
+    scaled_layer='log1p_norm_scaled',
+    use_highly_variable_t=False,
+    batch_key=batch_key,
+    umap_n_neighbors=50,
+    umap_n_pcs=30,
+    min_dist=0.01,
+    spread_t=5,
+    source_sample_ctype_col=level,
+    output_path=f'{working_dir}/output/merfish/CAST-PROJECT',
+    n_components=50,
+    ifplot=True,
+    ifcombat=True
+)
+
+# Now use this Harmony-integrated subset for CAST projection
+print(f"Processing {sample}")
+output_dir_t = f'{working_dir}/output/merfish/CAST-PROJECT/' \
+    f'{source_sample}_to_{target_sample}'
+os.makedirs(output_dir_t, exist_ok=True)
+
+# Parameters that affect physical distance
+ave_dist_fold = 1
+alignment_shift_adjustment = 1
+
+_, list_t = CAST.CAST_PROJECT(
+    sdata_inte=adata_subset,
+    source_sample=source_sample,
+    target_sample=target_sample, 
+    coords_source=np.array(adata_subset[
+        adata_subset.obs['sample'] == \
+            source_sample].obs.loc[:,['x','y']]),
+    coords_target=np.array(adata_subset[
+        adata_subset.obs['sample'] == \
+            target_sample].obs.loc[:,['x_final','y_final']]),
+    k2=1,
+    scaled_layer='log1p_norm_scaled', 
+    raw_layer='log1p_norm_scaled',
+    batch_key=batch_key, 
+    use_highly_variable_t=False,  
+    ifplot=False,
+    n_components=50,
+    source_sample_ctype_col=level, 
+    output_path=output_dir_t, 
+    integration_strategy=None,  
+    pc_feature='X_pca_harmony', 
+    umap_feature='X_umap', 
+    ave_dist_fold=ave_dist_fold,
+    alignment_shift_adjustment=alignment_shift_adjustment,
+    color_dict=color_dict,
+    save_result=False)
+
+print(list_t)
+
+project_ind = list_t[0][:, 0].flatten()
+source_obs = adata_comb.obs[
+    adata_comb.obs['sample'] == source_sample].copy()
+target_obs = adata_comb.obs[
+    adata_comb.obs['sample'] == target_sample].copy()
+target_index = target_obs.index
+target_obs = target_obs.reset_index(drop=True)
+
+for col in ['parcellation_division', 'parcellation_structure', 
+            'parcellation_substructure',
+            'class', 'subclass', 'supertype', 'cluster']:
+    target_obs[col] = pd.NA
+    target_obs[col] = source_obs[col].iloc[project_ind].values
+    target_obs[f'{col}_color'] = source_obs[f'{col}_color']\
+        .iloc[project_ind].values
+
+target_obs['ref_cell_id'] = source_obs.index[project_ind]
+target_obs['cosine_knn_weight'] = list_t[1][:, 0]
+target_obs['cosine_knn_cdist'] = list_t[2][:, 0]
+target_obs['cosine_knn_physical_dist'] = list_t[3][:, 0]
+
+new_obs = target_obs.set_index(target_index)
+
+adata_comb_i = adata_comb.copy()
+for col in new_obs.columns:
+    if col not in adata_comb_i.obs.columns:
+        adata_comb_i.obs[col] = pd.NA
+adata_comb_i.obs.loc[new_obs.index] = new_obs
+
+
+def create_comparison_plot(adata_comb_i, adata_comb, col, query_sample, 
+                           ref_sample, random_state=42):
+    
+    query_data = adata_comb_i.obs[adata_comb_i.obs['sample'] == query_sample]
+    query_cell = query_data.sample(1, random_state=random_state)
+    ref_data = adata_comb.obs[adata_comb.obs['sample'] == ref_sample]
+    selected_value = query_cell[col].values[0]
+    color_map = {selected_value: query_cell[f'{col}_color'].values[0]}
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+    for ax, data, x, y in [(ax1, query_data, 'x_final', 'y_final'),
+                           (ax2, ref_data, 'x', 'y')]:
+        mask = data[col] == selected_value
+        ax.scatter(data[~mask][x], data[~mask][y], c='grey', s=1, alpha=0.1)
+        ax.scatter(data[mask][x], data[mask][y], 
+                   c=data[mask][col].map(color_map), s=1)
+        ax.set_title(f"{data['sample'].iloc[0]} (Cells: {len(data)})\n"
+                     f"{col}: {selected_value}")
+        ax.axis('off')
+        ax.set_aspect('equal')
+    
+    ax1.scatter(query_cell['x_final'], query_cell['y_final'], c='none', s=50,
+                edgecolors='black', linewidths=2)
+    ax2.scatter(ref_data.loc[query_cell['ref_cell_id'].values[0], 'x'],
+                ref_data.loc[query_cell['ref_cell_id'].values[0], 'y'],
+                c='none', s=50, edgecolors='black', linewidths=2)
+    print(selected_value)
+    plt.tight_layout()
+    save_dir = f'{working_dir}/figures/merfish/comparison/'
+    os.makedirs(save_dir, exist_ok=True)
+    plt.savefig(f'{save_dir}{selected_value}.png', dpi=200)
+    plt.close(fig)
+
+create_comparison_plot(
+    adata_comb_i, adata_comb, col='subclass', 
+    query_sample='CTRL1_L', ref_sample='C57BL6J-638850.47_R',
+    random_state=None)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import numpy as np, pandas as pd, anndata as ad, scanpy as sc
+import sys, os, torch, pickle, warnings
+import matplotlib.pyplot as plt, seaborn as sns
+
+sys.path.insert(0, 'projects/def-wainberg/karbabi/CAST')
+import CAST
+print(CAST.__file__)
+
+warnings.filterwarnings('ignore')
+
+working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
+os.makedirs(f'{working_dir}/output/merfish/CAST-PROJECT', exist_ok=True)
+
+def transfer_region_labels(knn_ind, cosine_weights, physical_dists, 
+                           source_region_labels, k=10, alpha=0.7):
+    n_target_cells = knn_ind.shape[0]
+    knn_ind = knn_ind[:, :k]
+    cosine_weights = cosine_weights[:, :k]
+    physical_weights = 1 / (physical_dists[:, :k] + 1e-6)
+    combined_weights = alpha * physical_weights + (1 - alpha) * cosine_weights
+    combined_weights /= np.sum(combined_weights, axis=1, keepdims=True)
+    unique_labels, inverse = np.unique(
+        source_region_labels, return_inverse=True)
+    n_labels = len(unique_labels)
+    weighted_counts = np.zeros((n_target_cells, n_labels))
+    np.add.at(
+        weighted_counts, 
+        (np.arange(n_target_cells)[:, None], inverse[knn_ind]), 
+        combined_weights)
+    
+    most_common_indices = np.argmax(weighted_counts, axis=1)
+    return unique_labels[most_common_indices]
+
+# load data
+coords_final = torch.load(
+    f'{working_dir}/output/merfish/data/coords_final.pt', map_location='cpu')
+adata_comb = ad.read_h5ad(
+    f'{working_dir}/output/merfish/data/adata_comb_cast_stack.h5ad')
+# scale data separately for each source 
+sc.pp.scale(adata_comb, zero_center = True, 
+            mask_obs=(adata_comb.obs['source'] == 'Zeng-ABCA-Reference'))
+sc.pp.scale(adata_comb, zero_center = True, 
+            mask_obs=(adata_comb.obs['source'] == 'merfish'))
+adata_comb.layers['log1p_norm_scaled'] = adata_comb.X.copy()
+
+batch_key = 'sample'
+level = 'subclass'
+source_target_list = {
+    key: ['C57BL6J-638850.47_R', key] for key in coords_final.keys()}
+
+color_dict = adata_comb.obs\
+    .drop_duplicates()\
+    .set_index(level)[f'{level}_color']\
+    .to_dict()
+color_dict['Unknown'] = '#A9A9A9'
+
+list_ts = {}
 for sample in source_target_list.keys():
     print(sample)
     source_sample, target_sample = source_target_list[sample]
     output_dir_t = f'{working_dir}/output/merfish/CAST-PROJECT/' \
         f'{source_sample}_to_{target_sample}'
     os.makedirs(output_dir_t, exist_ok=True)
-    adata_comb_refs[sample], list_ts[sample] = CAST.CAST_PROJECT(
+    _, list_ts[sample] = CAST.CAST_PROJECT(
         sdata_inte=adata_comb[
             np.isin(adata_comb.obs[batch_key], 
                     [source_sample, target_sample])],
@@ -583,71 +766,140 @@ for sample in source_target_list.keys():
         target_sample=target_sample, 
         coords_source=np.array(
             adata_comb[np.isin(adata_comb.obs[batch_key], source_sample),:]
-            .obs.loc[:,['x_final','y_final']]),
+                .obs.loc[:,['x','y']]),
         coords_target=np.array(
             adata_comb[np.isin(adata_comb.obs[batch_key], target_sample),:]
-            .obs.loc[:,['x','y']]),
+                .obs.loc[:,['x_final','y_final']]),
+        k2 = 200,
         scaled_layer = 'log1p_norm_scaled', 
-        raw_layer = 'raw',
+        raw_layer = 'log1p_norm_scaled',
         batch_key=batch_key, 
         use_highly_variable_t=False,  
         ifplot = False,
         n_components = 50,
-        k2 = 30,
-        source_sample_ctype_col='class', 
+        source_sample_ctype_col=level, 
         output_path=output_dir_t, 
         integration_strategy='Harmony', 
-        ave_dist_fold = 1.5, # 3
+        ave_dist_fold = 1, 
+        alignment_shift_adjustment = 50,
         color_dict=color_dict,
         save_result=False)
+    print(list_ts[sample])
     
-torch.save(adata_comb_refs, 
-           f'{working_dir}/output/merfish/data/adata_comb_refs.pt')
-torch.save(list_ts, 
-           f'{working_dir}/output/merfish/data/list_ts.pt')
+# with open(f'{working_dir}/output/merfish/data/list_ts.pickle', 'wb') as f:
+#     pickle.dump(list_ts, f)
+with open(f'{working_dir}/output/merfish/data/list_ts.pickle', 'rb') as f:
+    list_ts = pickle.load(f)
 
-import subprocess
-subprocess.run(['bash', '-i', '-c', 'c'], capture_output=True, text=True)
-
-list_ts = torch.load(f'{working_dir}/output/merfish/data/list_ts.pt')
-
-new_obs = []; cell_ids = []
-for sample in source_target_list.keys():
-    source_sample, target_sample = source_target_list[sample]
-    project_ind = list_ts[sample][0].flatten()
-    source_obs = adata_comb.obs[adata_comb.obs['sample'] == source_sample]
-    source_obs = source_obs[[
-        'class', 'subclass', 'supertype', 'class_color', 'subclass_color', 
-        'supertype_color', 'cluster', 'cluster_color',
-        'parcellation_substructure', 'parcellation_substructure_color']]
-    source_obs = source_obs.iloc[project_ind].reset_index(drop=True)
-    target_obs = adata_comb.obs[adata_comb.obs['sample'] == target_sample]
+new_obs = []
+for sample, (source_sample, target_sample) in source_target_list.items():
+    project_ind = list_ts[sample][0][:, 0].flatten()
+    source_obs = adata_comb.obs[
+        adata_comb.obs['sample'] == source_sample].copy()
+    target_obs = adata_comb.obs[
+        adata_comb.obs['sample'] == target_sample].copy()
     target_index = target_obs.index
-    target_obs = target_obs[[
-        'sample', 'source', 'x', 'y', 'k15_cluster', 'k15_cluster_colors', 
-        'x_final', 'y_final']].reset_index(drop=True)
-    target_obs = pd.concat([target_obs, source_obs], axis=1)\
-        .set_index(target_index)
-    cdist = list_ts[sample][2]
-    target_obs['cdist'] = cdist
-    new_obs.append(target_obs)
+    target_obs = target_obs.reset_index(drop=True)
+
+    for col in ['parcellation_division', 'parcellation_structure', 
+                'parcellation_substructure',
+                'class', 'subclass', 'supertype', 'cluster']:
+        target_obs[col] = pd.NA
+        target_obs[col] = source_obs[col].iloc[project_ind].values
+        target_obs[f'{col}_color'] = source_obs[f'{col}_color']\
+            .iloc[project_ind].values
+
+    # for level in ['division', 'structure', 'substructure']:
+    #     region_labels = transfer_region_labels(
+    #         list_ts[sample][0],
+    #         list_ts[sample][1],
+    #         list_ts[sample][3],
+    #         source_obs[f'parcellation_{level}'].values,
+    #         k=50, alpha=0.7)
+    #     target_obs[f'parcellation_{level}'] = region_labels
+    #     color_mapping = dict(zip(
+    #         source_obs[f'parcellation_{level}'],
+    #         source_obs[f'parcellation_{level}_color']))
+    #     target_obs[f'parcellation_{level}_color'] = \
+    #         pd.Series(region_labels).map(color_mapping).values
+
+    target_obs['ref_cell_id'] = source_obs.index[project_ind]
+    target_obs['cosine_knn_weight'] = list_ts[sample][1][:, 0]
+    target_obs['cosine_knn_cdist'] = list_ts[sample][2][:, 0]
+    target_obs['cosine_knn_physical_dist'] = list_ts[sample][3][:, 0]
+    new_obs.append(target_obs.set_index(target_index))
 
 new_obs = pd.concat(new_obs)
-adata_comb.obs['cdist'] = 0
-update_indices = adata_comb.obs.index.isin(new_obs.index)
-adata_comb.obs.loc[update_indices] = new_obs
-# adata_comb.write('output/CURIO/data/adata_comb_project.h5ad')
+adata_comb_i = adata_comb.copy()
+for col in new_obs.columns:
+    if col not in adata_comb_i.obs.columns:
+        adata_comb_i.obs[col] = pd.NA
+adata_comb_i.obs.loc[new_obs.index] = new_obs
 
-tmp = adata_comb.obs[(adata_comb.obs['sample'] == 'CTRL1_L') & 
-                     (adata_comb.obs['cdist'] < 0.06)]
-tmp['subclass'] = tmp['subclass'].astype('category')\
+# # save
+# adata_comb.write(
+#     f'{working_dir}/output/merfish/data/adata_comb_cast_project.h5ad')
+
+
+def create_comparison_plot(adata_comb_i, adata_comb, col, query_sample, 
+                           ref_sample, random_state=42):
+    
+    query_data = adata_comb_i.obs[adata_comb_i.obs['sample'] == query_sample]
+    query_cell = query_data.sample(1, random_state=random_state)
+    ref_data = adata_comb.obs[adata_comb.obs['sample'] == ref_sample]
+    selected_value = query_cell[col].values[0]
+    color_map = {selected_value: query_cell[f'{col}_color'].values[0]}
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+    for ax, data, x, y in [(ax1, query_data, 'x_final', 'y_final'),
+                           (ax2, ref_data, 'x', 'y')]:
+        mask = data[col] == selected_value
+        ax.scatter(data[~mask][x], data[~mask][y], c='grey', s=1, alpha=0.1)
+        ax.scatter(data[mask][x], data[mask][y], 
+                   c=data[mask][col].map(color_map), s=1)
+        ax.set_title(f"{data['sample'].iloc[0]} (Cells: {len(data)})\n"
+                     f"{col}: {selected_value}")
+        ax.axis('off')
+        ax.set_aspect('equal')
+    
+    ax1.scatter(query_cell['x_final'], query_cell['y_final'], c='none', s=50,
+                edgecolors='black', linewidths=2)
+    ax2.scatter(ref_data.loc[query_cell['ref_cell_id'].values[0], 'x'],
+                ref_data.loc[query_cell['ref_cell_id'].values[0], 'y'],
+                c='none', s=50, edgecolors='black', linewidths=2)
+    print(selected_value)
+    plt.tight_layout()
+    save_dir = f'{working_dir}/figures/merfish/comparison/'
+    os.makedirs(save_dir, exist_ok=True)
+    plt.savefig(f'{save_dir}{selected_value}.png', dpi=200)
+    plt.close(fig)
+
+create_comparison_plot(
+    adata_comb_i, adata_comb, col='subclass', 
+    query_sample='CTRL1_L', ref_sample='C57BL6J-638850.47_R',
+    random_state=17)
+
+
+
+
+
+
+
+
+
+
+
+col = 'parcellation_substructure'
+plot_df = adata_comb_i.obs[adata_comb.obs['sample'] == 'CTRL1_L']
+plot_df[col] = plot_df[col].astype('category')\
     .cat.remove_unused_categories()
-color_map = tmp.drop_duplicates('subclass')\
-    .set_index('subclass')['subclass_color'].to_dict()
+color_map = plot_df.drop_duplicates(col)\
+    .set_index(col)[f'{col}_color'].to_dict()
 plt.clf()
 plt.figure(figsize=((15, 15)))
-ax  = sns.scatterplot(data=tmp, x='x_final', y='y_final', linewidth=0,
-                hue='subclass', palette=color_map, s=10, legend=False)
+ax  = sns.scatterplot(
+    data=plot_df, x='x_final', y='y_final', linewidth=0,
+    hue=col, palette=color_map, s=10, legend=False)
 ax.set(xlabel=None, ylabel=None)
 sns.despine(bottom = True, left = True)
 plt.legend(fontsize=14, markerscale=3)
@@ -655,16 +907,17 @@ plt.axis('equal')
 plt.xticks([])
 plt.yticks([])
 plt.tight_layout()
-plt.savefig(f'{working_dir}/tmp3.png', dpi=200)
+plt.savefig(f'{working_dir}/figures/tmp.png', dpi=200)
 
-tmp = adata_comb.obs[adata_comb.obs['sample'] == 'Zhuang-ABCA-1.060']
-tmp['subclass'] = tmp['subclass'].cat.remove_unused_categories()
-color_map = tmp.drop_duplicates('subclass')\
-    .set_index('subclass')['subclass_color'].to_dict()
+plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'C57BL6J-638850.47_R']
+plot_df[col] = plot_df[col].cat.remove_unused_categories()
+color_map = plot_df.drop_duplicates(col)\
+    .set_index(col)[f'{col}_color'].to_dict()
 plt.clf()
 plt.figure(figsize=((15, 15)))
-ax  = sns.scatterplot(data=tmp, x='x', y='y', linewidth=0,
-                hue='subclass', palette=color_map, s=15, legend=False)
+ax  = sns.scatterplot(
+    data=plot_df, x='x', y='y', linewidth=0,
+    hue=col, palette=color_map, s=15, legend=False)
 ax.set(xlabel=None, ylabel=None)
 sns.despine(bottom = True, left = True)
 plt.legend(fontsize=9, markerscale=1)
@@ -672,21 +925,9 @@ plt.axis('equal')
 plt.xticks([])
 plt.yticks([])
 plt.tight_layout()
-plt.savefig(f'{working_dir}/tmp4.png', dpi=200)
+plt.savefig(f'{working_dir}/figures/tmp2.png', dpi=200)
 
 ################################################################################
-
-def duplicate_anndata(adata, n_duplicates):
-    adatas = []
-    for i in range(n_duplicates):
-        adata_copy = adata.copy()
-        adata_copy.obs['sample'] = adata_copy.obs['sample'].astype(str) + \
-              f'_dup{i:02d}'
-        adata_copy.obs.index = adata_copy.obs['sample'] + '_' + \
-              adata_copy.obs.index
-        adatas.append(adata_copy)
-    return ad.concat(adatas, merge='same')
-
 
 '''
 **Affine parameters**
