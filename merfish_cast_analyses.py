@@ -487,214 +487,6 @@ adata_comb.write(
 
 # CAST_PROJECT #################################################################
 
-import sys, os, torch, pickle, warnings
-import matplotlib.pyplot as plt, seaborn as sns
-import numpy as np
-import pandas as pd
-import anndata as ad
-import scanpy as sc
-
-sys.path.insert(0, 'projects/def-wainberg/karbabi/CAST')
-import CAST
-print(CAST.__file__)
-
-warnings.filterwarnings('ignore')
-
-working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
-os.makedirs(f'{working_dir}/output/merfish/CAST-PROJECT', exist_ok=True)
-
-# load data
-coords_final = torch.load(
-    f'{working_dir}/output/merfish/data/coords_final.pt', map_location='cpu')
-adata_comb = ad.read_h5ad(
-    f'{working_dir}/output/merfish/data/adata_comb_cast_stack.h5ad')
-
-# scale data separately for each source 
-sc.pp.scale(adata_comb, zero_center = True, 
-            mask_obs=(adata_comb.obs['source'] == 'Zeng-ABCA-Reference'))
-sc.pp.scale(adata_comb, zero_center = True, 
-            mask_obs=(adata_comb.obs['source'] == 'merfish'))
-adata_comb.layers['log1p_norm_scaled'] = adata_comb.X.copy()
-
-batch_key = 'sample'
-level = 'subclass'
-sample = 'CTRL1_L'
-source_sample = 'C57BL6J-638850.47_R'
-target_sample = sample
-
-color_dict = adata_comb.obs\
-    .drop_duplicates()\
-    .set_index(level)[f'{level}_color']\
-    .to_dict()
-color_dict['Unknown'] = '#A9A9A9'
-
-adata_subset = adata_comb[
-    adata_comb.obs['sample'].isin([source_sample, target_sample])].copy()
-
-# Run Harmony integration on the subset
-adata_subset = CAST.Harmony_integration(
-    sdata_inte=adata_subset,
-    scaled_layer='log1p_norm_scaled',
-    use_highly_variable_t=False,
-    batch_key=batch_key,
-    umap_n_neighbors=50,
-    umap_n_pcs=30,
-    min_dist=0.01,
-    spread_t=5,
-    source_sample_ctype_col=level,
-    output_path=f'{working_dir}/output/merfish/CAST-PROJECT',
-    n_components=50,
-    ifplot=True,
-    ifcombat=True
-)
-
-# Now use this Harmony-integrated subset for CAST projection
-print(f"Processing {sample}")
-output_dir_t = f'{working_dir}/output/merfish/CAST-PROJECT/' \
-    f'{source_sample}_to_{target_sample}'
-os.makedirs(output_dir_t, exist_ok=True)
-
-# Parameters that affect physical distance
-ave_dist_fold = 1
-alignment_shift_adjustment = 1
-
-_, list_t = CAST.CAST_PROJECT(
-    sdata_inte=adata_subset,
-    source_sample=source_sample,
-    target_sample=target_sample, 
-    coords_source=np.array(adata_subset[
-        adata_subset.obs['sample'] == \
-            source_sample].obs.loc[:,['x','y']]),
-    coords_target=np.array(adata_subset[
-        adata_subset.obs['sample'] == \
-            target_sample].obs.loc[:,['x_final','y_final']]),
-    k2=1,
-    scaled_layer='log1p_norm_scaled', 
-    raw_layer='log1p_norm_scaled',
-    batch_key=batch_key, 
-    use_highly_variable_t=False,  
-    ifplot=False,
-    n_components=50,
-    source_sample_ctype_col=level, 
-    output_path=output_dir_t, 
-    integration_strategy=None,  
-    pc_feature='X_pca_harmony', 
-    umap_feature='X_umap', 
-    ave_dist_fold=ave_dist_fold,
-    alignment_shift_adjustment=alignment_shift_adjustment,
-    color_dict=color_dict,
-    save_result=False)
-
-print(list_t)
-
-project_ind = list_t[0][:, 0].flatten()
-source_obs = adata_comb.obs[
-    adata_comb.obs['sample'] == source_sample].copy()
-target_obs = adata_comb.obs[
-    adata_comb.obs['sample'] == target_sample].copy()
-target_index = target_obs.index
-target_obs = target_obs.reset_index(drop=True)
-
-for col in ['parcellation_division', 'parcellation_structure', 
-            'parcellation_substructure',
-            'class', 'subclass', 'supertype', 'cluster']:
-    target_obs[col] = pd.NA
-    target_obs[col] = source_obs[col].iloc[project_ind].values
-    target_obs[f'{col}_color'] = source_obs[f'{col}_color']\
-        .iloc[project_ind].values
-
-target_obs['ref_cell_id'] = source_obs.index[project_ind]
-target_obs['cosine_knn_weight'] = list_t[1][:, 0]
-target_obs['cosine_knn_cdist'] = list_t[2][:, 0]
-target_obs['cosine_knn_physical_dist'] = list_t[3][:, 0]
-
-new_obs = target_obs.set_index(target_index)
-
-adata_comb_i = adata_comb.copy()
-for col in new_obs.columns:
-    if col not in adata_comb_i.obs.columns:
-        adata_comb_i.obs[col] = pd.NA
-adata_comb_i.obs.loc[new_obs.index] = new_obs
-
-
-def create_comparison_plot(adata_comb_i, adata_comb, col, query_sample, 
-                           ref_sample, random_state=42):
-    
-    query_data = adata_comb_i.obs[adata_comb_i.obs['sample'] == query_sample]
-    query_cell = query_data.sample(1, random_state=random_state)
-    ref_data = adata_comb.obs[adata_comb.obs['sample'] == ref_sample]
-    selected_value = query_cell[col].values[0]
-    color_map = {selected_value: query_cell[f'{col}_color'].values[0]}
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
-    for ax, data, x, y in [(ax1, query_data, 'x_final', 'y_final'),
-                           (ax2, ref_data, 'x', 'y')]:
-        mask = data[col] == selected_value
-        ax.scatter(data[~mask][x], data[~mask][y], c='grey', s=1, alpha=0.1)
-        ax.scatter(data[mask][x], data[mask][y], 
-                   c=data[mask][col].map(color_map), s=1)
-        ax.set_title(f"{data['sample'].iloc[0]} (Cells: {len(data)})\n"
-                     f"{col}: {selected_value}")
-        ax.axis('off')
-        ax.set_aspect('equal')
-    
-    ax1.scatter(query_cell['x_final'], query_cell['y_final'], c='none', s=50,
-                edgecolors='black', linewidths=2)
-    ax2.scatter(ref_data.loc[query_cell['ref_cell_id'].values[0], 'x'],
-                ref_data.loc[query_cell['ref_cell_id'].values[0], 'y'],
-                c='none', s=50, edgecolors='black', linewidths=2)
-    print(selected_value)
-    plt.tight_layout()
-    save_dir = f'{working_dir}/figures/merfish/comparison/'
-    os.makedirs(save_dir, exist_ok=True)
-    plt.savefig(f'{save_dir}{selected_value}.png', dpi=200)
-    plt.close(fig)
-
-create_comparison_plot(
-    adata_comb_i, adata_comb, col='subclass', 
-    query_sample='CTRL1_L', ref_sample='C57BL6J-638850.47_R',
-    random_state=None)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 import numpy as np, pandas as pd, anndata as ad, scanpy as sc
 import sys, os, torch, pickle, warnings
 import matplotlib.pyplot as plt, seaborn as sns
@@ -705,28 +497,40 @@ print(CAST.__file__)
 
 warnings.filterwarnings('ignore')
 
+# set paths 
 working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-PROJECT', exist_ok=True)
 
-def transfer_region_labels(knn_ind, cosine_weights, physical_dists, 
-                           source_region_labels, k=10, alpha=0.7):
-    n_target_cells = knn_ind.shape[0]
-    knn_ind = knn_ind[:, :k]
-    cosine_weights = cosine_weights[:, :k]
-    physical_weights = 1 / (physical_dists[:, :k] + 1e-6)
-    combined_weights = alpha * physical_weights + (1 - alpha) * cosine_weights
-    combined_weights /= np.sum(combined_weights, axis=1, keepdims=True)
-    unique_labels, inverse = np.unique(
-        source_region_labels, return_inverse=True)
-    n_labels = len(unique_labels)
-    weighted_counts = np.zeros((n_target_cells, n_labels))
-    np.add.at(
-        weighted_counts, 
-        (np.arange(n_target_cells)[:, None], inverse[knn_ind]), 
-        combined_weights)
-    
-    most_common_indices = np.argmax(weighted_counts, axis=1)
-    return unique_labels[most_common_indices]
+# transfer region labels by nearest neighbors and majority vote
+def transfer_region_labels(coords_target, coords_source, source_region_labels, 
+                           k=10):
+    from sklearn.neighbors import NearestNeighbors
+
+    coords_target = np.array(coords_target, dtype=np.float64)
+    coords_source = np.array(coords_source, dtype=np.float64)
+    source_region_labels = np.array(source_region_labels)
+
+    nn_target = NearestNeighbors(n_neighbors=k, metric='euclidean')
+    nn_target.fit(coords_target)
+    _, knn_indices = nn_target.kneighbors(coords_target)
+
+    nn_source = NearestNeighbors(n_neighbors=1, metric='euclidean')
+    nn_source.fit(coords_source)
+    _, closest_source_indices = nn_source.kneighbors(coords_target)
+    closest_source_indices = closest_source_indices.flatten()
+
+    neighbor_labels = source_region_labels[closest_source_indices[knn_indices]]
+    unique_labels = np.unique(source_region_labels)
+
+    label_to_int = {label: i for i, label in enumerate(unique_labels)}
+    neighbor_labels_int = np.vectorize(label_to_int.get)(neighbor_labels)
+
+    label_counts = np.apply_along_axis(
+        lambda x: np.bincount(x, minlength=len(unique_labels)), 
+        axis=1, arr=neighbor_labels_int)
+    transferred_labels = unique_labels[np.argmax(label_counts, axis=1)]
+
+    return transferred_labels
 
 # load data
 coords_final = torch.load(
@@ -740,57 +544,97 @@ sc.pp.scale(adata_comb, zero_center = True,
             mask_obs=(adata_comb.obs['source'] == 'merfish'))
 adata_comb.layers['log1p_norm_scaled'] = adata_comb.X.copy()
 
-batch_key = 'sample'
-level = 'subclass'
 source_target_list = {
-    key: ['C57BL6J-638850.47_R', key] for key in coords_final.keys()}
+    key: ['C57BL6J-638850.47_R', key] for key in coords_final.keys()
+}
+batch_key = 'sample'
+level = 'class'
 
-color_dict = adata_comb.obs\
-    .drop_duplicates()\
-    .set_index(level)[f'{level}_color']\
+color_dict = (
+    adata_comb.obs
+    .drop_duplicates()
+    .set_index(level)[f'{level}_color']
     .to_dict()
+)
 color_dict['Unknown'] = '#A9A9A9'
 
 list_ts = {}
 for sample in source_target_list.keys():
-    print(sample)
+    print(f'Processing {sample}')
     source_sample, target_sample = source_target_list[sample]
     output_dir_t = f'{working_dir}/output/merfish/CAST-PROJECT/' \
         f'{source_sample}_to_{target_sample}'
     os.makedirs(output_dir_t, exist_ok=True)
+    
+    # check if precomputed Harmony exists
+    harmony_file = f'{output_dir_t}/' \
+        f'X_harmony_{source_sample}_to_{target_sample}.h5ad'
+    if os.path.exists(harmony_file):
+        print(f'Loading precomputed harmony from {harmony_file}')
+        adata_subset = ad.read_h5ad(harmony_file)
+    else:
+        print('Computing harmony')
+        # subset the data for the current source-target pair
+        adata_subset = adata_comb[
+            np.isin(adata_comb.obs[batch_key], [source_sample, target_sample])]
+        
+        # use the correct harmony function from cast
+        adata_subset = CAST.Harmony_integration(
+            sdata_inte=adata_subset,
+            scaled_layer='log1p_norm_scaled',
+            use_highly_variable_t=False,
+            batch_key=batch_key,
+            n_components=50,
+            umap_n_neighbors=15,
+            umap_n_pcs=30,
+            min_dist=0.1,
+            spread_t=1.0,
+            source_sample_ctype_col=level,
+            output_path=output_dir_t,
+            ifplot=False,
+            ifcombat=True)
+        # save harmony-adjusted data to disk
+        adata_subset.write_h5ad(harmony_file)
+    
+    # run CAST_PROJECT
+    print(f'Running CAST_PROJECT for {sample}')
     _, list_ts[sample] = CAST.CAST_PROJECT(
-        sdata_inte=adata_comb[
-            np.isin(adata_comb.obs[batch_key], 
-                    [source_sample, target_sample])],
+        sdata_inte=adata_subset,
         source_sample=source_sample,
-        target_sample=target_sample, 
+        target_sample=target_sample,
         coords_source=np.array(
-            adata_comb[np.isin(adata_comb.obs[batch_key], source_sample),:]
+            adata_subset[adata_subset.obs[batch_key] == source_sample,:]
                 .obs.loc[:,['x','y']]),
         coords_target=np.array(
-            adata_comb[np.isin(adata_comb.obs[batch_key], target_sample),:]
+            adata_subset[adata_subset.obs[batch_key] == target_sample,:]
                 .obs.loc[:,['x_final','y_final']]),
-        k2 = 200,
-        scaled_layer = 'log1p_norm_scaled', 
-        raw_layer = 'log1p_norm_scaled',
-        batch_key=batch_key, 
-        use_highly_variable_t=False,  
-        ifplot = False,
-        n_components = 50,
-        source_sample_ctype_col=level, 
-        output_path=output_dir_t, 
-        integration_strategy='Harmony', 
-        ave_dist_fold = 1, 
-        alignment_shift_adjustment = 50,
+        k2=1,
+        scaled_layer='log1p_norm_scaled',
+        raw_layer='log1p_norm_scaled',
+        batch_key=batch_key,
+        use_highly_variable_t=False,
+        ifplot=False,
+        source_sample_ctype_col=level,
+        output_path=output_dir_t,
+        umap_feature='X_umap',
+        pc_feature='X_pca_harmony',
+        integration_strategy=None, 
+        ave_dist_fold=20,
+        alignment_shift_adjustment=0,
         color_dict=color_dict,
-        save_result=False)
+        adjust_shift=False,
+        metric_t='cosine',
+        working_memory_t=1000
+    )
     print(list_ts[sample])
-    
+
 # with open(f'{working_dir}/output/merfish/data/list_ts.pickle', 'wb') as f:
 #     pickle.dump(list_ts, f)
+
 with open(f'{working_dir}/output/merfish/data/list_ts.pickle', 'rb') as f:
     list_ts = pickle.load(f)
 
+# transfer cell type and region labels
 new_obs = []
 for sample, (source_sample, target_sample) in source_target_list.items():
     project_ind = list_ts[sample][0][:, 0].flatten()
@@ -801,27 +645,23 @@ for sample, (source_sample, target_sample) in source_target_list.items():
     target_index = target_obs.index
     target_obs = target_obs.reset_index(drop=True)
 
-    for col in ['parcellation_division', 'parcellation_structure', 
-                'parcellation_substructure',
-                'class', 'subclass', 'supertype', 'cluster']:
-        target_obs[col] = pd.NA
+    for col in ['class', 'subclass', 'supertype', 'cluster']:
         target_obs[col] = source_obs[col].iloc[project_ind].values
         target_obs[f'{col}_color'] = source_obs[f'{col}_color']\
             .iloc[project_ind].values
 
-    # for level in ['division', 'structure', 'substructure']:
-    #     region_labels = transfer_region_labels(
-    #         list_ts[sample][0],
-    #         list_ts[sample][1],
-    #         list_ts[sample][3],
-    #         source_obs[f'parcellation_{level}'].values,
-    #         k=50, alpha=0.7)
-    #     target_obs[f'parcellation_{level}'] = region_labels
-    #     color_mapping = dict(zip(
-    #         source_obs[f'parcellation_{level}'],
-    #         source_obs[f'parcellation_{level}_color']))
-    #     target_obs[f'parcellation_{level}_color'] = \
-    #         pd.Series(region_labels).map(color_mapping).values
+    for level in ['division', 'structure', 'substructure']:
+        region_labels = transfer_region_labels(
+            coords_target=target_obs[['x_final', 'y_final']].values,
+            coords_source=source_obs[['x', 'y']].values,
+            source_region_labels=source_obs[f'parcellation_{level}'].values,
+            k=10)
+        target_obs[f'parcellation_{level}'] = region_labels
+        color_mapping = dict(zip(
+            source_obs[f'parcellation_{level}'],
+            source_obs[f'parcellation_{level}_color']))
+        target_obs[f'parcellation_{level}_color'] = \
+            pd.Series(region_labels).map(color_mapping).values
 
     target_obs['ref_cell_id'] = source_obs.index[project_ind]
     target_obs['cosine_knn_weight'] = list_ts[sample][1][:, 0]
@@ -830,21 +670,44 @@ for sample, (source_sample, target_sample) in source_target_list.items():
     new_obs.append(target_obs.set_index(target_index))
 
 new_obs = pd.concat(new_obs)
-adata_comb_i = adata_comb.copy()
-for col in new_obs.columns:
-    if col not in adata_comb_i.obs.columns:
-        adata_comb_i.obs[col] = pd.NA
-adata_comb_i.obs.loc[new_obs.index] = new_obs
+adata_comb.obs[new_obs.columns.difference(adata_comb.obs.columns)] = np.nan
+adata_comb.obs.loc[new_obs.index] = new_obs
 
-# # save
-# adata_comb.write(
-#     f'{working_dir}/output/merfish/data/adata_comb_cast_project.h5ad')
+# save
+adata_comb.write(
+    f'{working_dir}/output/merfish/data/adata_comb_cast_project.h5ad')
 
+# final query data
+adata_query = ad.read_h5ad(
+    f'{working_dir}/output/merfish/data/adata_query.h5ad')
+adata_query_i = adata_comb[adata_comb.obs['source'] == 'merfish'].copy()
+adata_query = adata_query[adata_query_i.obs_names]
 
-def create_comparison_plot(adata_comb_i, adata_comb, col, query_sample, 
+cols_to_keep = ['n_genes_by_counts', 'log1p_n_genes_by_counts', 'total_counts',
+                'log1p_total_counts', 'pct_counts_in_top_10_genes',
+                'pct_counts_in_top_20_genes', 'pct_counts_in_top_50_genes',
+                'pct_counts_in_top_100_genes', 'scDblFinder.sample', 
+                'scDblFinder.class', 'scDblFinder.score', 
+                'scDblFinder.weighted', 'scDblFinder.cxds_score']
+adata_query.obs = pd.concat([adata_query.obs[cols_to_keep], 
+                             adata_query_i.obs], axis=1)
+adata_query.X = adata_query.layers['counts']
+del adata_query.layers['counts']; del adata_query.uns
+adata_query.write(
+    f'{working_dir}/output/merfish/data/adata_query_final.h5ad')
+
+# subset reference data to projection sample 
+adata_ref = ad.read_h5ad(
+    f'{working_dir}/output/merfish/data/adata_ref.h5ad')
+adata_ref = adata_ref[adata_ref.obs['sample'] == 'C57BL6J-638850.47_R']
+adata_ref.write(
+    f'{working_dir}/output/merfish/data/adata_ref_final.h5ad')
+
+# plotting #####################################################################
+
+def create_comparison_plot(adata_comb, col, query_sample,
                            ref_sample, random_state=42):
-    
-    query_data = adata_comb_i.obs[adata_comb_i.obs['sample'] == query_sample]
+    query_data = adata_comb.obs[adata_comb.obs['sample'] == query_sample]
     query_cell = query_data.sample(1, random_state=random_state)
     ref_data = adata_comb.obs[adata_comb.obs['sample'] == ref_sample]
     selected_value = query_cell[col].values[0]
@@ -857,8 +720,8 @@ def create_comparison_plot(adata_comb_i, adata_comb, col, query_sample,
         ax.scatter(data[~mask][x], data[~mask][y], c='grey', s=1, alpha=0.1)
         ax.scatter(data[mask][x], data[mask][y], 
                    c=data[mask][col].map(color_map), s=1)
-        ax.set_title(f"{data['sample'].iloc[0]} (Cells: {len(data)})\n"
-                     f"{col}: {selected_value}")
+        ax.set_title(f'{data["sample"].iloc[0]} (Cells: {len(data)})\n'
+                     f'{col}: {selected_value}')
         ax.axis('off')
         ax.set_aspect('equal')
     
@@ -871,104 +734,78 @@ def create_comparison_plot(adata_comb_i, adata_comb, col, query_sample,
     plt.tight_layout()
     save_dir = f'{working_dir}/figures/merfish/comparison/'
     os.makedirs(save_dir, exist_ok=True)
-    plt.savefig(f'{save_dir}{selected_value}.png', dpi=200)
+    safe_filename = selected_value.replace('/', '_')
+    plt.savefig(f'{save_dir}{safe_filename}.png', dpi=200)
     plt.close(fig)
 
 create_comparison_plot(
-    adata_comb_i, adata_comb, col='subclass', 
-    query_sample='CTRL1_L', ref_sample='C57BL6J-638850.47_R',
-    random_state=17)
+    adata_comb, col='subclass', 
+    query_sample='CTRL3_R', ref_sample='C57BL6J-638850.47_R',
+    random_state=None)
 
+col = 'subclass'
 
+# Plot for CTRL3_R (merfish sample)
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(30, 15))
+plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'CTRL3_R']
+plot_df[col] = plot_df[col].astype('category').cat.remove_unused_categories()
+color_map = plot_df.drop_duplicates(col).set_index(col)[f'{col}_color'].to_dict()
 
-
-
-
-
-
-
-
-
-col = 'parcellation_substructure'
-plot_df = adata_comb_i.obs[adata_comb.obs['sample'] == 'CTRL1_L']
-plot_df[col] = plot_df[col].astype('category')\
-    .cat.remove_unused_categories()
-color_map = plot_df.drop_duplicates(col)\
-    .set_index(col)[f'{col}_color'].to_dict()
-plt.clf()
-plt.figure(figsize=((15, 15)))
-ax  = sns.scatterplot(
+sns.scatterplot(
     data=plot_df, x='x_final', y='y_final', linewidth=0,
-    hue=col, palette=color_map, s=10, legend=False)
-ax.set(xlabel=None, ylabel=None)
-sns.despine(bottom = True, left = True)
-plt.legend(fontsize=14, markerscale=3)
-plt.axis('equal')
-plt.xticks([])
-plt.yticks([])
-plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/tmp.png', dpi=200)
+    hue=col, palette=color_map, s=10, ax=ax1, legend=False)
+ax1.set(xlabel=None, ylabel=None, title='CTRL3_R')
+sns.despine(ax=ax1, bottom=True, left=True)
+ax1.axis('equal')
+ax1.set_xticks([])
+ax1.set_yticks([])
 
+# Plot for C57BL6J-638850.47_R
 plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'C57BL6J-638850.47_R']
 plot_df[col] = plot_df[col].cat.remove_unused_categories()
-color_map = plot_df.drop_duplicates(col)\
-    .set_index(col)[f'{col}_color'].to_dict()
-plt.clf()
-plt.figure(figsize=((15, 15)))
-ax  = sns.scatterplot(
+color_map = plot_df.drop_duplicates(col).set_index(col)[f'{col}_color'].to_dict()
+
+sns.scatterplot(
     data=plot_df, x='x', y='y', linewidth=0,
-    hue=col, palette=color_map, s=15, legend=False)
-ax.set(xlabel=None, ylabel=None)
-sns.despine(bottom = True, left = True)
-plt.legend(fontsize=9, markerscale=1)
-plt.axis('equal')
-plt.xticks([])
-plt.yticks([])
+    hue=col, palette=color_map, s=15, ax=ax2, legend=False)
+ax2.set(xlabel=None, ylabel=None, title='C57BL6J-638850.47_R')
+sns.despine(ax=ax2, bottom=True, left=True)
+ax2.axis('equal')
+ax2.set_xticks([])
+ax2.set_yticks([])
+
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/tmp2.png', dpi=200)
+plt.savefig(f'{working_dir}/figures/merfish/exemplar_{col}.png', 
+            dpi=200, bbox_inches='tight')
 
-################################################################################
+# Plot all merfish samples
+merfish_samples = adata_comb.obs[
+    adata_comb.obs['source'] == 'merfish']['sample'].unique()
+n_samples = len(merfish_samples)
+n_cols = 3
+n_rows = (n_samples + n_cols - 1) // n_cols
 
-'''
-**Affine parameters**
-- `iterations` - Iterations of the affine transformation.
-- `alpha_basis` - The coefficient for updating the affine transformation
-  parameter.
-- `dist_penalty1` - Distance penalty parameter in affine transformation. When
-  the distance of the query cell to the nearest neighbor in reference sample is
-  greater than a distance threshold (by default, average cell distance), CAST
-  Stack will add additional distance penalty. The initial cost function value of
-  these cells will be multiplied by the `dist_penalty1`. The value `0` indicates
-  no additional distance penalty.
-- `bleeding` - When the reference sample is larger than the query sample, for
-  efficient computation, only the region of the query sample with bleeding
-  distance will be considered when calculating the cost function.
-- `d_list` - CAST Stack will perform pre-location to find an initial alignment.
-  The value in the `d_list` will be multiplied by the query sample to calculate
-  the cost function. For example, 2 indicates the two-fold increase of the
-  coordinates.
-- `attention_params` - The attention mechanism to increase the penalty of the
-  cells. It is invalid when the `dist_penalty` = 0.
-    - `1st - attention_region` - The True/False index of all the cells of the
-      query sample or None.
-    - `2nd - double_penalty` - The `average cell distance / double_penalty` will
-      be used in distance penalty for the cells with attention.
-    - `3rd - penalty_inc_all` - The additional penalty for the attention cells.
-      The initial cost function value of these cells will be multiplied by
-      `penalty_inc_all`.
-    - `4th - penalty_inc_both` - The additional penalty for the cells with
-      distance penalty and attention. The initial cost function value of these
-      cells will be multiplied by `(penalty_inc_both/dist_penalty + 1)`.
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(10*n_cols, 10*n_rows))
+axes = axes.flatten()
 
-**FFD parameters**
+for i, sample in enumerate(merfish_samples):
+    plot_df = adata_comb.obs[adata_comb.obs['sample'] == sample]
+    plot_df[col] = plot_df[col].astype('category').cat.remove_unused_categories()
+    color_map = plot_df.drop_duplicates(col).set_index(col)[f'{col}_color'].to_dict()
 
-    - `dist_penalty2` - Distance penalty parameter in FFD. Refer to
-      `dist_penalty1`.
-    - `alpha_basis_bs` - The coefficient for updating the FFD parameter.
-    - `meshsize` - mesh size for the FFD.
-    - `iterations_bs` - Iterations of the FFD.
-    - `attention_params_bs` - The attention mechanism to increase the penalty of
-      the cells. Refer to `attention_params`.
-    - `mesh_weight` - The weight matrix for the mesh grid. The same size of the
-      mesh or None.
-'''
+    sns.scatterplot(
+        data=plot_df, x='x_final', y='y_final', linewidth=0,
+        hue=col, palette=color_map, s=5, ax=axes[i], legend=False)
+    axes[i].set(xlabel=None, ylabel=None, title=sample)
+    sns.despine(ax=axes[i], bottom=True, left=True)
+    axes[i].axis('equal')
+    axes[i].set_xticks([])
+    axes[i].set_yticks([])
+
+for i in range(n_samples, len(axes)):
+    fig.delaxes(axes[i])
+
+plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/merfish/all_samples_{col}.png', 
+            dpi=200, bbox_inches='tight')
+
