@@ -299,7 +299,7 @@ adata_ref = ad.read_h5ad(
 # combine, keepingly only the same metadat columns and genes
 sample_names = sorted(set(adata_query.obs['sample'].unique()) |
                       set(adata_ref.obs['sample'].unique()))
-# CRUICIAL
+# CRUCIAL
 adata_comb = ad.concat([adata_query, adata_ref], axis=0, merge='same')
 adata_comb.obs['sample'] = pd.Categorical(
     adata_comb.obs['sample'], categories=sample_names, ordered=True)
