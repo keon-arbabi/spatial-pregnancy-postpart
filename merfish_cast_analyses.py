@@ -705,6 +705,9 @@ adata_ref.write(
 
 # plotting #####################################################################
 
+adata_comb = ad.read_h5ad(
+    f'{working_dir}/output/merfish/data/adata_comb_cast_project.h5ad')
+
 def create_comparison_plot(adata_comb, col, query_sample,
                            ref_sample, random_state=42):
     query_data = adata_comb.obs[adata_comb.obs['sample'] == query_sample]
@@ -743,7 +746,7 @@ create_comparison_plot(
     query_sample='CTRL3_R', ref_sample='C57BL6J-638850.47_R',
     random_state=None)
 
-col = 'subclass'
+col = 'parcellation_division'
 
 # Plot for CTRL3_R (merfish sample)
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(30, 15))
@@ -782,10 +785,10 @@ plt.savefig(f'{working_dir}/figures/merfish/exemplar_{col}.png',
 merfish_samples = adata_comb.obs[
     adata_comb.obs['source'] == 'merfish']['sample'].unique()
 n_samples = len(merfish_samples)
-n_cols = 3
+n_cols = 6
 n_rows = (n_samples + n_cols - 1) // n_cols
 
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(10*n_cols, 10*n_rows))
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 6*n_rows))
 axes = axes.flatten()
 
 for i, sample in enumerate(merfish_samples):
@@ -795,7 +798,7 @@ for i, sample in enumerate(merfish_samples):
 
     sns.scatterplot(
         data=plot_df, x='x_final', y='y_final', linewidth=0,
-        hue=col, palette=color_map, s=5, ax=axes[i], legend=False)
+        hue=col, palette=color_map, s=2, ax=axes[i], legend=False)
     axes[i].set(xlabel=None, ylabel=None, title=sample)
     sns.despine(ax=axes[i], bottom=True, left=True)
     axes[i].axis('equal')
