@@ -2,15 +2,17 @@ library(Seurat)
 library(anndata)
 library(Matrix)
 
-data_dir = "../../spatial/Kalish/pregnancy-postpart/CURIO/raw-rds"
-output_dir = "../../spatial/Kalish/pregnancy-postpart/CURIO/raw-h5ad"
+data_dir = "../../spatial/Kalish/pregnancy-postpart/curio/raw-rds"
+output_dir = "../../spatial/Kalish/pregnancy-postpart/curio/raw-h5ad"
 work_dir = "projects/def-wainberg/karbabi/spatial-pregnancy-postpart"
 setwd(work_dir)
 dir.create(output_dir, recursive = TRUE)
 
 files = list.files(data_dir)
+files = files[!grepl('broken', files)]
+
 for (file in files) {
-    sample = sub("^([^_]+)_([0-9]+).*", "\\1_\\2", file)
+    sample = sub('^([^_]+_[0-9]+(?:_[0-9]+)?).*', '\\1', file)
     sobj = readRDS(paste(data_dir, file, sep='/'))
     counts = sobj@assays[["RNA"]]@counts
     metadata = sobj@meta.data

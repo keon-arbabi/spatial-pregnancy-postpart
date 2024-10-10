@@ -201,7 +201,7 @@ adata_query.write(f'{working_dir}/output/merfish/data/adata_query.h5ad')
 
 ######################################
 
-# load reference, output from `merfish_zhuang_prep_atlas.py`
+# load reference, output from `merfish_zeng_prep_atlas.py`
 ref_dir = 'projects/def-wainberg/single-cell/ABC'
 working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
 
