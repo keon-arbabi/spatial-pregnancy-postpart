@@ -1,9 +1,15 @@
-import os, warnings
-import numpy as np, pandas as pd, anndata as ad
-import matplotlib.pyplot as plt, seaborn as sns
-warnings.filterwarnings('ignore')
-
 # Prep raw images ##############################################################
+
+import os
+import warnings
+import numpy as np
+import pandas as pd
+import anndata as ad
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.cluster import DBSCAN
+
+warnings.filterwarnings('ignore')
 
 # set paths 
 data_dir = 'projects/def-wainberg/spatial/Kalish/pregnancy-postpart/curio'
@@ -54,7 +60,6 @@ axes2 = axes2.flatten()
 ax_index = 0
 
 for sample in sample_names:
-    from sklearn.cluster import DBSCAN
     adata = ad.read_h5ad(f'{data_dir}/raw-h5ad/{sample}.h5ad')
     coords = adata.obs[['SPATIAL_1', 'SPATIAL_2']]
     if sample in ['Virg_1_1', 'Virg_1_2']:
@@ -97,24 +102,29 @@ fig2.tight_layout()
 fig2.savefig(f'{working_dir}/figures/curio/crop_and_rotate.png',
              dpi=200, bbox_inches='tight', pad_inches=0)
 
-# CAST_MARK ####################################################################
+# Preprocess query ##############################################################
 
-import sys, os, torch, CAST, scanorama, warnings
-import numpy as np, pandas as pd, anndata as ad, scanpy as sc
-import matplotlib.pyplot as plt, seaborn as sns
+import sys
+import os
+import numpy as np
+import pandas as pd
+import anndata as ad
+import scanpy as sc
+import matplotlib.pyplot as plt
+import seaborn as sns
 from ryp import r, to_py
+import warnings
+
 warnings.filterwarnings('ignore')
 
 sys.path.append('/home/karbabi/projects/def-wainberg/karbabi/utils')
 from single_cell import SingleCell
+from ryp import r, to_py
 
 # set paths
 data_dir = 'projects/def-wainberg/spatial'
 working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
-os.makedirs(f'{working_dir}/output/curio/CAST-MARK', exist_ok=True)
 os.makedirs(f'{working_dir}/output/curio/data', exist_ok=True)
-
-######################################
 
 # load rotated and cropped query anndata objects 
 query_dir = f'{data_dir}/Kalish/pregnancy-postpart/curio/rotate-split-raw'
@@ -250,35 +260,52 @@ sc.pp.log1p(adata_query, base=2)
 # save
 adata_query.write(f'{working_dir}/output/data/adata_query_curio.h5ad')
 
-######################################
+# CAST_MARK ####################################################################
 
-# load preprocessed anndata objects 
+import anndata as ad
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import scanorama
+import torch
+import os
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.cluster import KMeans
+import CAST
+from CAST.models.model_GCNII import Args
+
+working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
+os.makedirs(f'{working_dir}/output/curio/CAST-MARK', exist_ok=True)
+
+# load query data
 adata_query = ad.read_h5ad(
     f'{working_dir}/output/data/adata_query_curio.h5ad')
-# load reference created in `merfish_prep_atlases.py`
-adata_ref = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_ref_zeng.h5ad')
 
-# run scanorama batch correction 
+# load and preprocess reference data (raw counts)
+adata_ref = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_ref_zeng_raw.h5ad')
+# normalize 
+sc.pp.normalize_total(adata_ref)
+sc.pp.log1p(adata_ref, base=2)
+
+# batch correction
 adata_query_s, adata_ref_s = scanorama.correct_scanpy([adata_query, adata_ref])
 
-# combine, keeping only the same metadata columns and genes
+# combine data for CAST-MARK input
 adata_comb = ad.concat([adata_query, adata_ref], axis=0, merge='same')
 adata_comb = adata_comb[:, adata_comb.var_names.sort_values()]
-# keep scanorama corrected expression separate 
-adata_comb.layers['X_scanorama'] = \
-    ad.concat([adata_query_s, adata_ref_s], axis=0, merge='same').X.copy()
+adata_comb.layers['X_scanorama'] = ad.concat(
+    [adata_query_s, adata_ref_s], axis=0, merge='same').X.copy()
 
-# maintain cell, gene, and sample order  
-sample_names = sorted(
-    set(adata_query.obs['sample'].unique()) |
-    set(adata_ref.obs['sample'].unique()))
+# crucially, order by sample names
+sample_names = sorted(adata_comb.obs['sample'].unique())
 adata_comb.obs['sample'] = pd.Categorical(
     adata_comb.obs['sample'], categories=sample_names, ordered=True)
-adata_comb = adata_comb[adata_comb.obs.sort_values('sample').index]
-adata_comb = adata_comb.copy()
+adata_comb = adata_comb[
+    adata_comb.obs.sort_values('sample').index].copy()
 
-# get raw coordinates and corrected expression data for each sample
+# extract coords_raw and exp_dict for CAST-MARK
 coords_raw = {
     s: np.array(adata_comb.obs[['x', 'y']])[adata_comb.obs['sample']==s]
     for s in sample_names}
@@ -299,7 +326,7 @@ embed_dict = CAST.CAST_MARK(
         lr1=1e-3, # learning rate
         wd1=0, # weight decay
         lambd=1e-3, # lambda in the loss function, refer to online methods
-        n_layers=12, # number of GCNII layers, more layers mean a deeper model,
+        n_layers=9, # number of GCNII layers, more layers mean a deeper model,
                     # larger reception field, at cost of VRAM usage and time
         der=0.5, # edge dropout rate in CCA-SSG
         dfr=0.3, # feature dropout rate in CCA-SSG
@@ -308,21 +335,73 @@ embed_dict = CAST.CAST_MARK(
         encoder_dim=512 # encoder dimension, ignore if use_encoder is False
     )
 )
-# detach from gpu 
-embed_dict = {
-    k: v.cpu().detach() for k, v in embed_dict.items()}
+# detach from gpu and stack  
+embed_dict = {k: v.cpu().detach() for k, v in embed_dict.items()}
+embed_stacked = np.vstack([embed_dict[name].numpy() for name in sample_names])
 
-# save
+# Clustering and plotting
+plot_dir = f'{working_dir}/figures/curio/k_clusters'
+os.makedirs(plot_dir, exist_ok=True)
+
+def plot_slices(sample_names, coords_raw, cell_label, cluster_pl, n_clust):
+    num_plot = len(sample_names)
+    plot_row = int(np.ceil(num_plot / 5))
+    plt.figure(figsize=(30, 3.5 * plot_row))
+
+    cell_start_idx = 0
+    for j, sample in enumerate(sample_names):
+        plt.subplot(plot_row, 5, j+1)
+        coords = coords_raw[sample]
+        n_cells = coords.shape[0]
+        cell_type = cell_label[cell_start_idx:cell_start_idx + n_cells]
+        cell_start_idx += n_cells
+        size = np.log(1e4 / n_cells) + 3
+        plt.scatter(
+            coords[:, 0], coords[:, 1],
+            c=cell_type, cmap=plt.cm.colors.ListedColormap(cluster_pl),
+            s=size, edgecolors='none')
+        plt.title(f'{sample} (KMeans, k = {n_clust})', fontsize=20)
+        plt.axis('equal')
+        plt.xticks([])
+        plt.yticks([])
+    plt.tight_layout()
+    return plt.gcf()
+
+for n_clust in list(range(4, 20 + 1, 2)) + [30, 40]:
+    print(f'Clustering with k={n_clust}')
+    kmeans = KMeans(n_clusters=n_clust, random_state=0).fit(embed_stacked)
+    cell_label = kmeans.labels_
+    cluster_pl = sns.color_palette('Set3', n_clust)
+    
+    fig = plot_slices(sample_names, coords_raw, cell_label, cluster_pl, n_clust)
+    fig.savefig(f'{plot_dir}/all_samples_k{str(n_clust)}.png')
+    plt.close(fig)
+    
+    adata_comb.obs[f'k{n_clust}_cluster'] = cell_label
+    color_map = {k: color for k, color in enumerate(cluster_pl.as_hex())}
+    adata_comb.obs[f'k{n_clust}_cluster_colors'] = \
+        pd.Series(cell_label).map(color_map).tolist()
+
+# Save results
 torch.save(coords_raw, f'{working_dir}/output/curio/data/coords_raw.pt')
 torch.save(exp_dict, f'{working_dir}/output/curio/data/exp_dict.pt')
 torch.save(embed_dict, f'{working_dir}/output/curio/data/embed_dict.pt')
-adata_comb.write(f'{working_dir}/output/curio/data/adata_comb_cast_mark.h5ad')
+adata_comb.write_h5ad(f'{working_dir}/output/curio/data/adata_comb_cast_mark.h5ad')
 
 # CAST_STACK ###################################################################
 
-import numpy as np, pandas as pd, anndata as ad, scanpy as sc
-import sys, os, torch, CAST, warnings
-import matplotlib.pyplot as plt, seaborn as sns
+import numpy as np
+import pandas as pd
+import anndata as ad
+import scanpy as sc
+import sys
+import os
+import torch
+import CAST
+import warnings
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 warnings.filterwarnings('ignore')
 
 # set paths 
@@ -335,16 +414,12 @@ adata_comb = ad.read_h5ad(
 coords_raw = torch.load(f'{working_dir}/output/curio/data/coords_raw.pt')
 embed_dict = torch.load(f'{working_dir}/output/curio/data/embed_dict.pt')
 
+# query-reference pairs
+# setting the same reference  for each query is sufficient 
 query_reference_list = {}
 for key in coords_raw:
     if not key.startswith('C57BL6J-638850'):
         query_reference_list[key] = [key, 'C57BL6J-638850.47_R']
-
-selected_samples = ['PP_1_1_L', 'PP_1_2_L', 'Preg_1_1_L', 'Preg_2_1_R']
-query_reference_list = {
-    k: v for k, v in query_reference_list.items() if k in selected_samples
-}
-coords_final = torch.load(f'{working_dir}/output/curio/data/coords_final.pt')
 
 # run cast-stack, parameters modified for default are commented 
 coords_final = {}
@@ -354,16 +429,16 @@ for sample in sorted(query_reference_list.keys()):
         gpu = 0 if torch.cuda.is_available() else -1, 
         diff_step = 5,
         #### Affine parameters
-        iterations=20, # 500
-        dist_penalty1=0.3, # 0
-        bleeding=300, # 500
+        iterations=30, # 500
+        dist_penalty1=0.8, # 0
+        bleeding=500, 
         d_list=[3,2,1,1/2,1/3],
         attention_params=[None,3,1,0],
         #### FFD parameters                                    
-        dist_penalty2=[0.3],
+        dist_penalty2=[0.8], # 0
         alpha_basis_bs=[500],
         meshsize=[8],
-        iterations_bs=[80], # 400 # 10
+        iterations_bs=[50], # 400
         attention_params_bs=[[None,3,1,0]],
         mesh_weight = [None])
     params_dist.alpha_basis = torch.Tensor(
@@ -383,17 +458,20 @@ coords_df = pd.DataFrame(
     coords_stack, columns=['x_final', 'y_final'], index=cell_index)
 adata_comb.obs = adata_comb.obs.join(coords_df)
 
-# plot all samples
-n_cols = 6; n_rows = -(-len(sample_names) // n_cols)  
+# plot final coords for all samples
+n_cols = 5
+n_rows = (len(sample_names) + n_cols - 1) // n_cols
 fig, axes = plt.subplots(n_rows, n_cols, figsize=(30, 5*n_rows))
 axes = axes.flatten()
 for ax, sample in zip(axes, sample_names):
     plot_df = adata_comb.obs[adata_comb.obs['sample'] == sample]
     x, y = ('x', 'y') if plot_df['source'].iloc[0] == 'Zeng-ABCA-Reference' \
         else ('x_final', 'y_final')
-    ax.scatter(plot_df[x], plot_df[y], c='black', s=1)
+    ax.scatter(plot_df[x], plot_df[y], c=plot_df['k10_cluster_colors'], s=2)
     ax.set_title(sample)
-    ax.axis('off')
+    ax.axis('equal')
+    ax.set_xticks([])
+    ax.set_yticks([])
 for ax in axes[len(sample_names):]:
     fig.delaxes(ax)
 plt.tight_layout()
@@ -405,9 +483,18 @@ adata_comb.write(f'{working_dir}/output/curio/data/adata_comb_cast_stack.h5ad')
 
 # CAST_PROJECT #################################################################
 
-import numpy as np, pandas as pd, anndata as ad, scanpy as sc
-import sys, os, torch, pickle, warnings, gc
-import matplotlib.pyplot as plt, seaborn as sns
+import numpy as np
+import pandas as pd
+import anndata as ad
+import scanpy as sc
+import sys
+import os
+import torch
+import pickle
+import warnings
+import gc
+import matplotlib.pyplot as plt
+import seaborn as sns
 warnings.filterwarnings('ignore')
 
 # modified CAST_Projection.py 
@@ -417,22 +504,16 @@ print(CAST.__file__)
 
 # set paths 
 working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
-# os.makedirs(f'{working_dir}/output/curio/CAST-PROJECT', exist_ok=True)
+os.makedirs(f'{working_dir}/output/curio/CAST-PROJECT', exist_ok=True)
 
 # load data
 adata_comb = ad.read_h5ad(
     f'{working_dir}/output/curio/data/adata_comb_cast_stack.h5ad')
-# scale data separately for each source 
-sc.pp.scale(adata_comb, zero_center = True, 
-            mask_obs=(adata_comb.obs['source'] == 'Zeng-ABCA-Reference'))
-sc.pp.scale(adata_comb, zero_center = True, 
-            mask_obs=(adata_comb.obs['source'] == 'curio'))
-adata_comb.layers['log1p_norm_scaled'] = adata_comb.X.copy()
 
 # add batch, we will process all reference samples together with each query 
 adata_comb.obs['batch'] = adata_comb.obs['sample'].astype(str)
-adata_comb.obs.loc[adata_comb.obs['source'] == 'Zeng-ABCA-Reference', 
-                   'batch'] = 'Zeng-ABCA-Reference'
+adata_comb.obs.loc[adata_comb.obs['source'] == 
+    'Zeng-ABCA-Reference', 'batch'] = 'Zeng-ABCA-Reference'
 adata_comb.obs['batch'] = adata_comb.obs['batch'].astype('category')
 
 # set parameters 
@@ -474,7 +555,7 @@ for _, (source_sample, target_sample) in source_target_list.items():
         # use the correct harmony function from cast
         adata_subset = CAST.Harmony_integration(
             sdata_inte=adata_subset,
-            scaled_layer='log1p_norm_scaled',
+            scaled_layer='X_scanorama',
             use_highly_variable_t=False,
             batch_key=batch_key,
             n_components=50,
@@ -485,7 +566,7 @@ for _, (source_sample, target_sample) in source_target_list.items():
             source_sample_ctype_col=level,
             output_path=output_dir_t,
             ifplot=False,
-            ifcombat=True)
+            ifcombat=False)
         # save harmony-adjusted data to disk
         adata_subset.write_h5ad(harmony_file)
     
@@ -502,8 +583,8 @@ for _, (source_sample, target_sample) in source_target_list.items():
             adata_subset[adata_subset.obs[batch_key] == target_sample,:]
                 .obs.loc[:,['x_final','y_final']]),
         k2=1,
-        scaled_layer='log1p_norm_scaled',
-        raw_layer='log1p_norm_scaled',
+        scaled_layer='X_scanorama',
+        raw_layer='X_scanorama',
         batch_key=batch_key,
         use_highly_variable_t=False,
         ifplot=False,
@@ -575,38 +656,41 @@ adata_query_i = adata_comb[adata_comb.obs['source'] == 'curio'].copy()
 adata_query = adata_query[adata_query_i.obs_names]
 
 cols_to_keep = [
-    'SPATIAL_1', 'SPATIAL_2', 'n_genes_by_counts', 
-    'log1p_n_genes_by_counts', 'total_counts', 'log1p_total_counts', 
-    'pct_counts_in_top_10_genes', 'pct_counts_in_top_20_genes', 
-    'pct_counts_in_top_50_genes', 'pct_counts_in_top_100_genes', 
-    'scDblFinder.sample', 'scDblFinder.class', 'scDblFinder.score', 
-    'scDblFinder.weighted','scDblFinder.cxds_score', 'total_counts_mt', 
+    'SPATIAL_1', 'SPATIAL_2', 'n_genes_by_counts',
+    'log1p_n_genes_by_counts', 'total_counts', 'log1p_total_counts',
+    'pct_counts_in_top_10_genes', 'pct_counts_in_top_20_genes',
+    'pct_counts_in_top_50_genes', 'pct_counts_in_top_100_genes',
+    'scDblFinder.sample', 'scDblFinder.class', 'scDblFinder.score',
+    'scDblFinder.weighted', 'scDblFinder.cxds_score', 'total_counts_mt',
     'log1p_total_counts_mt', 'pct_counts_mt'
 ]
 adata_query.obs = pd.concat([
     adata_query_i.obs, adata_query.obs[cols_to_keep]], axis=1)
 adata_query.X = adata_query.layers['counts']
-del adata_query.layers['counts']; del adata_query.uns
+
 # save
+del adata_query.layers['counts']; del adata_query.uns
 adata_query.write(f'{working_dir}/output/data/adata_query_curio_final.h5ad')
 
 # save the reference obs
-adata_ref_obs= adata_comb[
-    adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
-adata_ref_obs.to_csv(
-    f'{working_dir}/output/data/adata_ref_obs_final.csv')
+adata_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference']
+del adata_ref.layers['X_scanorama']
+adata_ref.write(f'{working_dir}/output/data/adata_ref_final_curio.h5ad')
 
 # plotting #####################################################################
 
-import os, numpy as np, pandas as pd, anndata as ad
+import os
+import numpy as np
+import pandas as pd
+import anndata as ad
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
 
 # load data 
-ref_obs = pd.read_csv(
-    f'{working_dir}/output/data/adata_ref_obs_final.csv', index_col=0)
+ref_obs = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_ref_final.h5ad').obs
 query_obs = ad.read_h5ad(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad').obs
 query_obs_mmc = pd.read_csv(
@@ -666,15 +750,17 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     plt.close(fig)
 
 col = 'subclass'
-output_dir = f'{working_dir}/figures/curio/spatial_cell_types_{col}_mmc'
+query_obs_to_use = query_obs
+output_dir = f'{working_dir}/figures/curio/spatial_cell_types_{col}_' \
+             f'{"mmc" if query_obs_to_use is query_obs_mmc else "curio"}'
 os.makedirs(output_dir, exist_ok=True)
-cell_types = pd.concat([ref_obs[col], query_obs_mmc[col]]).unique()
+cell_types = pd.concat([ref_obs[col], query_obs_to_use[col]]).unique()
 
 for cell_type in cell_types:
     if (ref_obs[col].value_counts().get(cell_type, 0) > 0 or 
-        query_obs_mmc[col].value_counts().get(cell_type, 0) > 0):
+        query_obs_to_use[col].value_counts().get(cell_type, 0) > 0):
         create_multi_sample_plot(
-            ref_obs, query_obs_mmc, col, cell_type, output_dir)
+            ref_obs, query_obs_to_use, col, cell_type, output_dir)
 
 
 def confusion_matrix_plot(df_true, df_pred, true_label_column,
@@ -720,10 +806,13 @@ confusion_matrix_plot(
     f'{working_dir}/figures/curio/confusion_matrix_subclass.png')
 
 
+adata_comb = ad.read_h5ad(
+    f'{working_dir}/output/curio/data/adata_comb_cast_project.h5ad')
+
 sample_data = adata_comb.obs[
     adata_comb.obs['source'] == 'curio']['sample'].unique()[0]
 plot_df = adata_comb.obs[adata_comb.obs['sample'] == sample_data]
-fig, ax = plt.subplots(figsize=(10, 10))
+fig, ax = plt.subplots(figsize=(8, 8))
 ax.scatter(plot_df['x_final'], plot_df['y_final'], c='grey', s=1)
 random_point = plot_df.sample(n=1)
 ax.scatter(random_point['x_final'], random_point['y_final'], c='red', s=10)
@@ -732,7 +821,7 @@ radius = 0.6133848801255226  # ave_dist_fold=5
 radius = 0.24535395205020905  # ave_dist_fold=2
 circle = Circle((random_point['x_final'].values[0], 
                  random_point['y_final'].values[0]), 
-                radius, fill=False, color='blue')
+                radius, fill=False, color='red')
 ax.add_artist(circle)
 ax.set_aspect('equal')
 ax.axis('off')
@@ -741,17 +830,17 @@ plt.savefig(f'{working_dir}/figures/curio/radius.png', dpi=200)
 plt.close()
 
 
-col = 'parcellation_structure'
-
+col = 'class'
+selected_sample = 'PP_2_2_L'
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 9))
-plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'PP_2_2_L']
+plot_df = adata_comb.obs[adata_comb.obs['sample'] == selected_sample]
 plot_df[col] = plot_df[col].astype('category').cat.remove_unused_categories()
 color_map = plot_df.drop_duplicates(col).set_index(col)[f'{col}_color'].to_dict()
 
 sns.scatterplot(
     data=plot_df, x='x_final', y='y_final', linewidth=0,
     hue=col, palette=color_map, s=35, ax=ax1, legend=False)
-ax1.set(xlabel=None, ylabel=None, title='PP_2_2_L')
+ax1.set(xlabel=None, ylabel=None, title=selected_sample)
 sns.despine(ax=ax1, bottom=True, left=True)
 ax1.axis('equal')
 ax1.set_xticks([])
@@ -763,7 +852,7 @@ color_map = plot_df.drop_duplicates(col).set_index(col)[f'{col}_color'].to_dict(
 
 sns.scatterplot(
     data=plot_df, x='x', y='y', linewidth=0,
-    hue=col, palette=color_map, s=10, ax=ax2, legend=False)
+    hue=col, palette=color_map, s=10, ax=ax2, legend=True)
 ax2.set(xlabel=None, ylabel=None, title='C57BL6J-638850.47_R')
 sns.despine(ax=ax2, bottom=True, left=True)
 ax2.axis('equal')
@@ -775,32 +864,58 @@ plt.savefig(f'{working_dir}/figures/curio/exemplar_{col}.png',
             dpi=200, bbox_inches='tight')
 
 
-curio_samples = adata_comb.obs[
-    adata_comb.obs['source'] == 'curio']['sample'].unique()
-n_samples = len(curio_samples)
-n_cols = 6
-n_rows = (n_samples + n_cols - 1) // n_cols
+selected_sample = 'PP_1_1_L'
+ref_data = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference']
+sample_data = adata_comb[adata_comb.obs['sample'] == selected_sample]
 
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 6*n_rows))
+fig, axs = plt.subplots(1, 4, figsize=(18, 6))
+axs = axs.flatten()
+for idx, ref_sample in enumerate(ref_data.obs['sample'].unique()):
+    ref_sample_data = ref_data[ref_data.obs['sample'] == ref_sample]
+    sns.scatterplot(data=ref_sample_data.obs, x='x', y='y', 
+                    color='lightgray', s=1, ax=axs[idx])
+    sns.scatterplot(data=sample_data.obs, x='x_final', y='y_final', 
+                    color='red', s=3, ax=axs[idx])
+    axs[idx].set_title(f'{ref_sample}')
+    axs[idx].axis('equal')
+    axs[idx].set_xticks([])
+    axs[idx].set_yticks([])
+    axs[idx].set_xlabel('')
+    axs[idx].set_ylabel('')
+plt.suptitle(f'{selected_sample} overlaid on reference samples', fontsize=16)
+plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/curio/{selected_sample}_overlay.png', dpi=300)
+plt.close()
+
+
+col = 'cosine_knn_cdist'
+samples = query_obs['sample'].unique()
+n_cols, n_rows = 6, (len(samples) + 5) // 6
+
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
 axes = axes.flatten()
-for i, sample in enumerate(curio_samples):
-    plot_df = adata_comb.obs[adata_comb.obs['sample'] == sample]
-    plot_df[col] = plot_df[col].astype('category').cat.remove_unused_categories()
-    color_map = plot_df.drop_duplicates(col).set_index(col)[f'{col}_color'].to_dict()
 
-    sns.scatterplot(
-        data=plot_df, x='x_final', y='y_final', linewidth=0,
-        hue=col, palette=color_map, s=2, ax=axes[i], legend=False)
-    axes[i].set(xlabel=None, ylabel=None, title=sample)
+is_categorical = query_obs[col].dtype.name in ['category', 'object']
+vmin, vmax = (None, None) if is_categorical else (
+    query_obs[col].min(), query_obs[col].max())
+palette = (query_obs.drop_duplicates(col).set_index(col)[f'{col}_color']
+           .to_dict() if is_categorical else 'viridis')
+for i, sample in enumerate(samples):
+    plot_df = query_obs[query_obs['sample'] == sample]
+    axes[i].scatter(plot_df['x_final'], plot_df['y_final'], c=plot_df[col],
+                    s=8, cmap=palette, vmin=vmin, vmax=vmax)
+    axes[i].set(xlabel=None, ylabel=None, title=sample, xticks=[], yticks=[])
     sns.despine(ax=axes[i], bottom=True, left=True)
     axes[i].axis('equal')
-    axes[i].set_xticks([])
-    axes[i].set_yticks([])
-for i in range(n_samples, len(axes)):
-    fig.delaxes(axes[i])
-
+for ax in axes[len(samples):]:
+    fig.delaxes(ax)
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/curio/all_samples_{col}.png', 
+if not is_categorical:
+    plt.colorbar(plt.cm.ScalarMappable(
+        cmap=palette, norm=plt.Normalize(vmin, vmax)),
+        ax=axes, label=col, aspect=40)
+
+plt.savefig(f'{working_dir}/figures/curio/all_samples_{col}.png',
             dpi=200, bbox_inches='tight')
 
 # DELTA_ANALYSES ###############################################################

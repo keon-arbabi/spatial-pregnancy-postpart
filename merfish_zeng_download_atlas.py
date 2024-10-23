@@ -58,7 +58,8 @@ parcellation_annotation = abc_cache.get_metadata_dataframe(
     directory='Allen-CCF-2020',
     file_name='parcellation_to_parcellation_term_membership_acronym')
 parcellation_annotation.set_index('parcellation_index', inplace=True)
-parcellation_annotation.columns = ['parcellation_%s'% x for x in  parcellation_annotation.columns]
+parcellation_annotation.columns = ['parcellation_%s'% x for x in  
+                                   parcellation_annotation.columns]
 
 parcellation_color = abc_cache.get_metadata_dataframe(
     directory='Allen-CCF-2020',
@@ -73,7 +74,8 @@ cell_joined = cell_joined.join(parcellation_color, on='parcellation_index')
 cell_joined.to_csv(
     f'projects/def-wainberg/single-cell/ABC/Zeng/cells_joined.csv')
 
-# imputed_h5ad_path = abc_cache.get_data_path(
-#     'MERFISH-C57BL6J-638850-imputed', 
-#     'C57BL6J-638850-imputed/log2')
+imputed_h5ad_path = abc_cache.get_data_path(
+    'MERFISH-C57BL6J-638850', 
+    'C57BL6J-638850/raw')
+# 'C57BL6J-638850-imputed/log2')
 
