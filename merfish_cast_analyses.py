@@ -248,13 +248,9 @@ os.makedirs(f'{working_dir}/output/merfish/CAST-MARK', exist_ok=True)
 # load query data
 adata_query = ad.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish.h5ad')
-
-# load and preprocess reference data (raw counts)
+# load reference data (imputed)
 adata_ref = ad.read_h5ad(
     f'{working_dir}/output/data/adata_ref_zeng_imputed.h5ad')
-# normalize 
-sc.pp.normalize_total(adata_ref)
-sc.pp.log1p(adata_ref, base=2)
 
 # batch correction
 adata_query_s, adata_ref_s = scanorama.correct_scanpy([adata_query, adata_ref])
@@ -611,7 +607,7 @@ for _, (source_sample, target_sample) in source_target_list.items():
         umap_feature='X_umap',
         pc_feature='X_pca_harmony',
         integration_strategy=None, 
-        ave_dist_fold=2,
+        ave_dist_fold=10,
         alignment_shift_adjustment=0,
         color_dict=color_dict,
         adjust_shift=False,
@@ -621,8 +617,8 @@ for _, (source_sample, target_sample) in source_target_list.items():
     print(list_ts[target_sample])
     del adata_subset; gc.collect()
 
-with open(f'{working_dir}/output/merfish/data/list_ts.pickle', 'wb') as f:
-    pickle.dump(list_ts, f)
+# with open(f'{working_dir}/output/merfish/data/list_ts.pickle', 'wb') as f:
+#     pickle.dump(list_ts, f)
     
 with open(f'{working_dir}/output/merfish/data/list_ts.pickle', 'rb') as f:
     list_ts = pickle.load(f)
@@ -674,13 +670,11 @@ adata_query_i = adata_comb[adata_comb.obs['source'] == 'merfish'].copy()
 adata_query = adata_query[adata_query_i.obs_names]
 
 cols_to_keep = [
-    'SPATIAL_1', 'SPATIAL_2', 'n_genes_by_counts',
-    'log1p_n_genes_by_counts', 'total_counts', 'log1p_total_counts',
-    'pct_counts_in_top_10_genes', 'pct_counts_in_top_20_genes',
-    'pct_counts_in_top_50_genes', 'pct_counts_in_top_100_genes',
-    'scDblFinder.sample', 'scDblFinder.class', 'scDblFinder.score',
-    'scDblFinder.weighted', 'scDblFinder.cxds_score', 'total_counts_mt',
-    'log1p_total_counts_mt', 'pct_counts_mt'
+    'volume', 'center_x', 'center_y', 'BarcodeCountOrig', 'BarcodeCountNor',
+    'scDblFinder.sample', 'scDblFinder.class', 'scDblFinder.score', 
+    'scDblFinder.weighted', 'scDblFinder.cxds_score', 'n_genes_by_counts', 
+    'log1p_n_genes_by_counts', 'total_counts', 'log1p_total_counts', 
+    'pct_counts_in_top_20_genes', 'outlier', 'doublet_outlier'
 ]
 adata_query.obs = pd.concat([
     adata_query_i.obs, adata_query.obs[cols_to_keep]], axis=1)
@@ -708,24 +702,9 @@ working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
 
 # load data 
 ref_obs = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_ref_final.h5ad').obs
+    f'{working_dir}/output/data/adata_ref_final_merfish.h5ad').obs
 query_obs = ad.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish_final.h5ad').obs
-query_obs_mmc = pd.read_csv(
-    f'{working_dir}/output/merfish/data/merfish_mmc_corr_annotations.csv',
-    index_col=0)
-
-categories = ['class', 'subclass', 'supertype', 'cluster']
-color_maps = {}
-for cat in categories:
-    unique_categories = ref_obs[cat].unique()
-    unique_colors = ref_obs[f'{cat}_color'].unique()
-    color_maps[cat] = dict(zip(unique_categories, unique_colors))
-for cat in categories:
-    query_obs_mmc[f'{cat}_color'] = query_obs_mmc[cat].map(color_maps[cat])
-query_obs_mmc['sample'] = query_obs['sample']
-query_obs_mmc['x_final'] = query_obs['x_final']
-query_obs_mmc['y_final'] = query_obs['y_final']
 
 def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     ref_samples = ref_obs['sample'].unique()
@@ -747,11 +726,11 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
             # Plot background cells
             ax.scatter(
                 plot_df[~mask][coord_cols[0]], plot_df[~mask][coord_cols[1]], 
-                c='grey', s=1 if obs is ref_obs else 2, alpha=0.1)
+                c='grey', s=1, alpha=0.1)
             # Plot cells of interest with individual colors
             ax.scatter(
                 plot_df[mask][coord_cols[0]], plot_df[mask][coord_cols[1]], 
-                c=plot_df[mask][f'{col}_color'], s=1 if obs is ref_obs else 6)
+                c=plot_df[mask][f'{col}_color'], s=1 if obs is ref_obs else 3)
         else:
             ax.text(0.5, 0.5, 'no cells of this type', ha='center', 
                     va='center', transform=ax.transAxes)
@@ -768,14 +747,11 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     plt.close(fig)
 
 col = 'subclass'
-query_obs_to_use = query_obs
-output_dir = f'{working_dir}/figures/merfish/spatial_cell_types_{col}_' \
-             f'{"mmc" if query_obs_to_use is query_obs_mmc else "merfish"}'
+output_dir = f'{working_dir}/figures/merfish/spatial_cell_types_{col}_merfish'
 os.makedirs(output_dir, exist_ok=True)
-cell_types = pd.concat([ref_obs[col], query_obs_to_use[col]]).unique()
+cell_types = pd.concat([ref_obs[col], query_obs[col]]).unique()
 
 for cell_type in cell_types:
     if (ref_obs[col].value_counts().get(cell_type, 0) > 0 or 
-        query_obs_to_use[col].value_counts().get(cell_type, 0) > 0):
-        create_multi_sample_plot(
-            ref_obs, query_obs_to_use, col, cell_type, output_dir)
+        query_obs[col].value_counts().get(cell_type, 0) > 0):
+        create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir)
