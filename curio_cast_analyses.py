@@ -672,10 +672,13 @@ adata_query.X = adata_query.layers['counts']
 del adata_query.layers['counts']; del adata_query.uns
 adata_query.write(f'{working_dir}/output/data/adata_query_curio_final.h5ad')
 
-# save the reference obs
+# save the reference anndata
 adata_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference']
 del adata_ref.layers['X_scanorama']
-adata_ref.write(f'{working_dir}/output/data/adata_ref_final_curio.h5ad')
+adata_ref.write(f'{working_dir}/output/data/adata_ref_final.h5ad')
+# and reference obs
+adata_ref_obs = adata_ref.obs
+adata_ref_obs.to_csv(f'{working_dir}/output/data/adata_ref_final_curio_obs.csv')
 
 # plotting #####################################################################
 

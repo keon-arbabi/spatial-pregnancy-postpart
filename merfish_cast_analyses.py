@@ -686,8 +686,9 @@ adata_query.write(f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 
 # save the reference obs
 adata_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference']
-del adata_ref.layers['X_scanorama']
-adata_ref.write(f'{working_dir}/output/data/adata_ref_final_merfish.h5ad')
+adata_ref_obs = adata_ref.obs
+adata_ref_obs.to_csv(
+    f'{working_dir}/output/data/adata_ref_final_merfish_obs.csv')
 
 # plotting #####################################################################
 
