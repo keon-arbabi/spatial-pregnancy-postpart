@@ -33,17 +33,19 @@ def rotate_and_crop(points, angle, x_min=None, x_max=None, mirror_y=False):
 # rotation and cropping parameters for each sample
 sample_names = [
     'PP_1_1', 'PP_1_2', 'PP_2_1', 'PP_2_2', 
-    'Preg_1_1', 'Preg_1_2', 'Preg_2_1', 'Preg_2_2',
+    'Preg_1_1', 'Preg_1_2', 'Preg_2_1', 'Preg_2_2', 'Preg_3_1', 'Preg_3_2',
     'Virg_1_1', 'Virg_1_2', 'Virg_2_1', 'Virg_3_1', 'Virg_3_2'] 
 params = {
-    'PP_1_1': {'L': (-110, -7500), 'R': (-110, -8300)},
-    'PP_1_2': {'L': (-110, -7500), 'R': (-110, -8300)},
+    'PP_1_1': {'L': (-110, -7500), 'R': (-110, -8100)},
+    'PP_1_2': {'L': (-110, -7500), 'R': (-110, -8100)},
     'PP_2_1': {'L': (90, 6600), 'R': (90, 5500)},
     'PP_2_2': {'L': (90, 6600), 'R': (90, 5500)},
     'Preg_1_1': {'L': (180, -6200), 'R': (180, -7200)}, 
     'Preg_1_2': {'L': (180, -6200), 'R': (180, -7200)},
-    'Preg_2_1': {'L': (5, 7400), 'R': (5, 6500)},
-    'Preg_2_2': {'L': (5, 7400), 'R': (10, 6500)},
+    'Preg_2_1': {'L': (5, 7000), 'R': (5, 6400)},
+    'Preg_2_2': {'L': (5, 7000), 'R': (10, 6400)},
+    'Preg_3_1': {'L': (5, 6900), 'R': (5, 6100)},
+    'Preg_3_2': {'L': (5, 6900), 'R': (10, 6100)},
     'Virg_1_1': {'L': (-55, -100), 'R': (-55, -1000)},
     'Virg_1_2': {'L': (-55, -100), 'R': (-55, -1000)},
     'Virg_2_1': {'L': (140, -800), 'R': (140, -1600)},
@@ -62,10 +64,10 @@ ax_index = 0
 for sample in sample_names:
     adata = ad.read_h5ad(f'{data_dir}/raw-h5ad/{sample}.h5ad')
     coords = adata.obs[['SPATIAL_1', 'SPATIAL_2']]
-    if sample in ['Virg_1_1', 'Virg_1_2']:
-        outliers = DBSCAN(eps=500, min_samples=150).fit(coords) 
+    if sample in ['Preg_3_1', 'Preg_3_2']:
+        outliers = DBSCAN(eps=800, min_samples=90).fit(coords) 
     else:
-        outliers = DBSCAN(eps=500, min_samples=90).fit(coords) 
+        outliers = DBSCAN(eps=500, min_samples=110).fit(coords) 
 
     for hemi in ['L', 'R']:
         angle, value = params[sample][hemi]
@@ -82,10 +84,10 @@ for sample in sample_names:
             if ax.figure == fig1:
                 sns.scatterplot(
                     data=coords_rotated[outliers_labels_subset == -1],
-                    x='x', y='y', color='blue', s=1, ax=ax)
+                    x='x', y='y', color='blue', s=2, ax=ax)
             sns.scatterplot(
                 data=coords_rotated[outliers_labels_subset != -1],
-                x='x', y='y', color='black', s=1, ax=ax)
+                x='x', y='y', color='black', s=2, ax=ax)
         ax_index += 1
             
         adata_hemi = adata[mask][outliers_labels_subset != -1]
@@ -176,9 +178,7 @@ else:
     path = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart/'
     sce = readRDS(paste0(path, 'output/curio/data/adata_query.rds'))
     sce = scDblFinder(sce, samples='sample', BPPARAM=MulticoreParam())
-    table(sce$scDblFinder.class)
-    # singlet doublet 
-    # 125175   11748 
+    print(table(sce$scDblFinder.class, sce$sample))
     coldata = as.data.frame(colData(sce))
     ''')
     coldata = to_py('coldata', format='pandas')
@@ -222,21 +222,21 @@ adata_query.obs['outlier'] = (
     is_outlier(adata_query, 'log1p_n_genes_by_counts', 5) |
     is_outlier(adata_query, 'pct_counts_in_top_20_genes', 5))
 adata_query.obs.outlier.value_counts()
-# False    136346
-# True        577
+# False    141114
+# True        601
 
 adata_query.obs['mt_outlier'] = (
-    is_outlier(adata_query, 'pct_counts_mt', 3) | 
-    (adata_query.obs['pct_counts_mt'] > 10))
+    is_outlier(adata_query, 'pct_counts_mt', 5) | 
+    (adata_query.obs['pct_counts_mt'] > 15))
 adata_query.obs.mt_outlier.value_counts()
-# False    129880
-# True       7043
+# False    134178
+# True       7537
 
 adata_query.obs['doublet_outlier'] = is_outlier(
     adata_query, 'scDblFinder.score', 5)
 adata_query.obs.doublet_outlier.value_counts()
-# False    135077
-# True       1846
+# False    140026
+# True       1689
 
 # filter to thresholds
 print(f'total number of cells: {adata_query.n_obs}')
@@ -246,8 +246,8 @@ adata_query = adata_query[
     (~adata_query.obs.doublet_outlier)].copy()
 print(f'number of cells after filtering of low quality cells: '
       f'{adata_query.n_obs}')
-# total number of cells: 136923
-# number of cells after filtering of low quality cells: 127739
+# total number of cells: 141715
+# number of cells after filtering of low quality cells: 132183
 
 # plot after filtering
 sc.pl.scatter(
@@ -450,6 +450,9 @@ for sample in sorted(query_reference_list.keys()):
         query_reference_list[sample], params_dist, rescale=True)
     print(coords_final[sample])
 
+# coords_final = torch.load(
+#     f'{working_dir}/output/curio/data/coords_final.pt')
+
 # add final coords to anndata object 
 sample_names = sorted(list(coords_final.keys()))
 cell_index = adata_comb.obs.index[adata_comb.obs['source'] == 'curio']
@@ -606,8 +609,8 @@ for _, (source_sample, target_sample) in source_target_list.items():
 # with open(f'{working_dir}/output/curio/data/list_ts.pickle', 'wb') as f:
 #     pickle.dump(list_ts, f)
     
-with open(f'{working_dir}/output/curio/data/list_ts.pickle', 'rb') as f:
-    list_ts = pickle.load(f)
+# with open(f'{working_dir}/output/curio/data/list_ts.pickle', 'rb') as f:
+#     list_ts = pickle.load(f)
 
 # transfer cell type and region labels
 new_obs_list = []
@@ -656,17 +659,15 @@ adata_query_i = adata_comb[adata_comb.obs['source'] == 'curio'].copy()
 adata_query = adata_query[adata_query_i.obs_names]
 
 cols_to_keep = [
-    'SPATIAL_1', 'SPATIAL_2', 'n_genes_by_counts',
+    'cell_id', 'SPATIAL_1', 'SPATIAL_2', 'n_genes_by_counts',
     'log1p_n_genes_by_counts', 'total_counts', 'log1p_total_counts',
-    'pct_counts_in_top_10_genes', 'pct_counts_in_top_20_genes',
-    'pct_counts_in_top_50_genes', 'pct_counts_in_top_100_genes',
+    'pct_counts_in_top_20_genes',
     'scDblFinder.sample', 'scDblFinder.class', 'scDblFinder.score',
     'scDblFinder.weighted', 'scDblFinder.cxds_score', 'total_counts_mt',
     'log1p_total_counts_mt', 'pct_counts_mt'
 ]
 adata_query.obs = pd.concat([
     adata_query_i.obs, adata_query.obs[cols_to_keep]], axis=1)
-adata_query.X = adata_query.layers['counts']
 
 # save
 del adata_query.layers['counts']; del adata_query.uns
@@ -813,7 +814,7 @@ adata_comb = ad.read_h5ad(
     f'{working_dir}/output/curio/data/adata_comb_cast_project.h5ad')
 
 sample_data = adata_comb.obs[
-    adata_comb.obs['source'] == 'curio']['sample'].unique()[0]
+    adata_comb.obs['source'] == 'curio']['sample'].unique()[2]
 plot_df = adata_comb.obs[adata_comb.obs['sample'] == sample_data]
 fig, ax = plt.subplots(figsize=(8, 8))
 ax.scatter(plot_df['x_final'], plot_df['y_final'], c='grey', s=1)
@@ -867,31 +868,7 @@ plt.savefig(f'{working_dir}/figures/curio/exemplar_{col}.png',
             dpi=200, bbox_inches='tight')
 
 
-selected_sample = 'PP_1_1_L'
-ref_data = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference']
-sample_data = adata_comb[adata_comb.obs['sample'] == selected_sample]
-
-fig, axs = plt.subplots(1, 4, figsize=(18, 6))
-axs = axs.flatten()
-for idx, ref_sample in enumerate(ref_data.obs['sample'].unique()):
-    ref_sample_data = ref_data[ref_data.obs['sample'] == ref_sample]
-    sns.scatterplot(data=ref_sample_data.obs, x='x', y='y', 
-                    color='lightgray', s=1, ax=axs[idx])
-    sns.scatterplot(data=sample_data.obs, x='x_final', y='y_final', 
-                    color='red', s=3, ax=axs[idx])
-    axs[idx].set_title(f'{ref_sample}')
-    axs[idx].axis('equal')
-    axs[idx].set_xticks([])
-    axs[idx].set_yticks([])
-    axs[idx].set_xlabel('')
-    axs[idx].set_ylabel('')
-plt.suptitle(f'{selected_sample} overlaid on reference samples', fontsize=16)
-plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/curio/{selected_sample}_overlay.png', dpi=300)
-plt.close()
-
-
-col = 'cosine_knn_cdist'
+col = 'cosine_knn_physical_dist'
 samples = query_obs['sample'].unique()
 n_cols, n_rows = 6, (len(samples) + 5) // 6
 

@@ -699,11 +699,13 @@ import anndata as ad
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
+from pathlib import Path
+working_dir = f'{Path.home()}/projects/def-wainberg/karbabi/' \
+ 'spatial-pregnancy-postpart'
 
 # load data 
 ref_obs = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_ref_final_merfish.h5ad').obs
+    f'{working_dir}/output/data/adata_ref_final.h5ad').obs
 query_obs = ad.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish_final.h5ad').obs
 
@@ -724,14 +726,12 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
         plot_df = obs[obs['sample'] == sample]
         mask = plot_df[col] == cell_type
         if mask.sum() > 0:
-            # Plot background cells
             ax.scatter(
                 plot_df[~mask][coord_cols[0]], plot_df[~mask][coord_cols[1]], 
-                c='grey', s=1, alpha=0.1)
-            # Plot cells of interest with individual colors
+                c='grey', s=0.1, alpha=0.1)
             ax.scatter(
                 plot_df[mask][coord_cols[0]], plot_df[mask][coord_cols[1]], 
-                c=plot_df[mask][f'{col}_color'], s=1 if obs is ref_obs else 3)
+                c=plot_df[mask][f'{col}_color'], s=0.8)
         else:
             ax.text(0.5, 0.5, 'no cells of this type', ha='center', 
                     va='center', transform=ax.transAxes)
@@ -743,7 +743,7 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
         fig.delaxes(ax)
     plt.tight_layout()
     safe_filename = cell_type.replace('/', '_').replace(' ', '_')
-    plt.savefig(f'{output_dir}/{safe_filename}.png', dpi=200, 
+    plt.savefig(f'{output_dir}/{safe_filename}.png', dpi=100, 
                 bbox_inches='tight')
     plt.close(fig)
 
