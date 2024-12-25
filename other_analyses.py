@@ -1,4 +1,5 @@
-import sys, scipy
+import sys
+import scipy
 import polars as pl
 import matplotlib.pyplot as plt
 sys.path.append('/home/karbabi/projects/def-wainberg/karbabi/utils')
@@ -10,14 +11,51 @@ working_dir = '/home/karbabi/projects/def-wainberg/karbabi/' \
     'spatial-pregnancy-postpart'
 
 sc_ref = SingleCell(
-    'projects/def-wainberg/single-cell/ABC/h5ad/combined_10Xv3.h5ad')
+    'projects/def-wainberg/single-cell/ABC/h5ad/combined_10Xv3.h5ad')\
+    .make_var_names_unique()\
+    .qc(custom_filter=pl.col('class').is_not_null(),
+        allow_float=True)
+
+'''
+Starting with 2,349,544 cells.
+Filtering to cells with ≤5.0% mitochondrial counts...
+1,863,931 cells remain after filtering to cells with ≤5.0% mitochondrial counts.
+Filtering to cells with ≥100 genes detected (with non-zero count)...
+1,863,931 cells remain after filtering to cells with ≥100 genes detected.
+Filtering to cells with non-zero MALAT1 expression...
+1,863,912 cells remain after filtering to cells with non-zero MALAT1 expression.
+'''
 
 sc_query = SingleCell(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad')\
     .qc(allow_float=True)
+sc_query_X = sc_query.X
+
+'''
+Starting with 132,183 cells.
+Filtering to cells with ≤5.0% mitochondrial counts...
+130,796 cells remain after filtering to cells with ≤5.0% mitochondrial counts.
+Filtering to cells with ≥100 genes detected (with non-zero count)...
+130,796 cells remain after filtering to cells with ≥100 genes detected.
+Filtering to cells with non-zero MALAT1 expression...
+130,627 cells remain after filtering to cells with non-zero MALAT1 expression.
+'''
+
+sc_query, sc_ref = sc_query.hvg(sc_ref, allow_float=True)
+sc_query = sc_query.normalize(allow_float=True)
+sc_ref = sc_ref.normalize(allow_float=True)
+sc_query, sc_ref = sc_query.PCA(sc_ref)
+sc_query, sc_ref = sc_query.harmonize(sc_ref)
 
 sc_query = sc_query\
-    .hvg(allow_float=True)\
+    .label_transfer_from(
+        sc_ref, 
+        original_cell_type_column='class',
+        cell_type_column='class_dissoc',
+        confidence_column='class_dissoc_confidence')
+
+sc_query = sc_query\
+    .hvg(allow_float=True, overwrite=True)\
     .normalize(allow_float=True)\
     .PCA()\
     .neighbors()\
