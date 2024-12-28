@@ -1,4 +1,82 @@
-# preprocess data ##############################################################
+# Prep raw images ##############################################################
+
+import os
+import warnings
+import numpy as np
+import pandas as pd
+import anndata as ad
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+warnings.filterwarnings('ignore')
+
+# set paths 
+data_dir = 'project/single-cell/Kalish/pregnancy-postpart/merfish'
+working_dir = 'project/spatial-pregnancy-postpart'
+os.makedirs(f'{data_dir}/rotate-split-raw', exist_ok=True)
+
+# function for rotating and cropping 
+def rotate_and_crop(points, angle, x_min=None, x_max=None, mirror_y=False):
+    theta = np.radians(angle)
+    rotation_matrix = np.array([
+        [np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+    rotated = np.dot(points.to_numpy(), rotation_matrix)
+    df = pd.DataFrame(rotated, index=points.index, columns=['x', 'y'])
+    mask = (df['x'] > x_min if x_min is not None else df['x'] == df['x']) & \
+           (df['x'] < x_max if x_max is not None else df['x'] == df['x'])
+    cropped_df = df[mask]
+    if mirror_y:
+        cropped_df['x'] = -cropped_df['x']
+    return cropped_df
+
+# rotation and crop at the midline for each sample, mirror right hemisphere 
+# plot, and save as separate anndata files 
+sample_names = [
+    'CTRL1', 'CTRL2', 'CTRL3', 'PREG1', 'PREG2', 'PREG3',
+    'POSTPART1', 'POSTPART2', 'POSTPART3']
+params = {
+    'CTRL1': {'L': (72, 5800), 'R': (70, 5400)}, 
+    'CTRL2': {'L': (110, 3100), 'R': (110, 2800)},  
+    'CTRL3': {'L': (-33, 2000), 'R': (-33, 1600)}, 
+    'PREG1': {'L': (3, 5600), 'R': (3, 5200)},  
+    'PREG2': {'L': (-98, -5100), 'R': (-98, -5400)}, 
+    'PREG3': {'L': (-138, -5900), 'R': (-138, -6200)},  
+    'POSTPART1': {'L': (75, 5400), 'R': (75, 5200)}, 
+    'POSTPART2': {'L': (115, 2400), 'R': (115, 2400)},  
+    'POSTPART3': {'L': (-65, -2000), 'R': (-65, -1800)}  
+}
+plot_index = 1
+plt.figure(figsize=(3 * 5, 6 * 4))
+
+for sample in sample_names:
+    print(sample)
+    adata = ad.read_h5ad(f'{data_dir}/raw-h5ad/{sample}.h5ad')
+    coords = adata.obs[['center_x', 'center_y']]
+    for hemi in ['L', 'R']:
+        plt.subplot(6, 3, plot_index)
+        angle, value = params[sample][hemi]
+        coords_hemi = rotate_and_crop(
+            coords, angle=angle,
+            x_max=value if hemi == 'L' else None,
+            x_min=None if hemi == 'L' else value,
+            mirror_y=(hemi == 'R'))
+        adata_hemi = adata[coords_hemi.index]
+        adata_hemi.obs[['x', 'y']] = coords_hemi
+        adata_hemi.write(f'{data_dir}/rotate-split-raw/{sample}_{hemi}.h5ad')
+
+        spines = plt.gca().spines
+        spines['top'].set_visible(False)
+        spines['right'].set_visible(False)
+        sns.scatterplot(data=coords_hemi, x='x', y='y', color='black', s=0.2)
+        plt.title(f'{sample} - {hemi}')
+        plot_index += 1  
+        
+plt.tight_layout() 
+plt.savefig(f'{working_dir}/figures/merfish/crop_and_rotate_all.png', 
+            dpi=200, bbox_inches='tight', pad_inches=0)
+
+# Preprocess query ##############################################################
+
 import sys
 import os
 import numpy as np
@@ -7,38 +85,42 @@ import anndata as ad
 import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
-from ryp import r, to_r, to_py
+from ryp import r, to_py
 import warnings
 
 warnings.filterwarnings('ignore')
 
 sys.path.append('project/utils')
 from single_cell import SingleCell
-from utils import run
+from ryp import r, to_r, to_py
 
 # set paths
 working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-MARK', exist_ok=True)
 
-# load query data 
-query_dir = 'project/single-cell/Kalish/pregnancy-postpart/merfish/raw-anndata'
+# load rotated and cropped query 
+query_dir = 'project/single-cell/Kalish/pregnancy-postpart/merfish/rotate-split-raw'
 samples_query = [file.replace('.h5ad', '') for file in os.listdir(query_dir)]
+# sorting samples is important for maintaining cell order for all steps
 samples_query = sorted(samples_query)
 
+# munge each sample, adding placeholders for metadata columns to be added 
 adatas_query = []
 for sample in samples_query:
     adata = ad.read_h5ad(f'{query_dir}/{sample}.h5ad')
     adata.obs['sample'] = sample
-    adata.obs['condition'] = sample[:-1]
     adata.obs['source'] = 'merfish'
-    adata.obs = adata.obs[[
-        'sample', 'condition', 'source', 'cell_id',
-        'Custom_regions', 'Datasets', 'volume', 'center_x', 'center_y']]
-    adata.obs = adata.obs.rename(columns={
-        'Custom_regions': 'custom_regions', 'Datasets': 'datasets',
-        'center_x': 'x_raw', 'center_y': 'y_raw'})
-    adata.obs.index = adata.obs['sample'] + '_' + \
-        adata.obs.index.str.split('_').str[1]
+    adata.obs[[
+        'class', 'class_color', 'subclass', 'subclass_color',
+        'supertype', 'supertype_color', 'cluster', 'cluster_color',
+        'parcellation_division', 'parcellation_division_color',
+        'parcellation_structure', 'parcellation_structure_color',
+        'parcellation_substructure', 
+        'parcellation_substructure_color']] = 'Unknown'
+    adata.obs = adata.obs.drop(columns=[
+        'nCount_Vizgen', 'nFeature_Vizgen', 'nCount_SCT', 'nFeature_SCT'])
+    adata.obs.index = adata.obs.index.astype(str) + '_' + \
+        adata.obs['sample'].astype(str)
     del adata.layers['orig_norm']
     print(f'[{sample}] {adata.shape[0]} cells')
     adatas_query.append(adata)
@@ -46,205 +128,55 @@ for sample in samples_query:
 # concat and store raw counts 
 adata_query = sc.concat(adatas_query, axis=0, merge='same')
 adata_query.layers['counts'] = adata_query.X.copy()
-adata_query.var = adata_query.var.rename(columns={'gene': 'gene_symbol'})
+adata_query.var['gene_symbol'] = adata_query.var.index
 
 # detect doublets 
 # https://github.com/plger/scDblFinder
-file = f'{working_dir}/output/merfish/coldata.csv'
+file = f'{working_dir}/output/merfish/data/coldata.csv'
 if os.path.exists(file):
-    coldata = pd.read_csv(f'{working_dir}/output/merfish/coldata.csv')
+    # add doublet metrics 
+    coldata = pd.read_csv(f'{working_dir}/output/merfish/data/coldata.csv')
     adata_query.obs = coldata.set_index('index')
 else:
-    SingleCell(adata_query).to_sce('sce')
+    SingleCell(adata_query)\
+        .save(f'{working_dir}/output/merfish/data/adata_query.rds', 
+              sce=True, overwrite=True)
     to_r(working_dir, 'working_dir')
     r('''
     library(scDblFinder)
     library(BiocParallel)
     set.seed(123)
+    sce = readRDS(paste0(working_dir, '/output/merfish/data/adata_query.rds'))
     sce = scDblFinder(sce, samples='sample', BPPARAM=MulticoreParam())
     table(sce$scDblFinder.class)
     # singlet doublet 
-    # 867938  571048 
+    #  996672  483021 
     coldata = as.data.frame(colData(sce))
     ''')
     coldata = to_py('coldata', format='pandas')
     adata_query.obs = coldata
     coldata.to_csv(file)
 
-# get qc metrics
+# get qc metrics 
 sc.pp.calculate_qc_metrics(
-    adata_query, percent_top=None, log1p=True, inplace=True)
+    adata_query, percent_top=[20], log1p=True, inplace=True)
+# save
+adata_query.write(f'{working_dir}/output/data/adata_query_merfish_raw.h5ad')
 
-# plot 
-metrics = ['volume', 'n_genes_by_counts', 'total_counts', 'scDblFinder.score']
-titles = ['Cell Volume', 'Genes per Cell', 'Total UMI Counts', 'Doublet Score']
-y_labels = ['Volume (μm³)', 'Number of Genes', 'UMI Counts', 'scDblFinder Score']
-
-sample_order = [
-    'CTRL1', 'CTRL2', 'CTRL3', 
-    'PREG1', 'PREG2', 'PREG3',
-    'POSTPART1', 'POSTPART2', 'POSTPART3']
-sample_labels = [
-    'Control 1', 'Control 2', 'Control 3',
-    'Pregnant 1', 'Pregnant 2', 'Pregnant 3',
-    'Postpartum 1', 'Postpartum 2', 'Postpartum 3']
-
-configs = {
-    'volume': dict(
-        log=True, lines=(100, 2000),
-        ticks=[10, 100, 500, 1000, 2000]),
-    'n_genes_by_counts': dict(
-        log=True, lines=(5, None),
-        ticks=[1, 2, 5, 10, 20, 50, 100]),
-    'total_counts': dict(
-        log=True, lines=(20, None),
-        ticks=[10, 20, 50, 100, 200, 500]),
-    'scDblFinder.score': dict(
-        log=False, lines=(0.25, None),
-        ticks=[0, 0.1, 0.2, 0.3, 0.4, 0.5], invert=True)
-}
-
-pink = sns.color_palette("PiYG")[0]
-fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 4*len(metrics)))
-
-for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
-    cfg = configs[m]
-    sns.violinplot(data=adata_query.obs, x='sample', y=m, ax=axes[i],
-                  color=pink, alpha=0.5, linewidth=1, linecolor=pink,
-                  order=sample_order)
-    if cfg['log']:
-        axes[i].set_yscale('log')
-        axes[i].set_yticks(cfg['ticks'])
-        axes[i].set_yticklabels([str(int(x)) for x in cfg['ticks']])
-    if cfg.get('invert', False):
-        axes[i].invert_yaxis()
-    for val in cfg['lines']:
-        if val:
-            axes[i].axhline(y=val, ls='--', color=pink, alpha=0.5)
-            axes[i].text(1.02, val, f'{val:.1f}', va='center', 
-                        transform=axes[i].get_yaxis_transform())
-    axes[i].set_xticklabels(sample_labels, rotation=45, ha='', va='top')
-    axes[i].set_title(title, fontsize=12, fontweight='bold')
-    axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
-
+# plot doublet scores 
+cols = ['scDblFinder.score', 'scDblFinder.weighted', 'scDblFinder.cxds_score']
+fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+for ax, col in zip(axs, cols):
+    data = adata_query.obs[col].values
+    x = np.sort(data)
+    ax.plot(x, np.arange(1, len(data) + 1) / len(data))
+    p5, p95 = np.percentile(data, [5, 95])
+    for p in [p5, p95]:
+        ax.axvline(p, color='r', linestyle='--')
+        ax.text(p, 0.5, f'{p:.2f}', rotation=90, va='center', ha='left')
+    ax.set(title=col, xlabel='Value', ylabel='Cumulative Probability')
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/merfish/qc_scores_violin.png',
-            dpi=300, bbox_inches='tight')
-
-# filter cells per sample 
-keep_idx = []
-for sample in adata_query.obs['sample'].unique():
-    mask = adata_query.obs['sample'] == sample
-    cells = adata_query.obs.loc[mask]    
-    median_vol = np.median(cells['volume'])
-    qc_mask = (
-        (cells['scDblFinder.score'] < 0.18) &
-        (cells['volume'] > 100) & 
-        (cells['volume'] <= 3 * median_vol) &
-        (cells['total_counts'] > 20) &
-        (cells['n_genes_by_counts'] >= 5))
-    keep_idx.extend(cells.index[qc_mask])
-adata_query = adata_query[keep_idx].copy()
-
-# normalize counts by volume
-adata_query.X = adata_query.X.multiply(1/adata_query.obs['volume'][:, None])
-
-# filter global expression outliers (2% tails)
-total_exp = adata_query.X.sum(1).A1
-low, high = np.percentile(total_exp, [2, 98])
-adata_query = adata_query[(total_exp >= low) & (total_exp <= high)].copy()
-
-# normalize to 250 and log transform
-sc.pp.normalize_total(adata_query, target_sum=250)
-sc.pp.log1p(adata_query)
-
-
-
-
-
-
-
-
-def plot_violin_by_sample(df, columns):
-    df['sample'] = df['cell_id'].str.split('_').str[0]
-    fig, axes = plt.subplots(len(columns), 1, figsize=(8, 4*len(columns)))
-    if len(columns) == 1:
-        axes = [axes]
-    for i, col in enumerate(columns):
-        sns.violinplot(data=df, x='sample', y=col, ax=axes[i])
-        axes[i].set_xticklabels(axes[i].get_xticklabels(), rotation=45)
-        axes[i].set_title(col)
-    plt.tight_layout()
-    return fig
-
-plot_violin_by_sample(
-    adata_query.obs,
-    columns=['volume', 'n_genes_by_counts', 'total_counts', 
-             'scDblFinder.score'])
-plt.savefig(
-    f'{working_dir}/figures/merfish/qc_scores_violin.png',
-    dpi=300, bbox_inches='tight')
-
-# add ensembl ids 
-import mygene
-mg = mygene.MyGeneInfo()
-
-mapping = {
-    r['query']: (r['ensembl']['gene'] if isinstance(r['ensembl'], dict) 
-    else r['ensembl'][0]['gene']) 
-    for r in mg.querymany(
-        adata_query.var['gene_symbol'].to_list(), 
-        scopes='symbol',
-        fields='ensembl.gene',
-        species='mouse')
-    if 'ensembl' in r
-}
-mapping.update({
-   'Il1f6': 'ENSMUSG00000026984',
-   'Tdgf1': 'ENSMUSG00000032494', 
-   'Il1f5': 'ENSMUSG00000026983',
-   'Fcrls': 'ENSMUSG00000015852'
-})
-adata_query.var['gene_id'] = adata_query.var['gene_symbol'].map(mapping)
-
-# save temp file 
-adata_tmp = adata_query.copy()
-adata_tmp.var.index = adata_tmp.var['gene_id']
-adata_tmp.write(f'{working_dir}/output/merfish/tmp.h5ad')
-
-# get cell type labels 
-# https://github.com/AllenInstitute/cell_type_mapper/tree/main
-run('''
-    python -m cell_type_mapper.cli.from_specified_markers \
-        --query_path project/spatial-pregnancy-postpart/output/merfish/tmp.h5ad \
-        --extended_result_path project/spatial-pregnancy-postpart/output/merfish/mapper_output.json \
-        --log_path project/spatial-pregnancy-postpart/output/merfish/mapper_log.txt \
-        --csv_result_path project/spatial-pregnancy-postpart/output/mapper_output.csv \
-        --drop_level CCN20230722_SUPT \
-        --cloud_safe False \
-        --query_markers.serialized_lookup cell_type_mapper/mouse_markers_230821.json \
-        --precomputed_stats.path cell_type_mapper/precomputed_stats_ABC_revision_230821.h5 \
-        --type_assignment.normalization log2CPM \
-        --type_assignment.n_processors 64
-''')
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+plt.savefig(f'{working_dir}/figures/merfish/qc_doublets.png')
 
 # plot
 sc.pl.scatter(

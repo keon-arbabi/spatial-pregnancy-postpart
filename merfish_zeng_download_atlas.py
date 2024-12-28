@@ -1,5 +1,4 @@
-import os, warnings
-import matplotlib.pyplot as plt
+import warnings
 from pathlib import Path
 from abc_atlas_access.abc_atlas_cache.abc_project_cache import AbcProjectCache
 
@@ -10,7 +9,7 @@ warnings.filterwarnings("ignore")
 
 # imputed update ###############################################################
 
-download_base = Path('projects/def-wainberg/single-cell/ABC')
+download_base = Path('project/single-cell/ABC')
 abc_cache = AbcProjectCache.from_cache_dir(download_base)
 abc_cache.load_manifest('releases/20240831/manifest.json')
 
@@ -72,10 +71,14 @@ cell_joined = cell_joined.join(parcellation_annotation, on='parcellation_index')
 cell_joined = cell_joined.join(parcellation_color, on='parcellation_index')
 
 cell_joined.to_csv(
-    f'projects/def-wainberg/single-cell/ABC/Zeng/cells_joined.csv')
+    'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/views/'
+    'cells_joined.csv')
 
-imputed_h5ad_path = abc_cache.get_data_path(
+abc_cache.get_data_path(
     'MERFISH-C57BL6J-638850', 
     'C57BL6J-638850/raw')
-# 'C57BL6J-638850-imputed/log2')
+
+abc_cache.get_data_path(
+    'MERFISH-C57BL6J-638850-imputed', 
+    'C57BL6J-638850-imputed/log2')
 

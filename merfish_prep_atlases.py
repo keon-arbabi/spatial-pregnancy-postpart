@@ -1,23 +1,29 @@
-import os, pandas as pd, numpy as np, anndata as ad, scanpy as sc
+import os
+import pandas as pd
+import numpy as np
+import anndata as ad
+import scanpy as sc
 import matplotlib.pyplot as plt
 import scipy.sparse as sparse
 import warnings
 warnings.filterwarnings('ignore')
 
-working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
+working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/data', exist_ok=True)
 
 ########################################################################
 
 # load zeng reference, output from `merfish_zeng_prep_atlas.py`
 # the X matrix is log CPM
-ref_dir = 'projects/def-wainberg/single-cell/ABC'
-cell_joined = pd.read_csv(f'{ref_dir}/Zeng/cells_joined.csv')
+ref_dir = 'project/single-cell/ABC'
+cell_joined = pd.read_csv(
+    f'{ref_dir}/metadata/MERFISH-C57BL6J-638850/20231215/views/'
+    'cells_joined.csv')
 
-sections = ['C57BL6J-638850.49', 'C57BL6J-638850.48', 
-            'C57BL6J-638850.47', 'C57BL6J-638850.46']
-z_threshold = 5.5
-
+sections = [
+    'C57BL6J-638850.49', 'C57BL6J-638850.48', 
+    'C57BL6J-638850.47', 'C57BL6J-638850.46'
+]
 data_types = [
     ('imputed', 
      'MERFISH-C57BL6J-638850-imputed/20240831/C57BL6J-638850-imputed-log2.h5ad', 
@@ -26,6 +32,7 @@ data_types = [
      'MERFISH-C57BL6J-638850/20230830/C57BL6J-638850-raw.h5ad', 
      'adata_ref_zeng_raw.h5ad')
 ]
+
 for data_type, input_path, output_filename in data_types:
     print(f'Processing {data_type} data...')
     adata_input = ad.read_h5ad(f'{ref_dir}/expression_matrices/{input_path}')
@@ -42,16 +49,15 @@ for data_type, input_path, output_filename in data_types:
         adata = adata[adata.obs['x_ccf'].notna()]
         adata.var = adata.var.reset_index()
         
-        subset = adata[adata.obs['z_ccf'] > z_threshold]
-        subset.obs['z_ccf'] *= -1
-        subset.obs['y_ccf'] *= -1
+        adata.obs['z_ccf'] *= -1
+        adata.obs['y_ccf'] *= -1
         
-        subset.obs['x'] = subset.obs['z_ccf']
-        subset.obs['y'] = subset.obs['y_ccf']
-        subset.obs['sample'] = f'{section}_R'
-        subset.obs['source'] = 'Zeng-ABCA-Reference'
+        adata.obs['x'] = adata.obs['z_ccf']
+        adata.obs['y'] = adata.obs['y_ccf']
+        adata.obs['sample'] = f'{section}_R'
+        adata.obs['source'] = 'Zeng-ABCA-Reference'
         print(f'[{section}] {adata.shape[0]} cells')
-        adatas_processed.append(subset)
+        adatas_processed.append(adata)
 
     adata_combined = ad.concat(adatas_processed, axis=0, merge='same')
     adata_combined.var = adata_input.var.reset_index().set_index('gene_symbol')
