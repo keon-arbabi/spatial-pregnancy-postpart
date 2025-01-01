@@ -1,6 +1,7 @@
 # preprocess data ##############################################################
 import sys
 import os
+import json
 import numpy as np
 import pandas as pd
 import anndata as ad
@@ -75,7 +76,7 @@ else:
 sc.pp.calculate_qc_metrics(
     adata_query, percent_top=None, log1p=True, inplace=True)
 
-# plot 
+# plot qc metrics
 metrics = ['volume', 'n_genes_by_counts', 'total_counts', 'scDblFinder.score']
 titles = ['Cell Volume', 'Genes per Cell', 'Total UMI Counts', 'Doublet Score']
 y_labels = ['Volume (μm³)', 'Number of Genes', 'UMI Counts', 'scDblFinder Score']
@@ -89,23 +90,23 @@ sample_labels = [
     'Pregnant 1', 'Pregnant 2', 'Pregnant 3',
     'Postpartum 1', 'Postpartum 2', 'Postpartum 3']
 
+pink = sns.color_palette("PiYG")[0]
+fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
+
 configs = {
     'volume': dict(
         log=True, lines=(100, 2000),
-        ticks=[10, 100, 500, 1000, 2000]),
+        ticks=[10, 100, 1000, 5000]),
     'n_genes_by_counts': dict(
         log=True, lines=(5, None),
-        ticks=[1, 2, 5, 10, 20, 50, 100]),
+        ticks=[1, 10, 100]),
     'total_counts': dict(
         log=True, lines=(20, None),
-        ticks=[10, 20, 50, 100, 200, 500]),
+        ticks=[10, 20, 40, 80, 160, 320, 640]),
     'scDblFinder.score': dict(
-        log=False, lines=(0.25, None),
+        log=False, lines=(0.2, None),
         ticks=[0, 0.1, 0.2, 0.3, 0.4, 0.5], invert=True)
 }
-
-pink = sns.color_palette("PiYG")[0]
-fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 4*len(metrics)))
 
 for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     cfg = configs[m]
@@ -123,7 +124,14 @@ for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
             axes[i].axhline(y=val, ls='--', color=pink, alpha=0.5)
             axes[i].text(1.02, val, f'{val:.1f}', va='center', 
                         transform=axes[i].get_yaxis_transform())
-    axes[i].set_xticklabels(sample_labels, rotation=45, ha='', va='top')
+    if i < len(metrics) - 1:
+        axes[i].set_xticklabels([])
+        axes[i].set_xlabel('')
+        axes[i].set_xticks([])
+    else:
+        axes[i].set_xticklabels(sample_labels, rotation=45, ha='right', va='top')
+        axes[i].set_xlabel('Sample', fontsize=11, fontweight='bold')
+    
     axes[i].set_title(title, fontsize=12, fontweight='bold')
     axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
 
@@ -132,14 +140,14 @@ plt.savefig(f'{working_dir}/figures/merfish/qc_scores_violin.png',
             dpi=300, bbox_inches='tight')
 
 # filter cells per sample 
-keep_idx = []
+keep_idx = []  
 for sample in adata_query.obs['sample'].unique():
     mask = adata_query.obs['sample'] == sample
-    cells = adata_query.obs.loc[mask]    
+    cells = adata_query.obs.loc[mask]
     median_vol = np.median(cells['volume'])
     qc_mask = (
-        (cells['scDblFinder.score'] < 0.18) &
-        (cells['volume'] > 100) & 
+        (cells['scDblFinder.score'] < 0.2) &
+        (cells['volume'] > 100) &
         (cells['volume'] <= 3 * median_vol) &
         (cells['total_counts'] > 20) &
         (cells['n_genes_by_counts'] >= 5))
@@ -147,7 +155,8 @@ for sample in adata_query.obs['sample'].unique():
 adata_query = adata_query[keep_idx].copy()
 
 # normalize counts by volume
-adata_query.X = adata_query.X.multiply(1/adata_query.obs['volume'][:, None])
+volumes = adata_query.obs['volume'].to_numpy()
+adata_query.X = adata_query.X.multiply(1/volumes[:, None]).tocsr()
 
 # filter global expression outliers (2% tails)
 total_exp = adata_query.X.sum(1).A1
@@ -157,38 +166,11 @@ adata_query = adata_query[(total_exp >= low) & (total_exp <= high)].copy()
 # normalize to 250 and log transform
 sc.pp.normalize_total(adata_query, target_sum=250)
 sc.pp.log1p(adata_query)
-
-
-
-
-
-
-
-
-def plot_violin_by_sample(df, columns):
-    df['sample'] = df['cell_id'].str.split('_').str[0]
-    fig, axes = plt.subplots(len(columns), 1, figsize=(8, 4*len(columns)))
-    if len(columns) == 1:
-        axes = [axes]
-    for i, col in enumerate(columns):
-        sns.violinplot(data=df, x='sample', y=col, ax=axes[i])
-        axes[i].set_xticklabels(axes[i].get_xticklabels(), rotation=45)
-        axes[i].set_title(col)
-    plt.tight_layout()
-    return fig
-
-plot_violin_by_sample(
-    adata_query.obs,
-    columns=['volume', 'n_genes_by_counts', 'total_counts', 
-             'scDblFinder.score'])
-plt.savefig(
-    f'{working_dir}/figures/merfish/qc_scores_violin.png',
-    dpi=300, bbox_inches='tight')
+adata_query.layers['volume_log1p'] = adata_query.X.copy()
 
 # add ensembl ids 
 import mygene
 mg = mygene.MyGeneInfo()
-
 mapping = {
     r['query']: (r['ensembl']['gene'] if isinstance(r['ensembl'], dict) 
     else r['ensembl'][0]['gene']) 
@@ -206,103 +188,147 @@ mapping.update({
    'Fcrls': 'ENSMUSG00000015852'
 })
 adata_query.var['gene_id'] = adata_query.var['gene_symbol'].map(mapping)
+adata_query.var.index = adata_query.var['gene_id']
 
-# save temp file 
-adata_tmp = adata_query.copy()
-adata_tmp.var.index = adata_tmp.var['gene_id']
-adata_tmp.write(f'{working_dir}/output/merfish/tmp.h5ad')
+# temp save
+# adata_query.write(f'{working_dir}/output/data/adata_query_merfish.h5ad')
 
 # get cell type labels 
 # https://github.com/AllenInstitute/cell_type_mapper/tree/main
-run('''
-    python -m cell_type_mapper.cli.from_specified_markers \
-        --query_path project/spatial-pregnancy-postpart/output/merfish/tmp.h5ad \
-        --extended_result_path project/spatial-pregnancy-postpart/output/merfish/mapper_output.json \
-        --log_path project/spatial-pregnancy-postpart/output/merfish/mapper_log.txt \
-        --csv_result_path project/spatial-pregnancy-postpart/output/mapper_output.csv \
-        --drop_level CCN20230722_SUPT \
-        --cloud_safe False \
-        --query_markers.serialized_lookup cell_type_mapper/mouse_markers_230821.json \
-        --precomputed_stats.path cell_type_mapper/precomputed_stats_ABC_revision_230821.h5 \
-        --type_assignment.normalization log2CPM \
-        --type_assignment.n_processors 64
-''')
+# run('''
+#     python -m cell_type_mapper.cli.from_specified_markers \
+#         --query_path project/spatial-pregnancy-postpart/output/data/adata_query_merfish.h5ad \
+#         --extended_result_path project/spatial-pregnancy-postpart/output/merfish/mapper_output.json \
+#         --log_path project/spatial-pregnancy-postpart/output/merfish/mapper_log.txt \
+#         --csv_result_path project/spatial-pregnancy-postpart/output/merfish/mapper_output.csv \
+#         --drop_level CCN20230722_SUPT \
+#         --cloud_safe False \
+#         --query_markers.serialized_lookup cell_type_mapper/mouse_markers_230821.json \
+#         --precomputed_stats.path cell_type_mapper/precomputed_stats_ABC_revision_230821.h5 \
+#         --type_assignment.normalization log2CPM \
+#         --type_assignment.n_processors 64
+# ''')
 
+# load mapper results and munge 
+with open(f'{working_dir}/output/merfish/mapper_output.json') as f:
+    mapper_json = json.load(f)
 
+mapper_df = pd.DataFrame([dict(m, cell_id=c['cell_id'], level=l) 
+    for c in mapper_json['results'] 
+    for l,m in c.items() if isinstance(m, dict)])
 
+cols_to_drop = ['runner_up_assignment', 'runner_up_correlation', 
+                'runner_up_probability']
+levels = ['CCN20230722_CLAS', 'CCN20230722_SUBC']
+values = ['assignment', 'bootstrapping_probability', 'avg_correlation', 
+          'aggregate_probability', 'directly_assigned']
 
+mapper_df = (mapper_df[mapper_df['level'].isin(levels)]
+    .drop(columns=cols_to_drop)
+    .assign(level=lambda x: x.level.str.extract('CCN20230722_(.*)')[0].str.lower())
+    .pivot(index='cell_id', columns='level', values=values))
+mapper_df.columns = [f'{col[0]}_{col[1]}' for col in mapper_df.columns]
 
+for metric in ['bootstrapping_probability', 'avg_correlation', 
+               'aggregate_probability']:
+    for level in ['clas', 'subc']:
+        mapper_df[f'{metric}_{level}'] = mapper_df[f'{metric}_{level}'
+            ].astype(float)
 
+for level in ['clas', 'subc']:
+    mapper_df[f'directly_assigned_{level}'] = mapper_df[
+        f'directly_assigned_{level}'].astype('bool')
+    mapper_df[f'assignment_{level}'] = mapper_df[
+        f'assignment_{level}'].astype('category')
 
+mapper_names = {level: mapper_json['taxonomy_tree']['name_mapper'][
+    f'CCN20230722_{level.upper()}'] for level in ['clas', 'subc']}
 
+for level, new_col in [('clas', 'class'), ('subc', 'subclass')]:
+    mapper_df[new_col] = mapper_df[f'assignment_{level}'].map(
+        lambda x: mapper_names[level].get(x, {}).get('name', 'Unknown')
+        ).astype('category')
+    
+# plot mapping metrics
+metrics = ['bootstrapping_probability', 'avg_correlation']
+titles = ['Bootstrapping Probability', 'Average Correlation']
+pink = sns.color_palette("PiYG")[0]
 
+fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
+for i, (metric, title) in enumerate(zip(metrics, titles)):
+    plot_df = pd.DataFrame({
+        'value': mapper_df[f'{metric}_subc'],
+        'sample': adata_query.obs['sample'],
+        'cell_type': mapper_df['subclass']
+    })
+    sns.violinplot(data=plot_df, x='sample', y='value', ax=axes[i],
+                  color=pink, alpha=0.5, linewidth=1, linecolor=pink,
+                  order=sample_order)
+    
+    line_value = 0.8 if 'probability' in metric else 0.3
+    axes[i].axhline(y=line_value, ls='--', color=pink, alpha=0.5)
+    axes[i].text(1.02, line_value, f'{line_value:.1f}', va='center', 
+                transform=axes[i].get_yaxis_transform())
+    
+    axes[i].set_title(title, fontsize=12, fontweight='bold')
+    axes[i].set_ylabel('Score', fontsize=11, fontweight='bold')
+    if i < len(metrics) - 1:
+        axes[i].set_xticklabels([])
+        axes[i].set_xlabel('')
+        axes[i].set_xticks([])
+    else:
+        axes[i].set_xticklabels(sample_labels, rotation=45, ha='right', va='top')
+        axes[i].tick_params(axis='x', rotation=45)
+        plt.setp(axes[i].get_xticklabels(), ha='right', va='top')
 
+plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/merfish/mapping_scores_violin.png',
+            dpi=300, bbox_inches='tight')
 
+# join mapper results to anndata
+adata_query.obs = adata_query.obs.join(mapper_df)
 
+# plot mapping metrics vs qc metrics
+fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+pink = sns.color_palette('PiYG')[0]
+plots = [
+    ('n_genes_by_counts', 'avg_correlation_subc', 'Genes vs Correlation'),
+    ('n_genes_by_counts', 'bootstrapping_probability_subc', 'Genes vs Probability'),
+    ('avg_correlation_subc', 'bootstrapping_probability_subc', 
+     'Correlation vs Probability')]
+for i, (x, y, title) in enumerate(plots):
+    sns.scatterplot(
+        data=adata_query.obs, x=x, y=y, ax=axes[i], color=pink, 
+        alpha=0.005, s=10, linewidth=0)
+    if x == 'n_genes_by_counts':
+        axes[i].set_xscale('log')
+    axes[i].set_title(title, fontsize=12, fontweight='bold')
+plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/merfish/qc_vs_mapping_scatter.png',
+           dpi=300, bbox_inches='tight')
 
+# filter cells based on mapping metrics
+mask = (
+    (adata_query.obs['directly_assigned_subc'] == True) &
+    (adata_query.obs['bootstrapping_probability_subc'] > 0.8) &
+    (adata_query.obs['avg_correlation_subc'] > 0.3) &
+    (adata_query.obs['class'] != 'Unknown') &
+    (adata_query.obs['subclass'] != 'Unknown'))
+print(sum(mask))
+adata_query = adata_query[mask].copy()
 
-
-
-
-
-
-# plot
-sc.pl.scatter(
-    adata_query, 'total_counts', 'n_genes_by_counts', size=1) 
-plt.savefig(f'{working_dir}/figures/merfish/qc_counts_genes.png', dpi=200)
-
-# threshold outliers 
-def is_outlier(adata, metric: str, nmads: int):
-    from scipy.stats import median_abs_deviation
-    M = adata.obs[metric]
-    outlier = (M < np.median(M) - nmads * median_abs_deviation(M)) | (
-        np.median(M) + nmads * median_abs_deviation(M) < M)
-    return outlier
-
-adata_query.obs['outlier'] = (
-    is_outlier(adata_query, 'log1p_total_counts', 5) | 
-    is_outlier(adata_query, 'log1p_n_genes_by_counts', 5) |
-    is_outlier(adata_query, 'pct_counts_in_top_20_genes', 5))
-adata_query.obs.outlier.value_counts()
-# False    1478936
-# True         757
-
-adata_query.obs['doublet_outlier'] = is_outlier(
-    adata_query, 'scDblFinder.score', 5)
-adata_query.obs.doublet_outlier.value_counts()
-# False    1477136
-# True        2557
-
-# filter to thresholds
-print(f'total number of cells: {adata_query.n_obs}')
-adata_query = adata_query[
-    (~adata_query.obs.outlier) & 
-    (~adata_query.obs.doublet_outlier)].copy()
-print(f'number of cells after filtering of low quality cells: '
-      f'{adata_query.n_obs}')
-# total number of cells: 136923
-# number of cells after filtering of low quality cells: 127739
-
-# plot after filtering
-sc.pl.scatter(
-    adata_query, 'total_counts', 'n_genes_by_counts', size=1) 
-plt.savefig(f'{working_dir}/figures/merfish/qc_counts_genes_filt.png', dpi=200)
-
-# normalize 
-sc.pp.normalize_total(adata_query)
-sc.pp.log1p(adata_query, base=2)
 # save
 adata_query.write(f'{working_dir}/output/data/adata_query_merfish.h5ad')
 
 # CAST-MARK ####################################################################
 
+import os
+import warnings
+import scanorama
 import anndata as ad
 import numpy as np
 import pandas as pd
 import scanpy as sc
-import scanorama
-import torch
-import os
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.cluster import KMeans
@@ -311,15 +337,19 @@ from CAST.models.model_GCNII import Args
 
 warnings.filterwarnings('ignore')
 
-working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
+working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-MARK', exist_ok=True)
 
 # load query data
 adata_query = ad.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish.h5ad')
+adata_query.obs['x'] = adata_query.obs['x_raw']
+adata_query.obs['y'] = adata_query.obs['y_raw']
+
 # load reference data (imputed)
 adata_ref = ad.read_h5ad(
     f'{working_dir}/output/data/adata_ref_zeng_imputed.h5ad')
+adata_ref.var.index = adata_ref.var['gene_identifier']
 
 # batch correction
 adata_query_s, adata_ref_s = scanorama.correct_scanpy([adata_query, adata_ref])
@@ -329,8 +359,9 @@ adata_comb = ad.concat([adata_query, adata_ref], axis=0, merge='same')
 adata_comb = adata_comb[:, adata_comb.var_names.sort_values()]
 adata_comb.layers['X_scanorama'] = ad.concat(
     [adata_query_s, adata_ref_s], axis=0, merge='same').X.copy()
+del adata_query_s, adata_ref_s
 
-# crucially, order by sample names
+# order by sample names
 sample_names = sorted(adata_comb.obs['sample'].unique())
 adata_comb.obs['sample'] = pd.Categorical(
     adata_comb.obs['sample'], categories=sample_names, ordered=True)
@@ -344,24 +375,14 @@ exp_dict = {
     s: adata_comb.layers['X_scanorama'][adata_comb.obs['sample']==s].toarray() 
     for s in sample_names}
 
-# duplicate reference samples so that the embeddings are
-# more balanced between query and reference
-def duplicate_dict(d, n):
-    return {f'{k}_dup{i + 1}' if k in adata_ref.obs['sample'].unique()
-        else k: v for k, v in d.items() for i in range(n or 1)}
-
-coords_raw_dup = duplicate_dict(coords_raw, 3)
-exp_dict_dup = duplicate_dict(exp_dict, 3)
-
 # run cast mark
-from CAST.models.model_GCNII import Args
-embed_dict_dup = CAST.CAST_MARK(
+embed_dict = CAST.CAST_MARK(
     coords_raw, exp_dict, 
     f'{working_dir}/output/merfish/CAST-MARK',
     graph_strategy='delaunay', 
     args = Args(
-        dataname='merfish', # name of the dataset, used to save the log file
-        gpu = 0, # gpu id, set to zero for single-GPU nodes
+        dataname='merfish',
+        gpu = 0, 
         epochs=400, # number of epochs for training
         lr1=1e-3, # learning rate
         wd1=0, # weight decay
@@ -377,7 +398,7 @@ embed_dict_dup = CAST.CAST_MARK(
 )
 # detach, remove duplicated embeddings, and stack 
 embed_dict = {k.split('_dup')[0]: v.cpu().detach() 
-              for k, v in embed_dict_dup.items()}
+              for k, v in embed_dict.items()}
 embed_stack = np.vstack([embed_dict[name].numpy() for name in sample_names])
 
 # kmeans clustering and plotting
@@ -408,20 +429,15 @@ def plot_slices(sample_names, coords_raw, cell_label, cluster_pl, n_clust):
     plt.tight_layout()
     return plt.gcf()
 
-for n_clust in list(range(4, 20 + 1, 2)) + [30, 40, 50]:
+for n_clust in list(range(4, 20 + 1, 2)) + [30, 40, 50, 100, 200]:
     print(f'Clustering with k={n_clust}')
     kmeans = KMeans(n_clusters=n_clust, random_state=0).fit(embed_stack)
     cell_label = kmeans.labels_
     cluster_pl = sns.color_palette('Set3', n_clust)
-    
     fig = plot_slices(sample_names, coords_raw, cell_label, cluster_pl, n_clust)
     fig.savefig(f'{plot_dir}/all_samples_k{str(n_clust)}.png', dpi=300)
     plt.close(fig)
-    
     adata_comb.obs[f'k{n_clust}_cluster'] = cell_label
-    color_map = {k: color for k, color in enumerate(cluster_pl.as_hex())}
-    adata_comb.obs[f'k{n_clust}_cluster_colors'] = \
-        pd.Series(cell_label).map(color_map).tolist()
 
 # Save results
 torch.save(coords_raw, f'{working_dir}/output/merfish/data/coords_raw.pt')
