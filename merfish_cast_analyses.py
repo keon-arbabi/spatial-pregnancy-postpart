@@ -377,27 +377,35 @@ exp_dict = {
     s: adata_comb.layers['X_scanorama'][adata_comb.obs['sample']==s].toarray() 
     for s in sample_names}
 
-# run cast mark
-embed_dict = CAST.CAST_MARK(
-    coords_raw, exp_dict, 
-    f'{working_dir}/output/merfish/CAST-MARK',
-    graph_strategy='delaunay', 
-    args = Args(
-        dataname='merfish',
-        gpu = 0, 
-        epochs=400, # number of epochs for training
-        lr1=1e-3, # learning rate
-        wd1=0, # weight decay
-        lambd=1e-3, # lambda in the loss function, refer to online methods
-        n_layers=12, # number of GCNII layers, more layers mean a deeper model,
-                    # larger reception field, at cost of VRAM usage and time
-        der=0.5, # edge dropout rate in CCA-SSG
-        dfr=0.3, # feature dropout rate in CCA-SSG
-        use_encoder=False, # perform single-layer dimension reduction before 
-                          # GNNs, helps save VRAM and time if gene panel large
-        encoder_dim=512 # encoder dimension, ignore if use_encoder is False
+# check if embeddings already exist
+embed_dict_path = f'{working_dir}/output/merfish/embed_dict.pt'
+if os.path.exists(embed_dict_path):
+    embed_dict = torch.load(embed_dict_path)
+else:
+    # run cast mark
+    embed_dict = CAST.CAST_MARK(
+        coords_raw, exp_dict, 
+        f'{working_dir}/output/merfish/CAST-MARK',
+        graph_strategy='delaunay', 
+        args = Args(
+            dataname='merfish',
+            gpu = 0, 
+            epochs=400, # number of epochs for training
+            lr1=1e-3, # learning rate
+            wd1=0, # weight decay
+            lambd=1e-3, # lambda in the loss function, refer to online methods
+            n_layers=12, # number of GCNII layers, more layers mean a deeper model,
+                        # larger reception field, at cost of VRAM usage and time
+            der=0.5, # edge dropout rate in CCA-SSG
+            dfr=0.3, # feature dropout rate in CCA-SSG
+            use_encoder=False, # perform single-layer dimension reduction before 
+                            # GNNs, helps save VRAM and time if gene panel large
+            encoder_dim=512 # encoder dimension, ignore if use_encoder is False
+        )
     )
-)
+    # save 
+    torch.save(embed_dict, embed_dict_path)
+
 # detach, remove duplicated embeddings, and stack 
 embed_dict = {k.split('_dup')[0]: v.cpu().detach() 
               for k, v in embed_dict.items()}
@@ -444,7 +452,6 @@ for n_clust in list(range(4, 20 + 1, 2)) + [30, 40, 50, 100, 200]:
 # Save results
 torch.save(coords_raw, f'{working_dir}/output/merfish/coords_raw.pt')
 torch.save(exp_dict, f'{working_dir}/output/merfish/exp_dict.pt')
-torch.save(embed_dict, f'{working_dir}/output/merfish/embed_dict.pt')
 adata_comb.write_h5ad(f'{working_dir}/output/merfish/adata_comb_cast_mark.h5ad')
 
 # CAST_STACK ###################################################################
@@ -506,14 +513,17 @@ def collapse_dicts(coords_final, indices_dict):
     collapsed = {}
     for base_key, indices in indices_dict.items():
         if base_key.startswith('C57BL6J-638850'):
-            collapsed[base_key] = coords_final[base_key][base_key]
+            data = next(iter(coords_final[base_key].values()))
+            collapsed[base_key] = np.asarray(data, dtype=np.float32)
         else:
-            full_array = torch.zeros((len(indices), 2), dtype=torch.float32)
+            full_array = np.zeros((len(indices), 2), dtype=np.float32)
             start_idx = 0
             for i in range(1, len(coords_final) + 1):
                 key = f'{base_key}_{i}'
                 if key in coords_final:
-                    split_data = coords_final[key][key]
+                    split_data = next(v for k, v in coords_final[key].items() 
+                                   if not k.startswith('C57BL6J'))
+                    split_data = np.asarray(split_data, dtype=np.float32)
                     end_idx = start_idx + len(split_data)
                     split_indices = indices[start_idx:end_idx]
                     full_array[split_indices] = split_data
@@ -636,17 +646,17 @@ import seaborn as sns
 warnings.filterwarnings('ignore')
 
 # modified CAST_Projection.py 
-sys.path.insert(0, 'projects/def-wainberg/karbabi/CAST')
+sys.path.insert(0, 'project/CAST')
 import CAST
 print(CAST.__file__)
 
 # set paths 
-working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
+working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-PROJECT', exist_ok=True)
 
 # load data
 adata_comb = ad.read_h5ad(
-    f'{working_dir}/output/merfish/data/adata_comb_cast_stack.h5ad')
+    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
 
 # add batch, we will process all reference samples together with each query 
 adata_comb.obs['batch'] = adata_comb.obs['sample'].astype(str)
@@ -673,24 +683,25 @@ color_dict['Unknown'] = '#A9A9A9'
 list_ts = {}
 for _, (source_sample, target_sample) in source_target_list.items():
     print(f'Processing {target_sample}')
-    output_dir_t = f'{working_dir}/output/merfish/CAST-PROJECT/' \
-        f'{source_sample}_to_{target_sample}'
+    output_dir_t = f'{working_dir}/output/merfish/CAST-PROJECT/{source_sample}_to_{target_sample}'
     os.makedirs(output_dir_t, exist_ok=True)
     
-    # check if precomputed Harmony exists
-    harmony_file = f'{output_dir_t}/' \
-        f'X_harmony_{source_sample}_to_{target_sample}.h5ad'
+    list_ts_file = f'{output_dir_t}/list_ts_{target_sample}.pt'
+    if os.path.exists(list_ts_file):
+        print(f'Loading cached list_ts for {target_sample}')
+        list_ts[target_sample] = torch.load(list_ts_file)
+        continue
+        
+    harmony_file = f'{output_dir_t}/X_harmony_{source_sample}_to_{target_sample}.h5ad'
     if os.path.exists(harmony_file):
         print(f'Loading precomputed harmony from {harmony_file}')
         adata_subset = ad.read_h5ad(harmony_file)
     else:
         print('Computing harmony')
-        # subset the data for the current source-target pair
         adata_subset = adata_comb[
             (adata_comb.obs[batch_key] == target_sample) |
             (adata_comb.obs[batch_key] == source_sample)]
 
-        # use the correct harmony function from cast
         adata_subset = CAST.Harmony_integration(
             sdata_inte=adata_subset,
             scaled_layer='X_scanorama',
@@ -705,10 +716,8 @@ for _, (source_sample, target_sample) in source_target_list.items():
             output_path=output_dir_t,
             ifplot=False,
             ifcombat=False)
-        # save harmony-adjusted data to disk
         adata_subset.write_h5ad(harmony_file)
     
-    # run CAST_PROJECT
     print(f'Running CAST_PROJECT for {target_sample}')
     _, list_ts[target_sample] = CAST.CAST_PROJECT(
         sdata_inte=adata_subset,
@@ -716,11 +725,11 @@ for _, (source_sample, target_sample) in source_target_list.items():
         target_sample=target_sample,
         coords_source=np.array(
             adata_subset[adata_subset.obs[batch_key] == source_sample,:]
-                .obs.loc[:,['x','y']]),
+                .obs.loc[:,['x_ffd','y_ffd']]),
         coords_target=np.array(
             adata_subset[adata_subset.obs[batch_key] == target_sample,:]
-                .obs.loc[:,['x_final','y_final']]),
-        k2=1,
+                .obs.loc[:,['x_ffd','y_ffd']]),
+        k2=20,
         scaled_layer='X_scanorama',
         raw_layer='X_scanorama',
         batch_key=batch_key,
@@ -731,21 +740,105 @@ for _, (source_sample, target_sample) in source_target_list.items():
         umap_feature='X_umap',
         pc_feature='X_pca_harmony',
         integration_strategy=None, 
-        ave_dist_fold=10,
+        ave_dist_fold=30,
         alignment_shift_adjustment=0,
         color_dict=color_dict,
         adjust_shift=False,
         metric_t='cosine',
         working_memory_t=1000
     )
+    torch.save(list_ts[target_sample], list_ts_file)
     print(list_ts[target_sample])
     del adata_subset; gc.collect()
 
-# with open(f'{working_dir}/output/merfish/data/list_ts.pickle', 'wb') as f:
-#     pickle.dump(list_ts, f)
+# transfer cell type and region labels
+new_obs_list = []
+for sample, (source_sample, target_sample) in source_target_list.items():
+    # get nearest neighbor indices and weights from list_ts
+    project_ind = list_ts[sample][0]  
+    weights = list_ts[sample][1]      
     
-with open(f'{working_dir}/output/merfish/data/list_ts.pickle', 'rb') as f:
-    list_ts = pickle.load(f)
+    source_obs = adata_comb.obs[
+        adata_comb.obs[batch_key] == source_sample].copy()
+    target_obs = adata_comb.obs[
+        adata_comb.obs[batch_key] == target_sample].copy()
+    target_index = target_obs.index
+    target_obs = target_obs.reset_index(drop=True)
+
+    for col in ['class', 'subclass']:
+        # get source cell type labels
+        source_labels = source_obs[col].to_numpy()        
+        neighbor_labels = source_labels[project_ind]
+        
+        # get unique labels and their counts for each target cell
+        num_cells = len(target_obs)
+        cell_types = []
+        confidences = []
+        
+        for i in range(num_cells):
+            # count frequency of each label among neighbors
+            unique_labels, label_counts = np.unique(
+                neighbor_labels[i], return_counts=True)
+            
+            # get most common label 
+            max_count = np.max(label_counts)
+            most_common_mask = label_counts == max_count
+            most_common_labels = unique_labels[most_common_mask]
+            
+            # break ties by overall frequency in source dataset
+            if len(most_common_labels) > 1:
+                label_freqs = [np.sum(source_labels == label) 
+                             for label in most_common_labels]
+                cell_type = most_common_labels[np.argmax(label_freqs)]
+            else:
+                cell_type = most_common_labels[0]
+                
+            # calculate confidence as fraction of neighbors with this label
+            confidence = max_count / len(neighbor_labels[i])
+            cell_types.append(cell_type)
+            confidences.append(confidence)
+            
+        target_obs[col] = cell_types
+        target_obs[f'{col}_confidence'] = confidences
+        
+        # map colors
+        color_mapping = dict(zip(source_obs[col], source_obs[f'{col}_color']))
+        target_obs[f'{col}_color'] = target_obs[col].map(color_mapping)
+
+    # store reference info and distances
+    target_obs['ref_cell_id'] = source_obs.index[project_ind[:,0]]
+    target_obs['cosine_knn_weight'] = list_ts[sample][1][:,0]
+    target_obs['cosine_knn_cdist'] = list_ts[sample][2][:,0]
+    target_obs['cosine_knn_physical_dist'] = list_ts[sample][3][:,0]
+    
+    new_obs_list.append(target_obs.set_index(target_index))
+    
+# Plot confidence distributions per sample
+plt.figure(figsize=(10, 6))
+plot_data = pd.concat([
+    target_obs[['class_confidence', 'subclass_confidence']].assign(sample=target_sample)
+    for sample, (source_sample, target_sample) in source_target_list.items()
+]).melt(id_vars=['sample'], var_name='confidence_type', value_name='confidence')
+
+sns.violinplot(data=plot_data, x='sample', y='confidence', hue='confidence_type')
+plt.xticks(rotation=45)
+plt.title('Classification Confidence by Sample')
+plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/merfish/confidence_distribution.pdf')
+plt.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # transfer cell type and region labels
 new_obs_list = []
@@ -763,7 +856,7 @@ for sample, (source_sample, target_sample) in source_target_list.items():
         color_mapping = dict(zip(source_obs[col], source_obs[f'{col}_color']))
         target_obs[f'{col}_color'] = target_obs[col].map(color_mapping)
 
-    for level in ['division', 'structure', 'substructure']:
+    for level in ['division', 'structure']:
         target_obs[f'parcellation_{level}'] = target_obs[f'parcellation_{level}']        
         color_mapping = dict(zip(
             target_obs[f'parcellation_{level}'],
@@ -910,6 +1003,28 @@ for cell_type in cell_types:
 
 
 
+adata_comb = ad.read_h5ad(
+    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
+
+plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'PREG3']
+
+fig, ax = plt.subplots(figsize=(8, 8))
+ax.scatter(plot_df['x_ffd'], plot_df['y_ffd'], c='grey', s=1)
+
+random_point = plot_df.sample(n=1)
+ax.scatter(random_point['x_ffd'], random_point['y_ffd'], c='red', s=10)
+
+from matplotlib.patches import Circle
+radius = 0.546297587762388  # ave_dist_fold=30
+circle = Circle((random_point['x_ffd'].values[0], 
+                random_point['y_ffd'].values[0]), 
+                radius, fill=False, color='red')
+ax.add_artist(circle)
+ax.set_aspect('equal')
+ax.axis('off')
+
+plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/merfish/radius.png', dpi=200)
 
 
 
