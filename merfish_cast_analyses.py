@@ -38,6 +38,10 @@ for sample in samples_query:
     adata.obs = adata.obs.rename(columns={
         'Custom_regions': 'custom_regions', 'Datasets': 'datasets',
         'center_x': 'x_raw', 'center_y': 'y_raw'})
+    adata.obs[[
+        'class', 'class_color', 'subclass', 'subclass_color',
+        'parcellation_division', 'parcellation_division_color',
+        'parcellation_structure', 'parcellation_structure_color']] = 'Unknown'
     adata.obs.index = adata.obs['sample'] + '_' + \
         adata.obs.index.str.split('_').str[1]
     del adata.layers['orig_norm']
@@ -136,7 +140,7 @@ for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
 
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/merfish/qc_scores_violin.png',
+plt.savefig(f'{working_dir}/figures/merfish/qc_scores_violin.svg',
             dpi=300, bbox_inches='tight')
 
 # filter cells per sample 
@@ -244,7 +248,7 @@ for level in ['clas', 'subc']:
 mapper_names = {level: mapper_json['taxonomy_tree']['name_mapper'][
     f'CCN20230722_{level.upper()}'] for level in ['clas', 'subc']}
 
-for level, new_col in [('clas', 'class'), ('subc', 'subclass')]:
+for level, new_col in [('clas', 'class_mapper'), ('subc', 'subclass_mapper')]:
     mapper_df[new_col] = mapper_df[f'assignment_{level}'].map(
         lambda x: mapper_names[level].get(x, {}).get('name', 'Unknown')
         ).astype('category')
@@ -259,17 +263,12 @@ for i, (metric, title) in enumerate(zip(metrics, titles)):
     plot_df = pd.DataFrame({
         'value': mapper_df[f'{metric}_subc'],
         'sample': adata_query.obs['sample'],
-        'cell_type': mapper_df['subclass']
+        'cell_type': mapper_df['subclass_mapper']
     })
     sns.violinplot(data=plot_df, x='sample', y='value', ax=axes[i],
                   color=pink, alpha=0.5, linewidth=1, linecolor=pink,
                   order=sample_order)
-    
-    line_value = 0.8 if 'probability' in metric else 0.3
-    axes[i].axhline(y=line_value, ls='--', color=pink, alpha=0.5)
-    axes[i].text(1.02, line_value, f'{line_value:.1f}', va='center', 
-                transform=axes[i].get_yaxis_transform())
-    
+
     axes[i].set_title(title, fontsize=12, fontweight='bold')
     axes[i].set_ylabel('Score', fontsize=11, fontweight='bold')
     if i < len(metrics) - 1:
@@ -282,7 +281,7 @@ for i, (metric, title) in enumerate(zip(metrics, titles)):
         plt.setp(axes[i].get_xticklabels(), ha='right', va='top')
 
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/merfish/mapping_scores_violin.png',
+plt.savefig(f'{working_dir}/figures/merfish/mapping_scores_violin.svg',
             dpi=300, bbox_inches='tight')
 
 # join mapper results to anndata
@@ -292,8 +291,10 @@ adata_query.obs = adata_query.obs.join(mapper_df)
 fig, axes = plt.subplots(1, 3, figsize=(12, 4))
 pink = sns.color_palette('PiYG')[0]
 plots = [
-    ('n_genes_by_counts', 'avg_correlation_subc', 'Genes vs Correlation'),
-    ('n_genes_by_counts', 'bootstrapping_probability_subc', 'Genes vs Probability'),
+    ('n_genes_by_counts', 'avg_correlation_subc', 
+     'Genes vs Correlation'),
+    ('n_genes_by_counts', 'bootstrapping_probability_subc', 
+     'Genes vs Probability'),
     ('avg_correlation_subc', 'bootstrapping_probability_subc', 
      'Correlation vs Probability')]
 for i, (x, y, title) in enumerate(plots):
@@ -304,18 +305,18 @@ for i, (x, y, title) in enumerate(plots):
         axes[i].set_xscale('log')
     axes[i].set_title(title, fontsize=12, fontweight='bold')
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/merfish/qc_vs_mapping_scatter.png',
+plt.savefig(f'{working_dir}/figures/merfish/qc_vs_mapping_scatter.svg',
            dpi=300, bbox_inches='tight')
 
-# filter cells based on mapping metrics
-mask = (
-    (adata_query.obs['directly_assigned_subc'] == True) &
-    (adata_query.obs['bootstrapping_probability_subc'] > 0.8) &
-    (adata_query.obs['avg_correlation_subc'] > 0.3) &
-    (adata_query.obs['class'] != 'Unknown') &
-    (adata_query.obs['subclass'] != 'Unknown'))
-print(sum(mask))
-adata_query = adata_query[mask].copy()
+# # filter cells based on mapping metrics
+# mask = (
+#     (adata_query.obs['directly_assigned_subc'] == True) &
+#     (adata_query.obs['bootstrapping_probability_subc'] > 0.8) &
+#     (adata_query.obs['avg_correlation_subc'] > 0.3) &
+#     (adata_query.obs['class'] != 'Unknown') &
+#     (adata_query.obs['subclass'] != 'Unknown'))
+# print(sum(mask))
+# adata_query = adata_query[mask].copy()
 
 # save
 adata_query.write(f'{working_dir}/output/data/adata_query_merfish.h5ad')
@@ -388,7 +389,7 @@ embed_dict = CAST.CAST_MARK(
         lr1=1e-3, # learning rate
         wd1=0, # weight decay
         lambd=1e-3, # lambda in the loss function, refer to online methods
-        n_layers=9, # number of GCNII layers, more layers mean a deeper model,
+        n_layers=12, # number of GCNII layers, more layers mean a deeper model,
                     # larger reception field, at cost of VRAM usage and time
         der=0.5, # edge dropout rate in CCA-SSG
         dfr=0.3, # feature dropout rate in CCA-SSG
@@ -451,7 +452,6 @@ adata_comb.write_h5ad(f'{working_dir}/output/merfish/adata_comb_cast_mark.h5ad')
 import os
 import sys
 import torch
-import CAST
 import warnings
 import numpy as np
 import pandas as pd
@@ -462,9 +462,23 @@ import seaborn as sns
 
 warnings.filterwarnings('ignore')
 
+# modified CAST_Projection.py 
+sys.path.insert(0, 'project/CAST')
+import CAST
+print(CAST.__file__)
+
 # set paths 
 working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-STACK', exist_ok=True)
+
+# rotate query coords to help with registration
+def rotate_coords(coords, angle):
+    theta = np.radians(angle)
+    rot_mat = torch.tensor([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta), np.cos(theta)]],
+        dtype=torch.float32)
+    return torch.mm(torch.from_numpy(coords).float(), rot_mat).numpy()
 
 # split the data randomly, while remembering the original cell order
 # this is because a single image requires too much GPU mem
@@ -507,15 +521,6 @@ def collapse_dicts(coords_final, indices_dict):
             collapsed[base_key] = full_array
     return collapsed
 
-# rotate query coords to help with registration
-def rotate_coords(coords, angle):
-    theta = np.radians(angle)
-    rot_mat = torch.tensor([
-        [np.cos(theta), -np.sin(theta)],
-        [np.sin(theta), np.cos(theta)]],
-        dtype=torch.float32)
-    return torch.mm(torch.from_numpy(coords).float(), rot_mat).numpy()
-
 # load data 
 adata_comb = ad.read_h5ad(
     f'{working_dir}/output/merfish/adata_comb_cast_mark.h5ad')
@@ -535,14 +540,20 @@ coords_raw = {
     if not k.startswith('C57BL6J') else v 
     for k, v in coords_raw.items()
 }
-
 # split  
-coords_raw, embed_dict, indices_dict, query_reference_list  = \
-      split_dicts(coords_raw, embed_dict, n_split=10)
+coords_raw, embed_dict, indices_dict, query_reference_list = \
+    split_dicts(coords_raw, embed_dict, n_split=15)
 
-# run cast-stack, parameters modified for default are commented 
-coords_final_split = {}
+coords_affine_split = {}
+coords_ffd_split = {}
 for sample in sorted(query_reference_list.keys()):
+    cache_path = f'{working_dir}/output/merfish/CAST-STACK/{sample}.pt'
+    if os.path.exists(cache_path):
+        print(f'Loading cached coordinates for {sample}')
+        coords_affine_split[sample], coords_ffd_split[sample] = \
+            torch.load(cache_path)
+        continue
+
     params_dist = CAST.reg_params(
         dataname = query_reference_list[sample],
         gpu = 0 if torch.cuda.is_available() else -1,
@@ -554,130 +565,75 @@ for sample in sorted(query_reference_list.keys()):
         d_list = [3,2,1,1/2,1/3],
         attention_params = [None,3,1,0],
         #### FFD parameters
-        dist_penalty2 = [0],
+        dist_penalty2 = [0.2],
         alpha_basis_bs = [500],
         meshsize = [8],
-        iterations_bs = [0], # No FFD
+        iterations_bs = [80], 
         attention_params_bs = [[None,3,1,0]],
         mesh_weight = [None])
     
     params_dist.alpha_basis = torch.Tensor(
         [1/1000,1/1000,1/50,5,5]).reshape(5,1).to(params_dist.device)
 
-    coords_final_split[sample] = CAST.CAST_STACK(
-        coords_raw, 
-        embed_dict, 
-        f'{working_dir}/output/merfish/CAST-STACK',
-        query_reference_list[sample],
-        params_dist, 
-        rescale=True)
+    coords_affine_split[sample], coords_ffd_split[sample] = \
+        CAST.CAST_STACK(
+            coords_raw, 
+            embed_dict, 
+            f'{working_dir}/output/merfish/CAST-STACK',
+            query_reference_list[sample],
+            params_dist, 
+            mid_visual=False,
+            rescale=True)
+    
+    print(coords_affine_split[sample])
+    print(coords_ffd_split[sample])
+    torch.save((coords_affine_split[sample], coords_ffd_split[sample]), 
+               cache_path)
 
-# collapse back
-coords_final = collapse_dicts(coords_final_split, indices_dict)
+# collapse replicates
+coords_affine = collapse_dicts(coords_affine_split, indices_dict)
+coords_ffd = collapse_dicts(coords_ffd_split, indices_dict)
 
-# add final coords to anndata object 
-sample_names = sorted(list(coords_final.keys()))
+# add coords to adata
+sample_names = sorted(list(coords_ffd.keys()))
 cell_index = adata_comb.obs.index[adata_comb.obs['source'] == 'merfish']
-coords_stack = np.vstack([coords_final[s] for s in sample_names])
-coords_df = pd.DataFrame(coords_stack, 
-                         columns=['x_final', 'y_final'], 
-                         index=cell_index)
-adata_comb.obs = adata_comb.obs.join(coords_df)
-mask = adata_comb.obs['source'] == 'Zeng-ABCA-Reference'
-adata_comb.obs.loc[mask, 'x_final'] = adata_comb.obs.loc[mask, 'x']
-adata_comb.obs.loc[mask, 'y_final'] = adata_comb.obs.loc[mask, 'y']
 
-# save
-torch.save(coords_final, f'{working_dir}/output/merfish/coords_final.pt')
+coords_stack = np.vstack([coords_affine[s] for s in sample_names])
+coords_df = pd.DataFrame(coords_stack, 
+                        columns=['x_affine', 'y_affine'], 
+                        index=cell_index)
+adata_comb.obs = adata_comb.obs.join(coords_df)
+
+coords_stack_ffd = np.vstack([coords_ffd[s] for s in sample_names])
+coords_df_ffd = pd.DataFrame(coords_stack_ffd, 
+                           columns=['x_ffd', 'y_ffd'], 
+                           index=cell_index)
+adata_comb.obs = adata_comb.obs.join(coords_df_ffd)
+
+mask = adata_comb.obs['source'] == 'Zeng-ABCA-Reference'
+for coord in ['affine', 'ffd']:
+    adata_comb.obs.loc[mask, f'x_{coord}'] = adata_comb.obs.loc[mask, 'x']
+    adata_comb.obs.loc[mask, f'y_{coord}'] = adata_comb.obs.loc[mask, 'y']
+
+torch.save(coords_affine, f'{working_dir}/output/merfish/coords_affine.pt')
+torch.save(coords_ffd, f'{working_dir}/output/merfish/coords_ffd.pt')
 adata_comb.write(f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
 
-# Post-processing ##############################################################
+# CAST_PROJECT #################################################################
 
-import os
-import sys
-import warnings
 import numpy as np
 import pandas as pd
 import anndata as ad
 import scanpy as sc
+import sys
+import os
+import torch
+import pickle
+import warnings
+import gc
 import matplotlib.pyplot as plt
 import seaborn as sns
-
 warnings.filterwarnings('ignore')
-
-working_dir = 'project/spatial-pregnancy-postpart'
-
-# add new obs columns to query data
-adata_comb = ad.read_h5ad(
-    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
-adata_query = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_query_merfish.h5ad')
-
-adata_query_i = adata_comb[adata_comb.obs['source'] == 'merfish'].copy()
-adata_query = adata_query[adata_query_i.obs_names]
-
-for col in adata_query_i.obs.columns.drop(['x', 'y']):
-    if col not in adata_query.obs.columns:
-        adata_query.obs[col] = adata_query_i.obs[col]
-
-# add cell type colors
-cells_joined = pd.read_csv(
-    'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
-    'views/cells_joined.csv')
-
-
-
-
-
-
-
-adata_query.X = adata_query.layers['counts']
-
-adata_query.write(f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
-
-# save the reference obs
-adata_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference']
-adata_ref_obs = adata_ref.obs
-adata_ref_obs.to_csv(
-    f'{working_dir}/output/data/adata_ref_final_merfish_obs.csv')
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # modified CAST_Projection.py 
 sys.path.insert(0, 'projects/def-wainberg/karbabi/CAST')
@@ -828,68 +784,91 @@ adata_comb.obs.loc[new_obs.index] = new_obs
 adata_comb.write(
     f'{working_dir}/output/merfish/data/adata_comb_cast_project.h5ad')
 
-######################################
 
-# final query data
-adata_comb = ad.read_h5ad(
-    f'{working_dir}/output/merfish/data/adata_comb_cast_project.h5ad')
-adata_query = ad.read_h5ad(f'{working_dir}/output/data/adata_query_merfish.h5ad')
-adata_query_i = adata_comb[adata_comb.obs['source'] == 'merfish'].copy()
-adata_query = adata_query[adata_query_i.obs_names]
-
-cols_to_keep = [
-    'volume', 'center_x', 'center_y', 'BarcodeCountOrig', 'BarcodeCountNor',
-    'scDblFinder.sample', 'scDblFinder.class', 'scDblFinder.score', 
-    'scDblFinder.weighted', 'scDblFinder.cxds_score', 'n_genes_by_counts', 
-    'log1p_n_genes_by_counts', 'total_counts', 'log1p_total_counts', 
-    'pct_counts_in_top_20_genes', 'outlier', 'doublet_outlier'
-]
-adata_query.obs = pd.concat([
-    adata_query_i.obs, adata_query.obs[cols_to_keep]], axis=1)
-adata_query.X = adata_query.layers['counts']
-
-# save
-del adata_query.layers['counts']; del adata_query.uns
-adata_query.write(f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
-
-# save the reference obs
-adata_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference']
-adata_ref_obs = adata_ref.obs
-adata_ref_obs.to_csv(
-    f'{working_dir}/output/data/adata_ref_final_merfish_obs.csv')
-
-# plotting #####################################################################
+# Post-processing ##############################################################
 
 import os
+import sys
+import warnings
 import numpy as np
 import pandas as pd
 import anndata as ad
+import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from pathlib import Path
-working_dir = f'{Path.home()}/projects/def-wainberg/karbabi/' \
- 'spatial-pregnancy-postpart'
+warnings.filterwarnings('ignore')
 
-# load data 
-ref_obs = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_ref_final.h5ad').obs
-query_obs = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_query_merfish_final.h5ad').obs
+working_dir = 'project/spatial-pregnancy-postpart'
 
-ref_obs = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
-query_obs = adata_comb[adata_comb.obs['source'] == 'merfish'].obs
+# add new obs columns to query data
+adata_comb = ad.read_h5ad(
+    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
+adata_query = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_query_merfish.h5ad')
 
-def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
+adata_query_i = adata_comb[adata_comb.obs['source'] == 'merfish'].copy()
+adata_query = adata_query[adata_query_i.obs_names]
+
+for col in adata_query_i.obs.columns.drop(['x', 'y']):
+    if col not in adata_query.obs.columns:
+        adata_query.obs[col] = adata_query_i.obs[col]
+
+# add cell type colors
+cells_joined = pd.read_csv(
+    'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
+    'views/cells_joined.csv')
+
+color_mappings = {
+    'class': dict(zip(cells_joined['class'], cells_joined['class_color'])),
+    'subclass': dict(zip(cells_joined['subclass'], cells_joined['subclass_color']))
+}
+for level in ['class', 'subclass']:
+    adata_query.obs[f'{level}_color'] = adata_query.obs[level].map(
+        color_mappings[level])
+
+sc.tl.pca(adata_query)
+sc.pp.neighbors(adata_query)
+sc.tl.umap(adata_query)
+
+sc.pl.umap(adata_query, color='class', palette=color_mappings['class'])
+plt.savefig(f'{working_dir}/figures/merfish/umap_class.png', 
+            dpi=200, bbox_inches='tight')
+
+sc.pl.umap(adata_query, color='subclass', palette=color_mappings['subclass'])
+plt.savefig(f'{working_dir}/figures/merfish/umap_subclass.png', 
+            dpi=200, bbox_inches='tight')
+
+
+
+
+
+# save
+adata_query.X = adata_query.layers['counts']
+adata_query.write(f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+
+
+
+
+# create multi-sample plots
+obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
+obs_query = adata_query.obs
+
+def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, color_mappings,
+                           output_dir):
     ref_samples = ref_obs['sample'].unique()
     query_samples = query_obs['sample'].unique() 
     n_cols = 4
     n_rows = 1 + -(-len(query_samples) // n_cols)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 5*n_rows))
     axes = axes.flatten()
-    for i, (sample, obs, coord_cols) in enumerate(
-            [(s, ref_obs, ['x', 'y']) for s in ref_samples] +
-            [(s, query_obs, ['x_final', 'y_final']) for s in query_samples]):
+    
+    cell_color = color_mappings[col].get(cell_type, '#A9A9A9')
+    coord_cols = ['x_final', 'y_final']
+    
+    for i, (sample, obs) in enumerate(
+            [(s, ref_obs) for s in ref_samples] +
+            [(s, query_obs) for s in query_samples]):
         if i >= len(axes):
             break
         ax = axes[i]
@@ -901,13 +880,14 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
                       c='grey', s=0.1, alpha=0.1)
             ax.scatter(plot_df[mask][coord_cols[0]], 
                       plot_df[mask][coord_cols[1]], 
-                      c=plot_df[mask][f'{col}_color'], s=0.8)
+                      c=cell_color, s=0.8)
         else:
             ax.text(0.5, 0.5, 'no cells of this type', 
                    ha='center', va='center', transform=ax.transAxes)
         ax.set_title(f'{sample}\n{col}: {cell_type}')
         ax.axis('off')
         ax.set_aspect('equal')
+    
     for ax in axes[i+1:]:
         fig.delaxes(ax)
     plt.tight_layout()
@@ -919,9 +899,17 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
 col = 'subclass'
 output_dir = f'{working_dir}/figures/merfish/spatial_cell_types_{col}_final'
 os.makedirs(output_dir, exist_ok=True)
-cell_types = pd.concat([ref_obs[col], query_obs[col]]).unique()
+cell_types = pd.concat([obs_ref[col], obs_query[col]]).unique()
 
 for cell_type in cell_types:
-    if (ref_obs[col].value_counts().get(cell_type, 0) > 0 or 
-        query_obs[col].value_counts().get(cell_type, 0) > 0):
-        create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir)
+    if (obs_ref[col].value_counts().get(cell_type, 0) > 0 or 
+        obs_query[col].value_counts().get(cell_type, 0) > 0):
+        create_multi_sample_plot(
+            obs_ref, obs_query, col, cell_type, color_mappings, output_dir)
+
+
+
+
+
+
+
