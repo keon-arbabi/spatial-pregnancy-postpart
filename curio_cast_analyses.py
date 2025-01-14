@@ -172,9 +172,9 @@ for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
 
 plt.tight_layout()
 plt.savefig(f'{working_dir}/figures/curio/qc_scores_violin.svg',
-            dpi=300, bbox_inches='tight')
+            bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/curio/qc_scores_violin.png',
-            dpi=300, bbox_inches='tight')
+            dpi=150, bbox_inches='tight')
 
 # filter cells per sample 
 keep_idx = []  
@@ -756,8 +756,10 @@ for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     axes[i].set_title(title, fontsize=12, fontweight='bold')
     axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/curio/cast_metrics_violin.svg',
-            dpi=300, bbox_inches='tight')
+plt.show(f'{working_dir}/figures/curio/cast_metrics_violin.svg',
+         bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/curio/cast_metrics_violin.png',
+            dpi=150, bbox_inches='tight')
 
 # add new obs columns
 adata_query = ad.read_h5ad(

@@ -140,8 +140,10 @@ for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
 
 plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/merfish/qc_scores_violin.png',
+            dpi=150, bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/merfish/qc_scores_violin.svg',
-            dpi=300, bbox_inches='tight')
+            bbox_inches='tight')
 
 # filter cells per sample 
 keep_idx = []  
@@ -904,9 +906,10 @@ for sample, (source_sample, target_sample) in source_target_list.items():
     new_obs_list.append(target_obs.set_index(target_index))
 
 # plot cast metrics
-metrics = ['subclass_confidence', 'subclass_avg_cdist']
-titles = ['Subclass Assignment Confidence', 'Subclass Average Cosine Distance']
-y_labels = ['Confidence Score', 'Cosine Distance']
+metrics = ['subclass_confidence', 'subclass_avg_cdist', 'subclass_avg_pdist']
+titles = ['Subclass Assignment Confidence', 'Subclass Average Cosine Distance',
+          'Subclass Average Physical Distance']
+y_labels = ['Confidence Score', 'Cosine Distance', 'Physical Distance (μm)']
 
 sample_order = [
     'CTRL1', 'CTRL2', 'CTRL3', 
@@ -926,13 +929,22 @@ configs = {
         ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0]),
     'subclass_avg_cdist': dict(
         log=False, lines=(0.7, None),
-        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], invert=True)
+        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], invert=True),
+    'subclass_avg_pdist': dict(
+        log=False, lines=(None, None),
+        ticks=[0, 1], invert=True)
 }
 
 for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
-    cfg = configs[m]
+    cfg = configs[m]    
+    if m == 'subclass_avg_pdist':
+        plot_data = pd.concat(new_obs_list)
+        plot_data = plot_data[~np.isinf(plot_data[m])]
+    else:
+        plot_data = pd.concat(new_obs_list)
+        
     sns.violinplot(
-        data=pd.concat(new_obs_list), x='sample', y=m, ax=axes[i],
+        data=plot_data, x='sample', y=m, ax=axes[i],
         color=pink, alpha=0.5, linewidth=1, linecolor=pink,
         order=sample_order)
     if cfg['log']:
