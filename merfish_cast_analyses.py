@@ -213,50 +213,127 @@ adata_query.var.index = adata_query.var['gene_id']
 #         --type_assignment.n_processors 64
 # ''')
 
-# load mapper results and munge 
+# load mapper results  
 with open(f'{working_dir}/output/merfish/mapper_output.json') as f:
     mapper_json = json.load(f)
 
-mapper_df = pd.DataFrame([dict(m, cell_id=c['cell_id'], level=l) 
-    for c in mapper_json['results'] 
-    for l,m in c.items() if isinstance(m, dict)])
+# get reference cell types and map to taxonomy ids
+obs_ref_zeng = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_ref_zeng_raw.h5ad').obs
+obs_ref_zhuang = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_ref_zhuang.h5ad').obs
 
-cols_to_drop = ['runner_up_assignment', 'runner_up_correlation', 
-                'runner_up_probability']
-levels = ['CCN20230722_CLAS', 'CCN20230722_SUBC']
-values = ['assignment', 'bootstrapping_probability', 'avg_correlation', 
-          'aggregate_probability', 'directly_assigned']
+keep_cell_types = (obs_ref_zeng['subclass'].value_counts()[
+    obs_ref_zeng['subclass'].value_counts() > 20].index.union(
+    obs_ref_zhuang['subclass'].value_counts()[
+        obs_ref_zhuang['subclass'].value_counts() > 20].index))
+print(len(keep_cell_types))
 
-mapper_df = (mapper_df[mapper_df['level'].isin(levels)]
-    .drop(columns=cols_to_drop)
-    .assign(level=lambda x: x.level.str.extract('CCN20230722_(.*)')[0].str.lower())
-    .pivot(index='cell_id', columns='level', values=values))
+# get reverse mapping from names to ids for filtering
+mapper_names = {
+    level: mapper_json['taxonomy_tree']['name_mapper'][
+        f'CCN20230722_{level.upper()}'] 
+    for level in ['clas', 'subc']
+}
+name_to_id = {
+    name: id 
+    for id, data in mapper_names['subc'].items() 
+    for name in [data.get('name')]
+}
+keep_cell_type_ids = [
+    name_to_id[name] for name in keep_cell_types if name in name_to_id
+]
+
+# create expanded dataframe including runner-up info
+rows = []
+for result in mapper_json['results']:
+    cell_id = result['cell_id']
+    for level, data in result.items():
+        if isinstance(data, dict):
+            # add main assignment
+            row = {
+                'cell_id': cell_id,
+                'level': level,
+                'assignment': data['assignment'],
+                'bootstrapping_probability': data['bootstrapping_probability'],
+                'avg_correlation': data['avg_correlation']
+            }
+            rows.append(row)
+            # add runner-up assignments if they exist
+            if 'runner_up_assignment' in data:
+                for i, runner_up in enumerate(data['runner_up_assignment']):
+                    row = {
+                        'cell_id': cell_id,
+                        'level': level,
+                        'assignment': runner_up,
+                        'bootstrapping_probability': 
+                            data['runner_up_probability'][i],
+                        'avg_correlation': data['runner_up_correlation'][i]
+                    }
+                    rows.append(row)
+
+mapper_df = pd.DataFrame(rows)
+
+# pre-filter and sort data frames 
+subc_df = (mapper_df[mapper_df['level'] == 'subc']
+           .sort_values('cell_id')
+           .set_index('cell_id'))
+class_df = (mapper_df[mapper_df['level'] == 'clas']
+           .groupby('cell_id').first())
+
+# get main assignments (first row for each cell)
+main_assignments = subc_df.groupby('cell_id').first()
+valid_main = main_assignments[
+    main_assignments['assignment'].isin(keep_cell_type_ids)]
+
+# for cells without valid main, get first valid runner-up
+invalid_cells = set(subc_df.index) - set(valid_main.index)
+runner_ups = subc_df.loc[list(invalid_cells)].groupby('cell_id').apply(
+    lambda x: x[x['assignment'].isin(keep_cell_type_ids)].iloc[0] 
+    if any(x['assignment'].isin(keep_cell_type_ids)) else None
+).dropna()
+
+# combine valid assignments
+valid_subc = pd.concat([valid_main, runner_ups])
+valid_class = class_df.loc[valid_subc.index]
+valid_assignments = pd.concat([valid_subc, valid_class])
+
+# reset index to make cell_id a column before pivoting
+mapper_df = valid_assignments.reset_index()
+
+# pivot and flatten column names
+mapper_df = mapper_df.pivot(
+    index='cell_id',
+    columns='level',
+    values=['assignment', 'bootstrapping_probability', 'avg_correlation'])
 mapper_df.columns = [f'{col[0]}_{col[1]}' for col in mapper_df.columns]
 
-for metric in ['bootstrapping_probability', 'avg_correlation', 
-               'aggregate_probability']:
-    for level in ['clas', 'subc']:
-        mapper_df[f'{metric}_{level}'] = mapper_df[f'{metric}_{level}'
-            ].astype(float)
+# mark invalid assignments as NA
+invalid_mask = ~mapper_df['assignment_subc'].isin(keep_cell_type_ids)
+mapper_df.loc[invalid_mask] = np.nan
 
-for level in ['clas', 'subc']:
-    mapper_df[f'directly_assigned_{level}'] = mapper_df[
-        f'directly_assigned_{level}'].astype('bool')
-    mapper_df[f'assignment_{level}'] = mapper_df[
-        f'assignment_{level}'].astype('category')
+# join mapper results to anndata
+adata_query.obs = adata_query.obs.join(mapper_df)
 
-mapper_names = {level: mapper_json['taxonomy_tree']['name_mapper'][
-    f'CCN20230722_{level.upper()}'] for level in ['clas', 'subc']}
-
+# map ids back to names
 for level, new_col in [('clas', 'class_mapper'), ('subc', 'subclass_mapper')]:
     mapper_df[new_col] = mapper_df[f'assignment_{level}'].map(
         lambda x: mapper_names[level].get(x, {}).get('name', 'Unknown')
         ).astype('category')
-    
+
+# convert data types
+for metric in ['bootstrapping_probability', 'avg_correlation']:
+    for level in ['clas', 'subc']:
+        mapper_df[f'{metric}_{level}'] = mapper_df[
+            f'{metric}_{level}'].astype(float)
+for level in ['clas', 'subc']:
+    mapper_df[f'assignment_{level}'] = mapper_df[
+        f'assignment_{level}'].astype('category')
+
 # plot mapping metrics
 metrics = ['bootstrapping_probability', 'avg_correlation']
 titles = ['Bootstrapping Probability', 'Average Correlation']
-pink = sns.color_palette("PiYG")[0]
+pink = sns.color_palette('PiYG')[0]
 
 fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
 for i, (metric, title) in enumerate(zip(metrics, titles)):
@@ -265,9 +342,10 @@ for i, (metric, title) in enumerate(zip(metrics, titles)):
         'sample': adata_query.obs['sample'],
         'cell_type': mapper_df['subclass_mapper']
     })
-    sns.violinplot(data=plot_df, x='sample', y='value', ax=axes[i],
-                  color=pink, alpha=0.5, linewidth=1, linecolor=pink,
-                  order=sample_order)
+    sns.violinplot(
+        data=plot_df, x='sample', y='value', ax=axes[i],
+        color=pink, alpha=0.5, linewidth=1, linecolor=pink,
+        order=sample_order)
 
     axes[i].set_title(title, fontsize=12, fontweight='bold')
     axes[i].set_ylabel('Score', fontsize=11, fontweight='bold')
@@ -276,50 +354,55 @@ for i, (metric, title) in enumerate(zip(metrics, titles)):
         axes[i].set_xlabel('')
         axes[i].set_xticks([])
     else:
-        axes[i].set_xticklabels(sample_labels, rotation=45, ha='right', va='top')
+        axes[i].set_xticklabels(
+            sample_labels, rotation=45, ha='right', va='top')
         axes[i].tick_params(axis='x', rotation=45)
         plt.setp(axes[i].get_xticklabels(), ha='right', va='top')
 
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/merfish/mapping_scores_violin.svg',
-            dpi=300, bbox_inches='tight')
+plt.savefig(
+    f'{working_dir}/figures/merfish/mapping_scores_violin.svg',
+    bbox_inches='tight')
+plt.savefig(
+    f'{working_dir}/figures/merfish/mapping_scores_violin.png',
+    dpi=150, bbox_inches='tight')
 
-# join mapper results to anndata
+# join mapper results to anndata, keeping only mapped cells
+adata_query = adata_query[mapper_df.index]
 adata_query.obs = adata_query.obs.join(mapper_df)
 
 # plot mapping metrics vs qc metrics
 fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-pink = sns.color_palette('PiYG')[0]
 plots = [
-    ('n_genes_by_counts', 'avg_correlation_subc', 
-     'Genes vs Correlation'),
+    ('n_genes_by_counts', 'avg_correlation_subc', 'Genes vs Correlation'),
     ('n_genes_by_counts', 'bootstrapping_probability_subc', 
      'Genes vs Probability'),
     ('avg_correlation_subc', 'bootstrapping_probability_subc', 
-     'Correlation vs Probability')]
+     'Correlation vs Probability')
+]
 for i, (x, y, title) in enumerate(plots):
     sns.scatterplot(
-        data=adata_query.obs, x=x, y=y, ax=axes[i], color=pink, 
-        alpha=0.005, s=10, linewidth=0)
+        data=adata_query.obs, x=x, y=y, ax=axes[i], 
+        color=pink, alpha=0.005, s=10, linewidth=0)
     if x == 'n_genes_by_counts':
         axes[i].set_xscale('log')
     axes[i].set_title(title, fontsize=12, fontweight='bold')
+
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/merfish/qc_vs_mapping_scatter.svg',
-           dpi=300, bbox_inches='tight')
+plt.savefig(
+    f'{working_dir}/figures/merfish/qc_vs_mapping_scatter.png',
+    dpi=150, bbox_inches='tight')
 
 # # filter cells based on mapping metrics
+# print(adata_query.shape[0])
 # mask = (
-#     (adata_query.obs['directly_assigned_subc'] == True) &
-#     (adata_query.obs['bootstrapping_probability_subc'] > 0.8) &
-#     (adata_query.obs['avg_correlation_subc'] > 0.3) &
-#     (adata_query.obs['class'] != 'Unknown') &
-#     (adata_query.obs['subclass'] != 'Unknown'))
+#     (adata_query.obs['bootstrapping_probability_subc'] > 0.4) &
+#     (adata_query.obs['avg_correlation_subc'] > 0.3))
 # print(sum(mask))
 # adata_query = adata_query[mask].copy()
 
 # save
-adata_query.write(f'{working_dir}/output/data/adata_query_merfish.h5ad')
+adata_query.write(f'{working_dir}/output/adata_query_merfish.h5ad')
 
 # CAST-MARK ####################################################################
 
@@ -445,7 +528,7 @@ for n_clust in list(range(4, 20 + 1, 2)) + [30, 40, 50, 100, 200]:
     cell_label = kmeans.labels_
     cluster_pl = sns.color_palette('Set3', n_clust)
     fig = plot_slices(sample_names, coords_raw, cell_label, cluster_pl, n_clust)
-    fig.savefig(f'{plot_dir}/all_samples_k{str(n_clust)}.png', dpi=300)
+    fig.savefig(f'{plot_dir}/all_samples_k{str(n_clust)}.png', dpi=150)
     plt.close(fig)
     adata_comb.obs[f'k{n_clust}_cluster'] = cell_label
 
@@ -638,7 +721,6 @@ import scanpy as sc
 import sys
 import os
 import torch
-import pickle
 import warnings
 import gc
 import matplotlib.pyplot as plt
@@ -751,12 +833,15 @@ for _, (source_sample, target_sample) in source_target_list.items():
     print(list_ts[target_sample])
     del adata_subset; gc.collect()
 
-# transfer cell type and region labels
+# transfer cell type
 new_obs_list = []
 for sample, (source_sample, target_sample) in source_target_list.items():
-    # get nearest neighbor indices and weights from list_ts
+    print(f'Processing {target_sample}')
+    # get nearest neighbor results from cast
     project_ind = list_ts[sample][0]  
-    weights = list_ts[sample][1]      
+    project_weight = list_ts[sample][1]      
+    cdists = list_ts[sample][2]
+    physical_dist = list_ts[sample][3]
     
     source_obs = adata_comb.obs[
         adata_comb.obs[batch_key] == source_sample].copy()
@@ -766,117 +851,143 @@ for sample, (source_sample, target_sample) in source_target_list.items():
     target_obs = target_obs.reset_index(drop=True)
 
     for col in ['class', 'subclass']:
-        # get source cell type labels
         source_labels = source_obs[col].to_numpy()        
         neighbor_labels = source_labels[project_ind]
         
-        # get unique labels and their counts for each target cell
         num_cells = len(target_obs)
         cell_types = []
         confidences = []
+        avg_weights = []
+        avg_cdists = []
+        avg_pdists = []
         
         for i in range(num_cells):
-            # count frequency of each label among neighbors
+            # get most common label among neighbors
             unique_labels, label_counts = np.unique(
                 neighbor_labels[i], return_counts=True)
-            
-            # get most common label 
             max_count = np.max(label_counts)
             most_common_mask = label_counts == max_count
             most_common_labels = unique_labels[most_common_mask]
             
-            # break ties by overall frequency in source dataset
+            # break ties by overall frequency in source
             if len(most_common_labels) > 1:
-                label_freqs = [np.sum(source_labels == label) 
-                             for label in most_common_labels]
+                label_freqs = [
+                    np.sum(source_labels == label)
+                    for label in most_common_labels]
                 cell_type = most_common_labels[np.argmax(label_freqs)]
             else:
                 cell_type = most_common_labels[0]
-                
-            # calculate confidence as fraction of neighbors with this label
-            confidence = max_count / len(neighbor_labels[i])
+            
+            # calculate metrics using contributing neighbors
+            contributing_mask = neighbor_labels[i] == cell_type
+            neighbor_weights = project_weight[i][contributing_mask]
+            confidence = np.sum(neighbor_weights) / np.sum(project_weight[i])
+            
+            avg_weights.append(np.mean(project_weight[i][contributing_mask]))
+            avg_cdists.append(np.mean(cdists[i][contributing_mask]))
+            avg_pdists.append(np.mean(physical_dist[i][contributing_mask]))
+            
             cell_types.append(cell_type)
             confidences.append(confidence)
-            
+        
+        # store results
         target_obs[col] = cell_types
         target_obs[f'{col}_confidence'] = confidences
+        target_obs[f'{col}_avg_weight'] = avg_weights
+        target_obs[f'{col}_avg_cdist'] = avg_cdists
+        target_obs[f'{col}_avg_pdist'] = avg_pdists
         
         # map colors
         color_mapping = dict(zip(source_obs[col], source_obs[f'{col}_color']))
         target_obs[f'{col}_color'] = target_obs[col].map(color_mapping)
-
-    # store reference info and distances
-    target_obs['ref_cell_id'] = source_obs.index[project_ind[:,0]]
-    target_obs['cosine_knn_weight'] = list_ts[sample][1][:,0]
-    target_obs['cosine_knn_cdist'] = list_ts[sample][2][:,0]
-    target_obs['cosine_knn_physical_dist'] = list_ts[sample][3][:,0]
     
     new_obs_list.append(target_obs.set_index(target_index))
-    
-# Plot confidence distributions per sample
-plt.figure(figsize=(10, 6))
-plot_data = pd.concat([
-    target_obs[['class_confidence', 'subclass_confidence']].assign(sample=target_sample)
-    for sample, (source_sample, target_sample) in source_target_list.items()
-]).melt(id_vars=['sample'], var_name='confidence_type', value_name='confidence')
 
-sns.violinplot(data=plot_data, x='sample', y='confidence', hue='confidence_type')
-plt.xticks(rotation=45)
-plt.title('Classification Confidence by Sample')
+# plot cast metrics
+metrics = ['subclass_confidence', 'subclass_avg_cdist']
+titles = ['Subclass Assignment Confidence', 'Subclass Average Cosine Distance']
+y_labels = ['Confidence Score', 'Cosine Distance']
+
+sample_order = [
+    'CTRL1', 'CTRL2', 'CTRL3', 
+    'PREG1', 'PREG2', 'PREG3',
+    'POSTPART1', 'POSTPART2', 'POSTPART3']
+sample_labels = [
+    'Control 1', 'Control 2', 'Control 3',
+    'Pregnant 1', 'Pregnant 2', 'Pregnant 3',
+    'Postpartum 1', 'Postpartum 2', 'Postpartum 3']
+
+pink = sns.color_palette("PiYG")[0]
+fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
+
+configs = {
+    'subclass_confidence': dict(
+        log=False, lines=(0.7, None),
+        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0]),
+    'subclass_avg_cdist': dict(
+        log=False, lines=(0.7, None),
+        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], invert=True)
+}
+
+for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
+    cfg = configs[m]
+    sns.violinplot(
+        data=pd.concat(new_obs_list), x='sample', y=m, ax=axes[i],
+        color=pink, alpha=0.5, linewidth=1, linecolor=pink,
+        order=sample_order)
+    if cfg['log']:
+        axes[i].set_yscale('log')
+        axes[i].set_yticks(cfg['ticks'])
+    if cfg.get('invert', False):
+        axes[i].invert_yaxis()
+    for val in cfg['lines']:
+        if val:
+            axes[i].axhline(y=val, ls='--', color=pink, alpha=0.5)
+            axes[i].text(1.02, val, f'{val:.1f}', va='center', 
+                        transform=axes[i].get_yaxis_transform())
+    if i < len(metrics) - 1:
+        axes[i].set_xticklabels([])
+        axes[i].set_xlabel('')
+        axes[i].set_xticks([])
+    else:
+        axes[i].set_xticklabels(sample_labels, rotation=45, ha='right', va='top')
+        axes[i].set_xlabel('Sample', fontsize=11, fontweight='bold')
+    
+    axes[i].set_title(title, fontsize=12, fontweight='bold')
+    axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
+
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/merfish/confidence_distribution.pdf')
-plt.close()
+plt.savefig(f'{working_dir}/figures/merfish/cast_metrics_violin.svg',
+            bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/merfish/cast_metrics_violin.png',
+            dpi=150, bbox_inches='tight')
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-# transfer cell type and region labels
-new_obs_list = []
-for sample, (source_sample, target_sample) in source_target_list.items():
-    project_ind = list_ts[sample][0][:, 0].flatten()
-    source_obs = adata_comb.obs[
-        adata_comb.obs[batch_key] == source_sample].copy()
-    target_obs = adata_comb.obs[
-        adata_comb.obs[batch_key] == target_sample].copy()
-    target_index = target_obs.index
-    target_obs = target_obs.reset_index(drop=True)
-
-    for col in ['class', 'subclass', 'supertype', 'cluster']:
-        target_obs[col] = source_obs[col].iloc[project_ind].values
-        color_mapping = dict(zip(source_obs[col], source_obs[f'{col}_color']))
-        target_obs[f'{col}_color'] = target_obs[col].map(color_mapping)
-
-    for level in ['division', 'structure']:
-        target_obs[f'parcellation_{level}'] = target_obs[f'parcellation_{level}']        
-        color_mapping = dict(zip(
-            target_obs[f'parcellation_{level}'],
-            target_obs[f'parcellation_{level}_color']))
-        target_obs[f'parcellation_{level}_color'] = \
-            target_obs[f'parcellation_{level}'].map(color_mapping)
-
-    target_obs['ref_cell_id'] = source_obs.index[project_ind]
-    target_obs['cosine_knn_weight'] = list_ts[sample][1][:, 0]
-    target_obs['cosine_knn_cdist'] = list_ts[sample][2][:, 0]
-    target_obs['cosine_knn_physical_dist'] = list_ts[sample][3][:, 0]
-    new_obs_list.append(target_obs.set_index(target_index))
+# add new obs columns
+adata_query = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_query_merfish.h5ad')
+adata_query.obs = adata_query.obs.drop(columns=[
+    'class', 'subclass', 'class_color', 'subclass_color', 
+    'parcellation_division', 'parcellation_division_color', 
+    'parcellation_structure', 'parcellation_structure_color'])
 
 new_obs = pd.concat(new_obs_list)
-adata_comb.obs[new_obs.columns.difference(adata_comb.obs.columns)] = np.nan
-adata_comb.obs.loc[new_obs.index] = new_obs
-# save
-adata_comb.write(
-    f'{working_dir}/output/merfish/data/adata_comb_cast_project.h5ad')
+new_obs = new_obs.reindex(index=adata_query.obs_names)
+for col in new_obs.columns:
+    if col not in adata_query.obs.columns:
+        adata_query.obs[col] = new_obs[col]
 
+# filter using cast metrics
+print(len(adata_query)) # 1,171,525
+mask = ((adata_query.obs['subclass_confidence'] >= 0.8) &
+        (adata_query.obs['subclass_avg_cdist'] <= 0.6))
+
+adata_query = adata_query[mask].copy()
+print(len(adata_query)) # 904,577
+
+# save
+adata_query.X = adata_query.layers['counts']
+adata_query.write(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 
 # Post-processing ##############################################################
 
@@ -944,11 +1055,15 @@ adata_query.write(f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 
 
 # create multi-sample plots
+adata_comb = ad.read_h5ad(
+    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
 obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
+
+adata_query = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 obs_query = adata_query.obs
 
-def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, color_mappings,
-                           output_dir):
+def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     ref_samples = ref_obs['sample'].unique()
     query_samples = query_obs['sample'].unique() 
     n_cols = 4
@@ -956,8 +1071,9 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, color_mappings,
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 5*n_rows))
     axes = axes.flatten()
     
-    cell_color = color_mappings[col].get(cell_type, '#A9A9A9')
-    coord_cols = ['x_final', 'y_final']
+    # get color from query obs
+    cell_color = query_obs[f'{col}_color'].loc[query_obs[col] == cell_type].iloc[0]
+    coord_cols = ['x_ffd', 'y_ffd']
     
     for i, (sample, obs) in enumerate(
             [(s, ref_obs) for s in ref_samples] +
@@ -973,7 +1089,7 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, color_mappings,
                       c='grey', s=0.1, alpha=0.1)
             ax.scatter(plot_df[mask][coord_cols[0]], 
                       plot_df[mask][coord_cols[1]], 
-                      c=cell_color, s=0.8)
+                      c=cell_color, s=1.1)
         else:
             ax.text(0.5, 0.5, 'no cells of this type', 
                    ha='center', va='center', transform=ax.transAxes)
@@ -995,11 +1111,9 @@ os.makedirs(output_dir, exist_ok=True)
 cell_types = pd.concat([obs_ref[col], obs_query[col]]).unique()
 
 for cell_type in cell_types:
-    if (obs_ref[col].value_counts().get(cell_type, 0) > 0 or 
-        obs_query[col].value_counts().get(cell_type, 0) > 0):
+    if obs_query[col].value_counts().get(cell_type, 0) > 0:
         create_multi_sample_plot(
-            obs_ref, obs_query, col, cell_type, color_mappings, output_dir)
-
+            obs_ref, obs_query, col, cell_type, output_dir)
 
 
 
