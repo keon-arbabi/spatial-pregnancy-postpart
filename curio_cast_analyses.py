@@ -22,13 +22,12 @@ working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/curio', exist_ok=True)
 os.makedirs(f'{working_dir}/figures/curio', exist_ok=True)
 
-# load rotated and cropped query anndata objects 
+# load query anndata objects 
 query_dir = 'project/single-cell/Kalish/pregnancy-postpart/curio/raw-anndata'
 samples_query = [file.replace('.h5ad', '') for file in os.listdir(query_dir)]
 samples_query = sorted(samples_query)
 
-
-# munge each sample, adding placeholders for metadata columns to be added 
+# munge each sample, adding placeholders for later concat
 adatas_query = []
 for sample in samples_query:
     adata = ad.read_h5ad(f'{query_dir}/{sample}.h5ad')
@@ -176,20 +175,39 @@ plt.savefig(f'{working_dir}/figures/curio/qc_scores_violin.svg',
 plt.savefig(f'{working_dir}/figures/curio/qc_scores_violin.png',
             dpi=150, bbox_inches='tight')
 
-# filter cells per sample 
-keep_idx = []  
+# filter cells 
+total = len(adata_query)
+for name, mask in {
+   'high_doublet': adata_query.obs['scDblFinder.score'] >= 0.4,
+   'low_qc_score': adata_query.obs['qc_score'] <= 0.1,
+   'low_n_genes': adata_query.obs['n_genes_by_counts'] < 500, 
+   'low_counts': adata_query.obs['total_counts'] <= 300,
+   'high_mt_pct': adata_query.obs['pct_counts_mt'] >= 10
+}.items():
+   print(f'{name}: {mask.sum()} ({mask.sum()/total*100:.1f}%) cells dropped')
+
+'''
+high_doublet: 24252 (19.1%) cells dropped
+low_qc_score: 3127 (2.5%) cells dropped
+low_n_genes: 6199 (4.9%) cells dropped
+low_counts: 0 (0.0%) cells dropped
+high_mt_pct: 241 (0.2%) cells dropped
+'''
+
+keep_idx = []
 for sample in adata_query.obs['sample'].unique():
-    mask = adata_query.obs['sample'] == sample
-    cells = adata_query.obs.loc[mask]
-    qc_mask = (
-        (cells['scDblFinder.score'] < 0.4) & 
-        (cells['qc_score'] > 0.1) & 
-        (cells['n_genes_by_counts'] >= 500) & 
-        (cells['total_counts'] > 300) & 
-        (cells['pct_counts_mt'] < 10)) 
-    keep_idx.extend(cells.index[qc_mask])
-print(f'Keeping {len(keep_idx)} cells out of {len(adata_query)} '
-      f'({len(keep_idx)/len(adata_query)*100:.1f}%)')
+   mask = adata_query.obs['sample'] == sample
+   cells = adata_query.obs.loc[mask]
+   fail_mask = ~((cells['scDblFinder.score'] < 0.4) & 
+                 (cells['qc_score'] > 0.1) & 
+                 (cells['n_genes_by_counts'] >= 500) & 
+                 (cells['total_counts'] > 300) & 
+                 (cells['pct_counts_mt'] < 10))
+   keep_idx.extend(cells.index[~fail_mask])
+
+cells_dropped = total - len(keep_idx)
+print(f'\nTotal cells dropped: {cells_dropped} ({cells_dropped/total*100:.1f}%)')
+'''Total cells dropped: 33143 (26.1%)'''
 adata_query = adata_query[keep_idx].copy()
 
 # normalize and log transform
@@ -511,6 +529,10 @@ sys.path.insert(0, 'project/CAST')
 import CAST
 print(CAST.__file__)
 
+sys.path.append('project/utils')
+from utils import debug
+debug(third_party=True)
+
 # set paths 
 working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/curio/CAST-PROJECT', exist_ok=True)
@@ -539,12 +561,13 @@ color_dict = (
     .set_index(level)[f'{level}_color']
     .to_dict()
 )
-color_dict['Unknown'] = '#A9A9A9'
+color_dict['Unknown'] = 'black'
 
 list_ts = {}
 for _, (source_sample, target_sample) in source_target_list.items():
     print(f'Processing {target_sample}')
-    output_dir_t = f'{working_dir}/output/curio/CAST-PROJECT/{source_sample}_to_{target_sample}'
+    output_dir_t = f'{working_dir}/output/curio/CAST-PROJECT/' \
+        f'{source_sample}_to_{target_sample}'
     os.makedirs(output_dir_t, exist_ok=True)
     
     list_ts_file = f'{output_dir_t}/list_ts_{target_sample}.pt'
@@ -574,8 +597,9 @@ for _, (source_sample, target_sample) in source_target_list.items():
             min_dist=0.1,
             spread_t=1.0,
             source_sample_ctype_col=level,
+            color_dict=color_dict,
             output_path=output_dir_t,
-            ifplot=False,
+            ifplot=True,
             ifcombat=False)
         adata_subset.write_h5ad(harmony_file)
     
@@ -590,12 +614,12 @@ for _, (source_sample, target_sample) in source_target_list.items():
         coords_target=np.array(
             adata_subset[adata_subset.obs[batch_key] == target_sample,:]
                 .obs.loc[:,['x_ffd','y_ffd']]),
-        k2=20,
+        k2=50,
         scaled_layer='X_scanorama',
         raw_layer='X_scanorama',
         batch_key=batch_key,
         use_highly_variable_t=False,
-        ifplot=False,
+        ifplot=True,
         source_sample_ctype_col=level,
         output_path=output_dir_t,
         umap_feature='X_umap',
@@ -606,8 +630,7 @@ for _, (source_sample, target_sample) in source_target_list.items():
         color_dict=color_dict,
         adjust_shift=False,
         metric_t='cosine',
-        working_memory_t=1000
-    )
+        working_memory_t=1000)
     torch.save(list_ts[target_sample], list_ts_file)
     print(list_ts[target_sample])
     del adata_subset; gc.collect()
@@ -615,79 +638,68 @@ for _, (source_sample, target_sample) in source_target_list.items():
 # transfer cell type 
 new_obs_list = []
 for sample, (source_sample, target_sample) in source_target_list.items():
-    print(f'Processing {target_sample}')
-    # get nearest neighbor results from cast
-    project_ind = list_ts[sample][0]  
-    project_weight = list_ts[sample][1]      
-    cdists = list_ts[sample][2]
-    physical_dist = list_ts[sample][3]
-    
-    source_obs = adata_comb.obs[
-        adata_comb.obs[batch_key] == source_sample].copy()
-    target_obs = adata_comb.obs[
-        adata_comb.obs[batch_key] == target_sample].copy()
+    project_ind, project_weight, cdists, physical_dist = list_ts[sample]
+    source_obs = adata_comb.obs[adata_comb.obs[batch_key] == source_sample].copy()
+    target_obs = adata_comb.obs[adata_comb.obs[batch_key] == target_sample].copy()
     target_index = target_obs.index
     target_obs = target_obs.reset_index(drop=True)
 
-    for col in ['class', 'subclass']:
-        source_labels = source_obs[col].to_numpy()        
-        neighbor_labels = source_labels[project_ind]
+    for k in [1, 10, 20]:
+        print(f'Processing {target_sample} with k={k}')
+        suffix = f'_k{k}'
         
-        num_cells = len(target_obs)
-        cell_types = []
-        confidences = []
-        avg_weights = []
-        avg_cdists = []
-        avg_pdists = []
+        if k == 1:
+            target_obs[f'avg_weight{suffix}'] = project_weight[:, 0]
+            target_obs[f'avg_cdist{suffix}'] = cdists[:, 0]
+            target_obs[f'avg_pdist{suffix}'] = physical_dist[:, 0]
+        else:
+            for i in range(len(target_obs)):
+                weights = project_weight[i][:k]
+                target_obs.loc[i, f'avg_weight{suffix}'] = np.mean(weights)
+                target_obs.loc[i, f'avg_cdist{suffix}'] = np.mean(cdists[i][:k])
+                target_obs.loc[i, f'avg_pdist{suffix}'] = \
+                    np.mean(physical_dist[i][:k])
         
-        for i in range(num_cells):
-            # get most common label among neighbors
-            unique_labels, label_counts = np.unique(
-                neighbor_labels[i], return_counts=True)
-            max_count = np.max(label_counts)
-            most_common_mask = label_counts == max_count
-            most_common_labels = unique_labels[most_common_mask]
+        for col in ['class', 'subclass']:
+            source_labels = source_obs[col].to_numpy()
+            neighbor_labels = source_labels[project_ind]
+            cell_types = []
+            confidences = []
             
-            # break ties by overall frequency in source
-            if len(most_common_labels) > 1:
-                label_freqs = [
-                    np.sum(source_labels == label)
-                    for label in most_common_labels]
-                cell_type = most_common_labels[np.argmax(label_freqs)]
-            else:
-                cell_type = most_common_labels[0]
+            for i in range(len(target_obs)):
+                if k == 1:
+                    cell_types.append(neighbor_labels[i][0])
+                    confidences.append(1.0)
+                else:
+                    top_k = neighbor_labels[i][:k]
+                    labels, counts = np.unique(top_k, return_counts=True)
+                    winners = labels[counts == counts.max()]
+                    cell_type = (winners[0] if len(winners) == 1 else 
+                               winners[np.argmax([np.sum(source_labels == l) 
+                                                for l in winners])])
+                    confidences.append(np.sum(top_k == cell_type) / k)
+                    cell_types.append(cell_type)
             
-            # calculate metrics using contributing neighbors
-            contributing_mask = neighbor_labels[i] == cell_type
-            neighbor_weights = project_weight[i][contributing_mask]
-            confidence = np.sum(neighbor_weights) / np.sum(project_weight[i])
+            target_obs[f'{col}{suffix}'] = cell_types
+            target_obs[f'{col}_confidence{suffix}'] = confidences
+            target_obs[f'{col}_color{suffix}'] = target_obs[f'{col}{suffix}']\
+                .map(dict(zip(source_obs[col], source_obs[f'{col}_color'])))
             
-            avg_weights.append(np.mean(project_weight[i][contributing_mask]))
-            avg_cdists.append(np.mean(cdists[i][contributing_mask]))
-            avg_pdists.append(np.mean(physical_dist[i][contributing_mask]))
-            
-            cell_types.append(cell_type)
-            confidences.append(confidence)
-        
-        # store results
-        target_obs[col] = cell_types
-        target_obs[f'{col}_confidence'] = confidences
-        target_obs[f'{col}_avg_weight'] = avg_weights
-        target_obs[f'{col}_avg_cdist'] = avg_cdists
-        target_obs[f'{col}_avg_pdist'] = avg_pdists
-        
-        # map colors
-        color_mapping = dict(zip(source_obs[col], source_obs[f'{col}_color']))
-        target_obs[f'{col}_color'] = target_obs[col].map(color_mapping)
-    
     new_obs_list.append(target_obs.set_index(target_index))
 
 # plot cast metrics
-metrics = ['subclass_confidence', 'subclass_avg_cdist', 'subclass_avg_pdist']
-titles = ['Subclass Assignment Confidence', 'Subclass Average Cosine Distance', 
-          'Subclass Average Physical Distance']
-y_labels = ['Confidence Score', 'Cosine Distance', 'Physical Distance (μm)']
-
+metrics = [
+    'avg_cdist_k20', 'avg_pdist_k20',
+    'class_confidence_k20', 'subclass_confidence_k20'
+]
+titles = [
+    'Expression Distance', 'Spatial Distance',
+    'Class Assignment Confidence', 'Subclass Assignment Confidence'
+]
+y_labels = [
+    'Cosine Distance', 'Physical Distance (μm)',
+    'Confidence', 'Confidence'
+]
 sample_order = [
     'CTRL_1_1', 'CTRL_1_2', 'CTRL_2_1', 'CTRL_3_1', 'CTRL_3_2',
     'PREG_1_1', 'PREG_1_2', 'PREG_2_1', 'PREG_2_2', 'PREG_3_1', 'PREG_3_2',
@@ -701,50 +713,43 @@ sample_labels = [
 ]
 
 pink = sns.color_palette("PiYG")[0]
-fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
+fig, axes = plt.subplots(len(metrics), 1, figsize=(10, 3*len(metrics)))
 
 configs = {
-    'subclass_confidence': dict(
-        log=False, 
-        lines=(0.6, None),
-        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0]),
-    'subclass_avg_cdist': dict(
-        log=False, 
-        lines=(0.7, None),
+    'avg_cdist_k20': dict(
+        lines=(0.8, None),
         ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], 
         invert=True),
-    'subclass_avg_pdist': dict(
-        log=False,
+    'avg_pdist_k20': dict(
         lines=(None, None), 
-        ticks=[0, 1], 
-        invert=True)
+        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], 
+        invert=True),
+    'class_confidence_k20': dict(
+        lines=(0.7, None),
+        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0]),
+    'subclass_confidence_k20': dict(
+        lines=(None, None),
+        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0])
 }
+
+plot_data = pd.concat(new_obs_list)
 
 for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     cfg = configs[m]
-    
-    # Filter out inf values for physical distance plot
-    if m == 'subclass_avg_pdist':
-        plot_data = pd.concat(new_obs_list)
-        plot_data = plot_data[~np.isinf(plot_data[m])]
+    if m == 'avg_pdist_k20':
+        data = plot_data[~np.isinf(plot_data[m])]
     else:
-        plot_data = pd.concat(new_obs_list)
-    
+        data = plot_data
     sns.violinplot(
-        data=plot_data, x='sample', y=m, ax=axes[i],
+        data=data, x='sample', y=m, ax=axes[i],
         color=pink, alpha=0.5, linewidth=1, linecolor=pink,
         order=sample_order)
-    
-    if cfg['log']:
-        axes[i].set_yscale('log')
-        axes[i].set_yticks(cfg['ticks'])
     if cfg.get('invert', False):
         axes[i].invert_yaxis()
-    for val in cfg['lines']:
-        if val:
-            axes[i].axhline(y=val, ls='--', color=pink, alpha=0.5)
-            axes[i].text(1.02, val, f'{val:.1f}', va='center', 
-                        transform=axes[i].get_yaxis_transform())
+    if cfg['lines'][0]:
+        axes[i].axhline(y=cfg['lines'][0], ls='--', color=pink, alpha=0.5)
+        axes[i].text(1.02, cfg['lines'][0], f'{cfg["lines"][0]:.1f}', 
+                    va='center', transform=axes[i].get_yaxis_transform())
     if i < len(metrics) - 1:
         axes[i].set_xticklabels([])
         axes[i].set_xlabel('')
@@ -755,11 +760,14 @@ for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     
     axes[i].set_title(title, fontsize=12, fontweight='bold')
     axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
+    axes[i].set_yticks(cfg['ticks'])
+
 plt.tight_layout()
-plt.show(f'{working_dir}/figures/curio/cast_metrics_violin.svg',
-         bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/curio/cast_metrics_violin.svg',
+            bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/curio/cast_metrics_violin.png',
             dpi=150, bbox_inches='tight')
+plt.close()
 
 # add new obs columns
 adata_query = ad.read_h5ad(
@@ -773,26 +781,88 @@ for col in new_obs.columns:
     if col not in adata_query.obs.columns:
         adata_query.obs[col] = new_obs[col]
 
-print('Initial cells:', len(adata_query))
-drop_mask = (
-    np.isinf(adata_query.obs['subclass_avg_cdist']) | 
-    np.isinf(adata_query.obs['subclass_avg_pdist']) |
-    (adata_query.obs['subclass_avg_weight'] == 0)
-)
-mask = (
-    (~drop_mask) &
-    (adata_query.obs['subclass_confidence'] >= 0.6) &
-    (adata_query.obs['subclass_avg_cdist'] <= 0.7)
-)
+# filter cells
+total = len(adata_query)
+for name, mask in {
+    'infinite_pdist': np.isinf(adata_query.obs['avg_pdist_k20']),
+    'low_class_confidence': adata_query.obs['class_confidence_k20'] < 0.7,
+    'high_expression_dist': adata_query.obs['avg_cdist_k20'] > 0.8
+}.items():
+    print(f'{name}: {mask.sum()} ({mask.sum()/total*100:.1f}%) cells dropped')
+'''
+infinite_pdist: 1499 (1.6%) cells dropped
+low_class_confidence: 15572 (16.6%) cells dropped
+high_expression_dist: 8158 (8.7%) cells dropped
+'''
+
+mask = ((~np.isinf(adata_query.obs['avg_pdist_k20'])) &
+        (adata_query.obs['class_confidence_k20'] >= 0.7) &
+        (adata_query.obs['avg_cdist_k20'] <= 0.8))\
+        
+cells_dropped = total - mask.sum()
+print(f'\nTotal cells dropped: {cells_dropped} ({cells_dropped/total*100:.1f}%)')
+'''Total cells dropped: 19817 (21.1%)'''
 
 adata_query = adata_query[mask].copy()
-print('Remaining cells:', len(adata_query))
 
 # save
 adata_query.X = adata_query.layers['counts']
 adata_query.write(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad')
 
+
+# post-processing ##############################################################
+
+import scanpy as sc
+import matplotlib.pyplot as plt
+
+working_dir = 'project/spatial-pregnancy-postpart'
+
+adata_query = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
+
+adata_query.X = adata_query.layers['log1p']
+
+cell_type_map = {
+   '01 IT-ET Glut': 'neuronal',
+   '02 NP-CT-L6b Glut': 'neuronal', 
+   '05 OB-IMN GABA': 'neuronal',
+   '06 CTX-CGE GABA': 'neuronal',
+   '07 CTX-MGE GABA': 'neuronal',
+   '08 CNU-MGE GABA': 'neuronal',
+   '09 CNU-LGE GABA': 'neuronal',
+   '10 LSX GABA': 'neuronal',
+   '11 CNU-HYa GABA': 'neuronal',
+   '12 HY GABA': 'neuronal',
+   '13 CNU-HYa Glut': 'neuronal',
+   '14 HY Glut': 'neuronal',
+   '30 Astro-Epen': 'non-neuronal',
+   '31 OPC-Oligo': 'non-neuronal',
+   '33 Vascular': 'non-neuronal',
+   '34 Immune': 'non-neuronal'
+}
+
+adata_query.obs['broad_class'] = adata_query.obs['class_k20'].map(cell_type_map)
+sc.pp.highly_variable_genes(adata_query, n_top_genes=2000, batch_key='sample')
+sc.tl.pca(adata_query)
+sc.pp.neighbors(adata_query)
+sc.tl.umap(adata_query)
+
+nn_mat = adata_query.obsp['distances'].astype(bool)
+labels = adata_query.obs['broad_class']
+same_label = nn_mat.multiply(labels.values[:, None] == labels.values)
+prop_same = same_label.sum(1).A1 / nn_mat.sum(1).A1
+adata_query.obs['broad_class_confidence'] = prop_same
+
+sc.pl.umap(adata_query, color=['broad_class', 'broad_class_confidence'])
+plt.savefig(f'{working_dir}/figures/curio/umap_broad_class_confidence.png',
+           dpi=400, bbox_inches='tight')
+plt.close()
+
+plt.hist(adata_query.obs['broad_class_confidence'], bins=30)
+plt.savefig(f'{working_dir}/figures/curio/broad_class_confidence_hist.png',
+           dpi=400, bbox_inches='tight')
+plt.close()
 
 # plotting #####################################################################
 

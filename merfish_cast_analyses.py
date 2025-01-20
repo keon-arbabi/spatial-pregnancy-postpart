@@ -1006,50 +1006,192 @@ adata_query.write(
 import os
 import sys
 import warnings
+import scanorama
+import polars as pl
 import numpy as np
 import pandas as pd
 import anndata as ad
 import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
+import scanpy.external as sce
 
 warnings.filterwarnings('ignore')
 
 working_dir = 'project/spatial-pregnancy-postpart'
 
-# add new obs columns to query data
-adata_comb = ad.read_h5ad(
-    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
+sys.path.append('project/utils')
+
+from single_cell import SingleCell, options
+from utils import debug, Timer, print_df
+
+options(num_threads=-1, seed=42)
+debug(third_party=True)
+
+sc_query = SingleCell(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')\
+    .with_uns(QCed=True)
+
+subclasses = sc_query.obs.group_by('subclass')\
+    .count()\
+    .filter(pl.col.count.ge(10))\
+    .get_column('subclass')
+
+sc_query = sc_query\
+    .filter_obs(pl.col('subclass').is_in(subclasses))
+
+file = 'project/single-cell/ABC/anndata/zeng_combined_10Xv3_sub.h5ad'
+if not os.path.exists(file):
+    sc_ref = SingleCell(
+        'project/single-cell/ABC/anndata/zeng_combined_10Xv3.h5ad')\
+        .filter_obs(pl.col.subclass.is_not_null())\
+        .subsample_obs(fraction=0.25, by_column='class')
+    sc_ref.save(file)
+else:
+    sc_ref = SingleCell(file)
+
+sc_ref = sc_ref\
+    .with_uns(QCed=True)\
+    .set_var_names('gene_identifier')\
+    .filter_obs(pl.col.subclass.cast(pl.String).is_in(subclasses))
+
+sc_query = sc_query.normalize(allow_float=True)
+sc_ref = sc_ref.normalize(allow_float=True)
+
+sc_query, sc_ref = sc_query.PCA(sc_ref, hvg_column=None)
+sc_query, sc_ref = sc_query.harmonize(sc_ref, max_harmony_iterations=20)
+
+sc_query = sc_query.neighbors(PC_key='Harmony_PCs')
+sc_query = sc_query.embed()
+
+sc_query.plot_embedding(
+    'class', 
+    f'{working_dir}/figures/merfish/pacmap_class.png',
+    label=True, label_kwargs={'size': 6},
+    legend=True, legend_kwargs={'fontsize': 'x-small', 'ncols': 1})
+
+
+# load query data
 adata_query = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_query_merfish.h5ad')
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+adata_query.X = adata_query.layers['volume_log1p']
 
-adata_query_i = adata_comb[adata_comb.obs['source'] == 'merfish'].copy()
-adata_query = adata_query[adata_query_i.obs_names]
+# load reference data
+# adata_ref = ad.read_h5ad(
+#     f'{working_dir}/output/data/adata_ref_zeng_imputed.h5ad')
+# adata_ref.var.index = adata_ref.var['gene_identifier']
 
-for col in adata_query_i.obs.columns.drop(['x', 'y']):
-    if col not in adata_query.obs.columns:
-        adata_query.obs[col] = adata_query_i.obs[col]
+adata_ref = ad.read_h5ad(
+    'project/single-cell/ABC/anndata/zeng_combined_10Xv3_sub.h5ad')
+adata_ref.var.index = adata_ref.var['gene_identifier']
+
+adata_ref
+
+# batch correct 
+adata_query, adata_ref  = scanorama.correct_scanpy([adata_query, adata_ref])
+adata_comb = ad.concat(
+    [adata_query, adata_ref], axis=0, merge='same', label='dataset')
+
+# pca
+sc.pp.pca(adata_comb)
+# harmony
+sce.pp.harmony_integrate(
+    adata_comb, 
+    'dataset', 
+    max_iter_harmony=20)
+# umap
+sc.pp.neighbors(
+    adata_comb, 
+    use_rep='X_pca_harmony',
+    n_neighbors=50,    
+    n_pcs=30)
+sc.tl.umap(
+    adata_comb, 
+    min_dist=0.01,
+    spread=5)
+
+# temp save
+# adata_comb.write(
+#     f'{working_dir}/output/merfish/adata_comb_temp.h5ad')
+
+adata_query = adata_comb[adata_comb.obs['dataset'] == '0']
+adata_ref = adata_comb[adata_comb.obs['dataset'] == '1']
+
+cells_joined = pd.read_csv(
+    'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
+    'views/cells_joined.csv')
+color_mappings = {
+    'class': dict(zip(cells_joined['class'], cells_joined['class_color'])),
+    'subclass': dict(zip(cells_joined['subclass'], cells_joined['subclass_color']))
+}
+
+# umaps 
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+sc.pl.umap(adata_ref,
+           color='class',
+           palette=color_mappings['class'],
+           ax=ax1,
+           legend_loc='none',
+           title='Reference',
+           show=False)
+sc.pl.umap(adata_query,
+           color='class',
+           palette=color_mappings['class'],
+           ax=ax2,
+           legend_loc='right margin',
+           title='Query',
+           show=False)
+plt.savefig(f'{working_dir}/figures/merfish/umaps_harmony_class.png', dpi=300)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# load query data
+adata_query = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+adata_query.X = adata_query.layers['volume_log1p']
 
 # add cell type colors
 cells_joined = pd.read_csv(
     'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
     'views/cells_joined.csv')
-
 color_mappings = {
     'class': dict(zip(cells_joined['class'], cells_joined['class_color'])),
     'subclass': dict(zip(cells_joined['subclass'], cells_joined['subclass_color']))
 }
-for level in ['class', 'subclass']:
-    adata_query.obs[f'{level}_color'] = adata_query.obs[level].map(
-        color_mappings[level])
 
 sc.tl.pca(adata_query)
 sc.pp.neighbors(adata_query)
 sc.tl.umap(adata_query)
 
 sc.pl.umap(adata_query, color='class', palette=color_mappings['class'])
-plt.savefig(f'{working_dir}/figures/merfish/umap_class.png', 
-            dpi=200, bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/merfish/umap_class.svg', 
+            bbox_inches='tight')
 
 sc.pl.umap(adata_query, color='subclass', palette=color_mappings['subclass'])
 plt.savefig(f'{working_dir}/figures/merfish/umap_subclass.png', 
@@ -1059,9 +1201,78 @@ plt.savefig(f'{working_dir}/figures/merfish/umap_subclass.png',
 
 
 
-# save
-adata_query.X = adata_query.layers['counts']
-adata_query.write(f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+
+sys.path.append('project/utils')
+
+from single_cell import SingleCell, options
+from utils import debug
+
+options(num_threads=-1, seed=42)
+debug(third_party=True)
+
+sc_query = SingleCell(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad',
+    X_key='layers/volume_log1p')\
+    .with_uns(QCed=True, normalized=True)
+
+sc_ref = SingleCell(
+    f'{working_dir}/output/data/adata_ref_zeng_imputed.h5ad')\
+    .set_var_names('gene_identifier')\
+    .with_uns(QCed=True)
+
+sc_query, sc_ref = sc_query.PCA(sc_ref, hvg_column=None)
+
+sc_query, sc_ref = sc_query.harmonize(sc_ref)
+sc_query = sc_query.neighbors(PC_key='Harmony_PCs')
+
+sc_query = sc_query.embed()
+sc_query.plot_embedding(
+    'class', 
+    f'{working_dir}/figures/merfish/pacmap_class.png',
+    label=True, label_kwargs={'size': 6},
+    legend=True, legend_kwargs={'fontsize': 'x-small', 'ncols': 1})
+
+sc_query.plot_embedding(
+    'subclass', 
+    f'{working_dir}/figures/merfish/pacmap_subclass.png',
+    label=True, label_kwargs={'size': 6},
+    legend=True, legend_kwargs={'fontsize': 'x-small', 'ncols': 1})
+
+
+
+
+
+
+
+
+
+sc_query = SingleCell(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad',
+    X_key='layers/volume_log1p')\
+    .with_uns(QCed=True, normalized=True)
+
+sc_query = sc_query.PCA(hvg_column=None)
+sc_query = sc_query.neighbors()
+sc_query = sc_query.embed()
+
+sc_query.plot_embedding(
+    'class', 
+    f'{working_dir}/figures/merfish/pacmap_class.svg',
+    label=True, label_kwargs={'size': 6},
+    legend=True, legend_kwargs={'fontsize': 'x-small', 'ncols': 1})
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1127,11 +1338,7 @@ for cell_type in cell_types:
         create_multi_sample_plot(
             obs_ref, obs_query, col, cell_type, output_dir)
 
-
-
-adata_comb = ad.read_h5ad(
-    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
-
+# radius plot 
 plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'PREG3']
 
 fig, ax = plt.subplots(figsize=(8, 8))
