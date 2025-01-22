@@ -838,72 +838,47 @@ for _, (source_sample, target_sample) in source_target_list.items():
 # transfer cell type
 new_obs_list = []
 for sample, (source_sample, target_sample) in source_target_list.items():
-    print(f'Processing {target_sample}')
-    # get nearest neighbor results from cast
-    project_ind = list_ts[sample][0]  
-    project_weight = list_ts[sample][1]      
-    cdists = list_ts[sample][2]
-    physical_dist = list_ts[sample][3]
-    
-    source_obs = adata_comb.obs[
-        adata_comb.obs[batch_key] == source_sample].copy()
-    target_obs = adata_comb.obs[
-        adata_comb.obs[batch_key] == target_sample].copy()
+    project_ind, project_weight, cdists, physical_dist = list_ts[sample]
+    source_obs = adata_comb.obs[adata_comb.obs[batch_key] == source_sample].copy()
+    target_obs = adata_comb.obs[adata_comb.obs[batch_key] == target_sample].copy()
     target_index = target_obs.index
     target_obs = target_obs.reset_index(drop=True)
-
+    
+    print(f'Processing {target_sample}')
+    k = 10
+    
+    for i in range(len(target_obs)):
+        weights = project_weight[i][:k]
+        target_obs.loc[i, 'avg_weight'] = np.mean(weights)
+        target_obs.loc[i, 'avg_cdist'] = np.mean(cdists[i][:k])
+        target_obs.loc[i, 'avg_pdist'] = np.mean(physical_dist[i][:k])
+    
     for col in ['class', 'subclass']:
-        source_labels = source_obs[col].to_numpy()        
+        source_labels = source_obs[col].to_numpy()
         neighbor_labels = source_labels[project_ind]
-        
-        num_cells = len(target_obs)
         cell_types = []
         confidences = []
-        avg_weights = []
-        avg_cdists = []
-        avg_pdists = []
         
-        for i in range(num_cells):
-            # get most common label among neighbors
-            unique_labels, label_counts = np.unique(
-                neighbor_labels[i], return_counts=True)
-            max_count = np.max(label_counts)
-            most_common_mask = label_counts == max_count
-            most_common_labels = unique_labels[most_common_mask]
-            
-            # break ties by overall frequency in source
-            if len(most_common_labels) > 1:
-                label_freqs = [
-                    np.sum(source_labels == label)
-                    for label in most_common_labels]
-                cell_type = most_common_labels[np.argmax(label_freqs)]
-            else:
-                cell_type = most_common_labels[0]
-            
-            # calculate metrics using contributing neighbors
-            contributing_mask = neighbor_labels[i] == cell_type
-            neighbor_weights = project_weight[i][contributing_mask]
-            confidence = np.sum(neighbor_weights) / np.sum(project_weight[i])
-            
-            avg_weights.append(np.mean(project_weight[i][contributing_mask]))
-            avg_cdists.append(np.mean(cdists[i][contributing_mask]))
-            avg_pdists.append(np.mean(physical_dist[i][contributing_mask]))
-            
+        for i in range(len(target_obs)):
+            top_k = neighbor_labels[i][:k]
+            labels, counts = np.unique(top_k, return_counts=True)
+            winners = labels[counts == counts.max()]
+            cell_type = (winners[0] if len(winners) == 1 else
+                        winners[np.argmax([np.sum(source_labels == l)
+                                         for l in winners])])
+            confidences.append(np.sum(top_k == cell_type) / k)
             cell_types.append(cell_type)
-            confidences.append(confidence)
         
-        # store results
         target_obs[col] = cell_types
         target_obs[f'{col}_confidence'] = confidences
-        target_obs[f'{col}_avg_weight'] = avg_weights
-        target_obs[f'{col}_avg_cdist'] = avg_cdists
-        target_obs[f'{col}_avg_pdist'] = avg_pdists
-        
-        # map colors
-        color_mapping = dict(zip(source_obs[col], source_obs[f'{col}_color']))
-        target_obs[f'{col}_color'] = target_obs[col].map(color_mapping)
+        target_obs[f'{col}_color'] = target_obs[col].map(
+            dict(zip(source_obs[col], source_obs[f'{col}_color']))
+        )
     
     new_obs_list.append(target_obs.set_index(target_index))
+
+new_obs = pd.concat(new_obs_list)
+new_obs.to_csv(f'{working_dir}/output/merfish/new_obs.csv', index_label='cell_id')
 
 # plot cast metrics
 metrics = ['subclass_confidence', 'subclass_avg_cdist', 'subclass_avg_pdist']

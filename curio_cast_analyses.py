@@ -1,4 +1,4 @@
-# Pre-processing ##############################################################
+# pre-processing ##############################################################
 
 import sys
 import os
@@ -30,7 +30,7 @@ samples_query = sorted(samples_query)
 # munge each sample, adding placeholders for later concat
 adatas_query = []
 for sample in samples_query:
-    adata = ad.read_h5ad(f'{query_dir}/{sample}.h5ad')
+    adata = sc.read_h5ad(f'{query_dir}/{sample}.h5ad')
     # DBSCAN filtering for spatial outliers
     coords = adata.obs[['x', 'y']]
     if sample.startswith('PREG_3'):  # matches both PREG_3_1 and PREG_3_2
@@ -255,13 +255,13 @@ working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/curio/CAST-MARK', exist_ok=True)
 
 # load query data
-adata_query = ad.read_h5ad(
+adata_query = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_curio.h5ad')
 adata_query.obs['x'] = adata_query.obs['x_raw']
 adata_query.obs['y'] = adata_query.obs['y_raw']
 
 # load and preprocess reference data (raw counts)
-adata_ref = ad.read_h5ad(
+adata_ref = sc.read_h5ad(
     f'{working_dir}/output/data/adata_ref_zeng_raw.h5ad')
 # normalize 
 sc.pp.normalize_total(adata_ref)
@@ -411,7 +411,7 @@ def generate_reference_list(coords_raw):
     return query_reference_list
 
 # load data 
-adata_comb = ad.read_h5ad(
+adata_comb = sc.read_h5ad(
     f'{working_dir}/output/curio/adata_comb_cast_mark.h5ad')
 coords_raw = torch.load(
     f'{working_dir}/output/curio/coords_raw.pt')
@@ -529,16 +529,12 @@ sys.path.insert(0, 'project/CAST')
 import CAST
 print(CAST.__file__)
 
-sys.path.append('project/utils')
-from utils import debug
-debug(third_party=True)
-
 # set paths 
 working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/curio/CAST-PROJECT', exist_ok=True)
 
 # load data
-adata_comb = ad.read_h5ad(
+adata_comb = sc.read_h5ad(
     f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
 
 # add batch, we will process all reference samples together with each query 
@@ -579,7 +575,7 @@ for _, (source_sample, target_sample) in source_target_list.items():
     harmony_file = f'{output_dir_t}/X_harmony_{source_sample}_to_{target_sample}.h5ad'
     if os.path.exists(harmony_file):
         print(f'Loading precomputed harmony from {harmony_file}')
-        adata_subset = ad.read_h5ad(harmony_file)
+        adata_subset = sc.read_h5ad(harmony_file)
     else:
         print('Computing harmony')
         adata_subset = adata_comb[
@@ -635,7 +631,7 @@ for _, (source_sample, target_sample) in source_target_list.items():
     print(list_ts[target_sample])
     del adata_subset; gc.collect()
 
-# transfer cell type 
+# transfer cell type
 new_obs_list = []
 for sample, (source_sample, target_sample) in source_target_list.items():
     project_ind, project_weight, cdists, physical_dist = list_ts[sample]
@@ -643,187 +639,169 @@ for sample, (source_sample, target_sample) in source_target_list.items():
     target_obs = adata_comb.obs[adata_comb.obs[batch_key] == target_sample].copy()
     target_index = target_obs.index
     target_obs = target_obs.reset_index(drop=True)
-
-    for k in [1, 10, 20]:
-        print(f'Processing {target_sample} with k={k}')
-        suffix = f'_k{k}'
+    
+    print(f'Processing {target_sample}')
+    k = 5
+    
+    for i in range(len(target_obs)):
+        weights = project_weight[i][:k]
+        target_obs.loc[i, 'avg_weight'] = np.mean(weights)
+        target_obs.loc[i, 'avg_cdist'] = np.mean(cdists[i][:k])
+        target_obs.loc[i, 'avg_pdist'] = np.mean(physical_dist[i][:k])
+    
+    for col in ['class', 'subclass']:
+        source_labels = source_obs[col].to_numpy()
+        neighbor_labels = source_labels[project_ind]
+        cell_types = []
+        confidences = []
         
-        if k == 1:
-            target_obs[f'avg_weight{suffix}'] = project_weight[:, 0]
-            target_obs[f'avg_cdist{suffix}'] = cdists[:, 0]
-            target_obs[f'avg_pdist{suffix}'] = physical_dist[:, 0]
-        else:
-            for i in range(len(target_obs)):
-                weights = project_weight[i][:k]
-                target_obs.loc[i, f'avg_weight{suffix}'] = np.mean(weights)
-                target_obs.loc[i, f'avg_cdist{suffix}'] = np.mean(cdists[i][:k])
-                target_obs.loc[i, f'avg_pdist{suffix}'] = \
-                    np.mean(physical_dist[i][:k])
+        for i in range(len(target_obs)):
+            top_k = neighbor_labels[i][:k]
+            labels, counts = np.unique(top_k, return_counts=True)
+            winners = labels[counts == counts.max()]
+            cell_type = (winners[0] if len(winners) == 1 else
+                        winners[np.argmax([np.sum(source_labels == l)
+                                         for l in winners])])
+            confidences.append(np.sum(top_k == cell_type) / k)
+            cell_types.append(cell_type)
         
-        for col in ['class', 'subclass']:
-            source_labels = source_obs[col].to_numpy()
-            neighbor_labels = source_labels[project_ind]
-            cell_types = []
-            confidences = []
-            
-            for i in range(len(target_obs)):
-                if k == 1:
-                    cell_types.append(neighbor_labels[i][0])
-                    confidences.append(1.0)
-                else:
-                    top_k = neighbor_labels[i][:k]
-                    labels, counts = np.unique(top_k, return_counts=True)
-                    winners = labels[counts == counts.max()]
-                    cell_type = (winners[0] if len(winners) == 1 else 
-                               winners[np.argmax([np.sum(source_labels == l) 
-                                                for l in winners])])
-                    confidences.append(np.sum(top_k == cell_type) / k)
-                    cell_types.append(cell_type)
-            
-            target_obs[f'{col}{suffix}'] = cell_types
-            target_obs[f'{col}_confidence{suffix}'] = confidences
-            target_obs[f'{col}_color{suffix}'] = target_obs[f'{col}{suffix}']\
-                .map(dict(zip(source_obs[col], source_obs[f'{col}_color'])))
-            
+        target_obs[col] = cell_types
+        target_obs[f'{col}_confidence'] = confidences
+        target_obs[f'{col}_color'] = target_obs[col].map(
+            dict(zip(source_obs[col], source_obs[f'{col}_color']))
+        )
+    
     new_obs_list.append(target_obs.set_index(target_index))
 
-# plot cast metrics
+new_obs = pd.concat(new_obs_list)
+new_obs.to_csv(f'{working_dir}/output/curio/new_obs.csv', index_label='cell_id')
+
+# plot metrics
 metrics = [
-    'avg_cdist_k20', 'avg_pdist_k20',
-    'class_confidence_k20', 'subclass_confidence_k20'
+   'avg_cdist', 'avg_pdist',
+   'class_confidence', 'subclass_confidence'
 ]
 titles = [
-    'Expression Distance', 'Spatial Distance',
-    'Class Assignment Confidence', 'Subclass Assignment Confidence'
+   'Expression Distance', 'Spatial Distance',
+   'Class Assignment Confidence', 'Subclass Assignment Confidence'
 ]
 y_labels = [
-    'Cosine Distance', 'Physical Distance (μm)',
-    'Confidence', 'Confidence'
+   'Cosine Distance', 'Physical Distance (μm)',
+   'Confidence', 'Confidence'
 ]
 sample_order = [
-    'CTRL_1_1', 'CTRL_1_2', 'CTRL_2_1', 'CTRL_3_1', 'CTRL_3_2',
-    'PREG_1_1', 'PREG_1_2', 'PREG_2_1', 'PREG_2_2', 'PREG_3_1', 'PREG_3_2',
-    'POSTPART_1_1', 'POSTPART_1_2', 'POSTPART_2_1', 'POSTPART_2_2'
+   'CTRL_1_1', 'CTRL_1_2', 'CTRL_2_1', 'CTRL_3_1', 'CTRL_3_2',
+   'PREG_1_1', 'PREG_1_2', 'PREG_2_1', 'PREG_2_2', 'PREG_3_1', 'PREG_3_2',
+   'POSTPART_1_1', 'POSTPART_1_2', 'POSTPART_2_1', 'POSTPART_2_2'
 ]
 sample_labels = [
-    'Control 1.1', 'Control 1.2', 'Control 2.1', 'Control 3.1', 'Control 3.2',
-    'Pregnant 1.1', 'Pregnant 1.2', 'Pregnant 2.1', 'Pregnant 2.2', 'Pregnant 3.1',
-    'Pregnant 3.2', 'Postpartum 1.1', 'Postpartum 1.2', 'Postpartum 2.1',
-    'Postpartum 2.2'
+   'Control 1.1', 'Control 1.2', 'Control 2.1', 'Control 3.1', 'Control 3.2',
+   'Pregnant 1.1', 'Pregnant 1.2', 'Pregnant 2.1', 'Pregnant 2.2', 'Pregnant 3.1',
+   'Pregnant 3.2', 'Postpartum 1.1', 'Postpartum 1.2', 'Postpartum 2.1',
+   'Postpartum 2.2'
 ]
-
 pink = sns.color_palette("PiYG")[0]
 fig, axes = plt.subplots(len(metrics), 1, figsize=(10, 3*len(metrics)))
-
 configs = {
-    'avg_cdist_k20': dict(
-        lines=(0.8, None),
-        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], 
-        invert=True),
-    'avg_pdist_k20': dict(
-        lines=(None, None), 
-        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], 
-        invert=True),
-    'class_confidence_k20': dict(
-        lines=(0.7, None),
-        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0]),
-    'subclass_confidence_k20': dict(
-        lines=(None, None),
-        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0])
+   'avg_cdist': dict(
+       lines=(0.8, None),
+       ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0],
+       invert=True),
+   'avg_pdist': dict(
+       lines=(None, None),
+       ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0],
+       invert=True),
+   'class_confidence': dict(
+       lines=(0.7, None),
+       ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0]),
+   'subclass_confidence': dict(
+       lines=(None, None),
+       ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0])
 }
-
 plot_data = pd.concat(new_obs_list)
-
 for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
-    cfg = configs[m]
-    if m == 'avg_pdist_k20':
-        data = plot_data[~np.isinf(plot_data[m])]
-    else:
-        data = plot_data
-    sns.violinplot(
-        data=data, x='sample', y=m, ax=axes[i],
-        color=pink, alpha=0.5, linewidth=1, linecolor=pink,
-        order=sample_order)
-    if cfg.get('invert', False):
-        axes[i].invert_yaxis()
-    if cfg['lines'][0]:
-        axes[i].axhline(y=cfg['lines'][0], ls='--', color=pink, alpha=0.5)
-        axes[i].text(1.02, cfg['lines'][0], f'{cfg["lines"][0]:.1f}', 
-                    va='center', transform=axes[i].get_yaxis_transform())
-    if i < len(metrics) - 1:
-        axes[i].set_xticklabels([])
-        axes[i].set_xlabel('')
-        axes[i].set_xticks([])
-    else:
-        axes[i].set_xticklabels(sample_labels, rotation=45, ha='right', va='top')
-        axes[i].set_xlabel('Sample', fontsize=11, fontweight='bold')
-    
-    axes[i].set_title(title, fontsize=12, fontweight='bold')
-    axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
-    axes[i].set_yticks(cfg['ticks'])
-
+   cfg = configs[m]
+   if m == 'avg_pdist':
+       data = plot_data[~np.isinf(plot_data[m])]
+   else:
+       data = plot_data
+   sns.violinplot(
+       data=data, x='sample', y=m, ax=axes[i],
+       color=pink, alpha=0.5, linewidth=1, linecolor=pink,
+       order=sample_order)
+   if cfg.get('invert', False):
+       axes[i].invert_yaxis()
+   if cfg['lines'][0]:
+       axes[i].axhline(y=cfg['lines'][0], ls='--', color=pink, alpha=0.5)
+       axes[i].text(1.02, cfg['lines'][0], f'{cfg["lines"][0]:.1f}',
+                   va='center', transform=axes[i].get_yaxis_transform())
+   if i < len(metrics) - 1:
+       axes[i].set_xticklabels([])
+       axes[i].set_xlabel('')
+       axes[i].set_xticks([])
+   else:
+       axes[i].set_xticklabels(sample_labels, rotation=45, ha='right', va='top')
+       axes[i].set_xlabel('Sample', fontsize=11, fontweight='bold')
+   
+   axes[i].set_title(title, fontsize=12, fontweight='bold')
+   axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
+   axes[i].set_yticks(cfg['ticks'])
 plt.tight_layout()
 plt.savefig(f'{working_dir}/figures/curio/cast_metrics_violin.svg',
-            bbox_inches='tight')
+           bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/curio/cast_metrics_violin.png',
-            dpi=150, bbox_inches='tight')
+           dpi=150, bbox_inches='tight')
 plt.close()
 
+# post-processing ##############################################################
+
+import numpy as np
+import pandas as pd 
+import scanpy as sc
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+working_dir = 'project/spatial-pregnancy-postpart'
+
 # add new obs columns
-adata_query = ad.read_h5ad(
+adata_query = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_curio.h5ad')
 adata_query.obs = adata_query.obs.drop(columns=[
     'class', 'subclass', 'class_color', 'subclass_color'])
 
-new_obs = pd.concat(new_obs_list)
-new_obs = new_obs.reindex(index=adata_query.obs_names)
+new_obs = pd.read_csv(
+    f'{working_dir}/output/curio/new_obs.csv',index_col='cell_id')
 for col in new_obs.columns:
     if col not in adata_query.obs.columns:
         adata_query.obs[col] = new_obs[col]
 
-# filter cells
+# filter cells 
 total = len(adata_query)
 for name, mask in {
-    'infinite_pdist': np.isinf(adata_query.obs['avg_pdist_k20']),
-    'low_class_confidence': adata_query.obs['class_confidence_k20'] < 0.7,
-    'high_expression_dist': adata_query.obs['avg_cdist_k20'] > 0.8
+    'infinite_pdist': np.isinf(adata_query.obs['avg_pdist']),
+    'low_class_confidence': adata_query.obs['class_confidence'] < 0.7,
+    'high_expression_dist': adata_query.obs['avg_cdist'] > 0.8
 }.items():
     print(f'{name}: {mask.sum()} ({mask.sum()/total*100:.1f}%) cells dropped')
 '''
 infinite_pdist: 1499 (1.6%) cells dropped
-low_class_confidence: 15572 (16.6%) cells dropped
-high_expression_dist: 8158 (8.7%) cells dropped
-'''
+low_class_confidence: 15345 (16.4%) cells dropped
+high_expression_dist: 8074 (8.6%) cells dropped
 
-mask = ((~np.isinf(adata_query.obs['avg_pdist_k20'])) &
-        (adata_query.obs['class_confidence_k20'] >= 0.7) &
-        (adata_query.obs['avg_cdist_k20'] <= 0.8))\
+'''
+mask = ((~np.isinf(adata_query.obs['avg_pdist'])) &
+        (adata_query.obs['class_confidence'] >= 0.7) &
+        (adata_query.obs['avg_cdist'] <= 0.8))
         
 cells_dropped = total - mask.sum()
-print(f'\nTotal cells dropped: {cells_dropped} ({cells_dropped/total*100:.1f}%)')
+print(f'\nTotal cells dropped: {cells_dropped} '
+      f'({cells_dropped/total*100:.1f}%)')
 '''Total cells dropped: 19817 (21.1%)'''
 
 adata_query = adata_query[mask].copy()
 
-# save
-adata_query.X = adata_query.layers['counts']
-adata_query.write(
-    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
-
-
-# post-processing ##############################################################
-
-import scanpy as sc
-import matplotlib.pyplot as plt
-
-working_dir = 'project/spatial-pregnancy-postpart'
-
-adata_query = sc.read_h5ad(
-    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
-
-adata_query.X = adata_query.layers['log1p']
-
-cell_type_map = {
+# remove noise cells 
+mapping_group_1 = {
    '01 IT-ET Glut': 'neuronal',
    '02 NP-CT-L6b Glut': 'neuronal', 
    '05 OB-IMN GABA': 'neuronal',
@@ -841,48 +819,156 @@ cell_type_map = {
    '33 Vascular': 'non-neuronal',
    '34 Immune': 'non-neuronal'
 }
+mapping_group_2 = {
+   '01 IT-ET Glut': 'Glut',
+   '02 NP-CT-L6b Glut': 'Glut', 
+   '05 OB-IMN GABA': 'GABA',
+   '06 CTX-CGE GABA': 'GABA',
+   '07 CTX-MGE GABA': 'GABA',
+   '08 CNU-MGE GABA': 'GABA',
+   '09 CNU-LGE GABA': 'GABA',
+   '10 LSX GABA': 'GABA',
+   '11 CNU-HYa GABA': 'GABA',
+   '12 HY GABA': 'GABA',
+   '13 CNU-HYa Glut': 'Glut',
+   '14 HY Glut': 'Glut',
+   '30 Astro-Epen': 'Glia',
+   '31 OPC-Oligo': 'Glia',
+   '33 Vascular': 'Glia',
+   '34 Immune': 'Glia'
+}
+adata_query_i = adata_query.copy()
+adata_query_i.obs['group_1'] = adata_query_i.obs['class'].map(mapping_group_1)
+adata_query_i.obs['group_2'] = adata_query_i.obs['class'].map(mapping_group_2)
+adata_query.obs['group_1'] = adata_query_i.obs['group_1'].astype('category')
+adata_query.obs['group_2'] = adata_query_i.obs['group_2'].astype('category')
 
-adata_query.obs['broad_class'] = adata_query.obs['class_k20'].map(cell_type_map)
-sc.pp.highly_variable_genes(adata_query, n_top_genes=2000, batch_key='sample')
-sc.tl.pca(adata_query)
-sc.pp.neighbors(adata_query)
-sc.tl.umap(adata_query)
+sc.pp.highly_variable_genes(adata_query_i, n_top_genes=2000, batch_key='sample')
+sc.tl.pca(adata_query_i)
+sc.pp.neighbors(adata_query_i, n_neighbors=30)
+sc.tl.umap(adata_query_i)
 
-nn_mat = adata_query.obsp['distances'].astype(bool)
-labels = adata_query.obs['broad_class']
+nn_mat = adata_query_i.obsp['distances'].astype(bool)
+labels = adata_query_i.obs['group_2']
 same_label = nn_mat.multiply(labels.values[:, None] == labels.values)
 prop_same = same_label.sum(1).A1 / nn_mat.sum(1).A1
-adata_query.obs['broad_class_confidence'] = prop_same
+adata_query_i.obs['group_2_confidence'] = prop_same
 
-sc.pl.umap(adata_query, color=['broad_class', 'broad_class_confidence'])
-plt.savefig(f'{working_dir}/figures/curio/umap_broad_class_confidence.png',
-           dpi=400, bbox_inches='tight')
+sns.ecdfplot(data=adata_query_i.obs, x='group_2_confidence')
+plt.savefig(f'{working_dir}/figures/curio/broad_class_confidence_ecdf.png',
+            dpi=200, bbox_inches='tight')
 plt.close()
 
-plt.hist(adata_query.obs['broad_class_confidence'], bins=30)
-plt.savefig(f'{working_dir}/figures/curio/broad_class_confidence_hist.png',
-           dpi=400, bbox_inches='tight')
+adata_query_i.obs['noise'] = adata_query_i.obs['group_2_confidence'] < 0.6
+print(sum(adata_query_i.obs['noise']))
+# 10886
+
+sc.pl.umap(adata_query_i, color=['group_2', 'group_2_confidence'])
+plt.savefig(f'{working_dir}/figures/curio/broad_class_confidence_umap.png',
+           dpi=200, bbox_inches='tight')
 plt.close()
+
+adata_query = adata_query[adata_query_i.obs['noise'] == False]
+
+# keep cell types with at least 5 cells in at least 3 samples per condition
+min_cells, min_samples = 5, 3
+conditions = ['CTRL', 'PREG', 'POSTPART']
+kept_types = [
+    subclass for subclass in adata_query.obs['subclass'].unique()
+    if all(sum(sum((adata_query.obs['sample'] == s) & 
+              (adata_query.obs['subclass'] == subclass)) >= min_cells
+          for s in adata_query.obs['sample'][
+              adata_query.obs['sample'].str.contains(c)].unique()) >= min_samples
+        for c in conditions)
+]
+
+print("Kept cell types:")
+for t in sorted(kept_types):
+    print(f"- {t}")
+
+print("\nDropped cell types:")
+for t in sorted(set(adata_query.obs['subclass']) - set(kept_types)):
+    print(f"- {t}")
+
+adata_query.obs['keep_subclass'] = adata_query.obs['subclass'].isin(kept_types)
+print(adata_query.obs['keep_subclass'].value_counts())
+'''
+True     63297
+False     2031
+'''
+
+# add colors 
+cells_joined = pd.read_csv(
+  'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
+  'views/cells_joined.csv')
+color_mappings = {
+   'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
+                     cells_joined['class_color'])),
+   'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+       cells_joined['subclass'].str.replace('/', '_'), 
+       cells_joined['subclass_color'])).items()}
+}
+for level in ['class', 'subclass']:
+  unique_categories = adata_query.obs[level].unique()
+  category_colors = [color_mappings[level][cat] for cat in unique_categories]
+  adata_query.uns[f'{level}_colors'] = category_colors
+  adata_query.uns[f'{level}_color_dict'] = color_mappings[level]
+
+# umap
+seed = 0
+adata_query.X = adata_query.layers['log1p']
+sc.pp.highly_variable_genes(adata_query, n_top_genes=2000, batch_key='sample')
+sc.tl.pca(adata_query, random_state=seed)
+sc.pp.neighbors(adata_query, metric='cosine', random_state=seed)
+sc.tl.umap(adata_query, min_dist=0.5, spread=1.0, random_state=seed)
+
+sc.pl.umap(adata_query, color='class', title=None)
+plt.savefig(f'{working_dir}/figures/curio/umap_class.png',
+            dpi=400, bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/curio/umap_class.svg',
+            bbox_inches='tight')
+plt.close()
+
+sc.pl.umap(adata_query, color='subclass', title=None) 
+plt.savefig(f'{working_dir}/figures/curio/umap_subclass.png',
+            dpi=400, bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/curio/umap_subclass.svg',
+            bbox_inches='tight')
+plt.close()
+
+# save
+adata_query.X = adata_query.layers['counts']
+adata_query.write(
+    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
+
 
 # plotting #####################################################################
 
 import os
 import numpy as np
 import pandas as pd
-import anndata as ad
+import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 working_dir = 'project/spatial-pregnancy-postpart'
 
 # create multi-sample plots
-adata_comb = ad.read_h5ad(
+adata_comb = sc.read_h5ad(
     f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
 obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
 
-adata_query = ad.read_h5ad(
+adata_query = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad')
 obs_query = adata_query.obs
+# obs_query = obs_query[obs_query['keep_subclass'] == True]
+
+color_mappings = {
+    'class': dict(zip(adata_query.obs['class'], 
+                      adata_query.obs['class_color'])),
+    'subclass': dict(zip(adata_query.obs['subclass'], 
+                         adata_query.obs['subclass_color']))
+}
 
 def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     ref_samples = ref_obs['sample'].unique()
@@ -892,8 +978,7 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 5*n_rows))
     axes = axes.flatten()
     
-    # get color from query obs
-    cell_color = query_obs[f'{col}_color'].loc[query_obs[col] == cell_type].iloc[0]
+    cell_color = color_mappings[col][cell_type]
     coord_cols = ['x_ffd', 'y_ffd']
     
     for i, (sample, obs) in enumerate(
@@ -926,22 +1011,18 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
                 bbox_inches='tight')
     plt.close(fig)
 
-col = 'subclass'
-output_dir = f'{working_dir}/figures/curio/spatial_cell_types_{col}_final'
+col = 'class'
+output_dir = f'{working_dir}/figures/curio/spatial_cell_types_{col}'
 os.makedirs(output_dir, exist_ok=True)
-cell_types = pd.concat([obs_ref[col], obs_query[col]]).unique()
-
+cell_types = obs_query[col].unique()
 for cell_type in cell_types:
-    if obs_query[col].value_counts().get(cell_type, 0) > 0:
-        create_multi_sample_plot(
-            obs_ref, obs_query, col, cell_type, output_dir)
-
+    create_multi_sample_plot(obs_ref, obs_query, col, cell_type, output_dir)
 
 # radius plot 
-adata_comb = ad.read_h5ad(
+adata_comb = sc.read_h5ad(
     f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
 
-plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'PREG_3_2']
+plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'CTRL_1_1']
 
 fig, ax = plt.subplots(figsize=(8, 8))
 ax.scatter(plot_df['x_ffd'], plot_df['y_ffd'], c='grey', s=1)
@@ -960,3 +1041,7 @@ ax.axis('off')
 
 plt.tight_layout()
 plt.savefig(f'{working_dir}/figures/curio/radius.png', dpi=200)
+
+
+
+

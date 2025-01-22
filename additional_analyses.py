@@ -1,3 +1,128 @@
+import os
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+plt.rcParams['svg.fonttype'] = 'none'
+plt.rcParams['font.family'] = 'DejaVu Sans'
+
+working_dir = 'project/spatial-pregnancy-postpart'
+
+adata_curio = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_curio_curio_final.h5ad')
+
+cells_joined = pd.read_csv(
+  'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
+  'views/cells_joined.csv')
+color_mappings = {
+   'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
+                     cells_joined['class_color'])),
+   'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+       cells_joined['subclass'].str.replace('/', '_'), 
+       cells_joined['subclass_color'])).items()}
+}
+
+# spatial exemplar 
+
+level = 'class'
+sample = 'CTRL_2_1'
+plot_color = adata_curio[(adata_curio.obs['sample'] == sample)].obs
+
+fig, ax = plt.subplots(figsize=(10, 8)) 
+scatter = ax.scatter(
+    plot_color['x_ffd'], plot_color['y_ffd'],
+    c=[color_mappings[level][c] for c in plot_color[level]], s=8)
+unique_classes = plot_color[level].unique()
+legend_elements = [plt.Line2D(
+    [0], [0], marker='o', color='w', 
+    markerfacecolor=color_mappings[level][class_],
+    label=class_, markersize=8)
+    for class_ in unique_classes]
+ax.legend(handles=legend_elements, loc='center left', 
+         bbox_to_anchor=(1, 0.5), frameon=False) 
+
+ax.set_aspect('equal')
+ax.axis('off')
+plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.png',
+            dpi=300, bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.svg',
+            format='svg', bbox_inches='tight')
+
+# umap
+
+level = 'class'
+
+fig, ax = plt.subplots(figsize=(10, 8))
+scatter = ax.scatter(
+  adata_curio.obsm['X_umap'][:, 0], adata_curio.obsm['X_umap'][:, 1],
+  c=[color_mappings[level][c] for c in adata_curio.obs[level]], s=0.5)
+ax.set_aspect('equal')
+ax.spines[['top', 'right', 'bottom', 'left']].set_visible(True)
+ax.spines[['top', 'right', 'bottom', 'left']].set_linewidth(2)
+ax.set_xticks([])
+ax.set_yticks([])
+plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/curio/umap_{level}.png', dpi=300,
+          bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/curio/umap_{level}.svg',
+          format='svg', bbox_inches='tight')
+
+
+
+marker_dict = {
+    "Neuron":["Dpp6"],
+    "Excitatory Neuron":["Slc17a7"],
+    "Inhibitory Neuron":["Slc32a1", "Gad1", "Gad2"],
+    "MSN":["Drd2", "Adora2a"],
+    "Oligodendrocyte":["Olig1", "Olig2", "Opalin", "Mog", "Cldn11"],
+    "OPC":["Pdgfra", "Vcan"],
+    "Astrocyte":["Aqp4", "Gfap", "Aldh1l1"],
+    "Microglia":["Cx3cr1", "Csf1r","C1qa","C1qb","Hexb"],
+    "Endothelial":["Flt1","Cldn5","Apold1","Ly6c1"],
+    "Pericyte":["Kcnj8", "Vtn", "Ifitm1"],
+    "VSMC":["Acta2"],
+    "VLMC":["Slc6a13"],
+    "Ependymal":["Ccdc153", "Rarres2", "Tmem212"],
+    "Neuroblast":["Stmn2", "Dlx6os1", "Igfbpl1", "Dcx", "Cd24a", "Tubb3", "Sox11", "Dlx1"],
+    "NSC":["Pclaf", "H2afx", "Rrm2", "Insm1", "Egfr", "Mki67", "Mcm2", "Cdk1"],
+    "Macrophage":["Mrc1", "Pf4", "Lyz2"],
+    "T cell":["Cd3e","Nkg7","Ccl5","Ms4a4b","Cd3g"],
+    "B cell":["Cd79a","Cd19","Ighm","Ighd"],
+    "Neutrophil":["S100a9","Itgam","Cxcr2"],
+    "Mast cell":["Hdc", "Cma1"],
+    "Dendritic cell":["Cd209a"],
+}
+
+sc.pl.matrixplot(
+    adata_query,
+    marker_dict,
+    "class",
+    dendrogram=True,
+    cmap="Blues",
+    standard_scale="var",
+    colorbar_title="column scaled\nexpression",
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import sys
 import anndata as ad
 import scanpy as sc
