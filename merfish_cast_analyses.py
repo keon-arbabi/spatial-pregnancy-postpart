@@ -872,18 +872,17 @@ for sample, (source_sample, target_sample) in source_target_list.items():
         target_obs[col] = cell_types
         target_obs[f'{col}_confidence'] = confidences
         target_obs[f'{col}_color'] = target_obs[col].map(
-            dict(zip(source_obs[col], source_obs[f'{col}_color']))
-        )
-    
+            dict(zip(source_obs[col], source_obs[f'{col}_color'])))
+
     new_obs_list.append(target_obs.set_index(target_index))
 
 new_obs = pd.concat(new_obs_list)
 new_obs.to_csv(f'{working_dir}/output/merfish/new_obs.csv', index_label='cell_id')
 
 # plot cast metrics
-metrics = ['subclass_confidence', 'subclass_avg_cdist', 'subclass_avg_pdist']
-titles = ['Subclass Assignment Confidence', 'Subclass Average Cosine Distance',
-          'Subclass Average Physical Distance']
+metrics = ['subclass_confidence', 'avg_cdist', 'avg_pdist']
+titles = ['Subclass Assignment Confidence', 'Average Cosine Distance',
+          'Average Physical Distance']
 y_labels = ['Confidence Score', 'Cosine Distance', 'Physical Distance (μm)']
 
 sample_order = [
@@ -895,29 +894,25 @@ sample_labels = [
     'Pregnant 1', 'Pregnant 2', 'Pregnant 3',
     'Postpartum 1', 'Postpartum 2', 'Postpartum 3']
 
-pink = sns.color_palette("PiYG")[0]
-fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
-
 configs = {
     'subclass_confidence': dict(
         log=False, lines=(0.7, None),
         ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0]),
-    'subclass_avg_cdist': dict(
+    'avg_cdist': dict(
         log=False, lines=(0.7, None),
         ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], invert=True),
-    'subclass_avg_pdist': dict(
+    'avg_pdist': dict(
         log=False, lines=(None, None),
         ticks=[0, 1], invert=True)
 }
 
+pink = sns.color_palette("PiYG")[0]
+fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
+
 for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
-    cfg = configs[m]    
-    if m == 'subclass_avg_pdist':
-        plot_data = pd.concat(new_obs_list)
-        plot_data = plot_data[~np.isinf(plot_data[m])]
-    else:
-        plot_data = pd.concat(new_obs_list)
-        
+    cfg = configs[m]  
+    plot_data = pd.concat(new_obs_list)
+    plot_data = plot_data[~np.isinf(plot_data[m])]
     sns.violinplot(
         data=plot_data, x='sample', y=m, ax=axes[i],
         color=pink, alpha=0.5, linewidth=1, linecolor=pink,
@@ -925,10 +920,11 @@ for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     if cfg['log']:
         axes[i].set_yscale('log')
         axes[i].set_yticks(cfg['ticks'])
+        axes[i].set_yticklabels([str(x) for x in cfg['ticks']])
     if cfg.get('invert', False):
         axes[i].invert_yaxis()
     for val in cfg['lines']:
-        if val:
+        if val is not None:
             axes[i].axhline(y=val, ls='--', color=pink, alpha=0.5)
             axes[i].text(1.02, val, f'{val:.1f}', va='center', 
                         transform=axes[i].get_yaxis_transform())
@@ -949,318 +945,210 @@ plt.savefig(f'{working_dir}/figures/merfish/cast_metrics_violin.svg',
 plt.savefig(f'{working_dir}/figures/merfish/cast_metrics_violin.png',
             dpi=150, bbox_inches='tight')
 
+# post-processing ##############################################################
+
+import numpy as np
+import pandas as pd 
+import scanpy as sc
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+working_dir = 'project/spatial-pregnancy-postpart'
+
 # add new obs columns
-adata_query = ad.read_h5ad(
+adata_query = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish.h5ad')
 adata_query.obs = adata_query.obs.drop(columns=[
-    'class', 'subclass', 'class_color', 'subclass_color', 
-    'parcellation_division', 'parcellation_division_color', 
-    'parcellation_structure', 'parcellation_structure_color'])
+    'class', 'subclass', 'class_color', 'subclass_color'])
 
-new_obs = pd.concat(new_obs_list)
-new_obs = new_obs.reindex(index=adata_query.obs_names)
+new_obs = pd.read_csv(
+    f'{working_dir}/output/merfish/new_obs.csv',index_col='cell_id')
 for col in new_obs.columns:
     if col not in adata_query.obs.columns:
         adata_query.obs[col] = new_obs[col]
 
-# filter using cast metrics
-print(len(adata_query)) # 1,171,525
-mask = ((adata_query.obs['subclass_confidence'] >= 0.8) &
-        (adata_query.obs['subclass_avg_cdist'] <= 0.6))
+# filter cells 
+total = len(adata_query)
+for name, mask in {
+    'low subclass confidence': adata_query.obs['subclass_confidence'] <= 0.7,
+    'high expression dist': adata_query.obs['avg_cdist'] >= 0.7
+}.items():
+    print(f'{name}: {mask.sum()} ({mask.sum()/total*100:.1f}%) cells dropped')
+'''
+low subclass confidence: 276418 (23.6%) cells dropped
+high expression dist: 42198 (3.6%) cells dropped
+
+'''
+mask = ((adata_query.obs['class_confidence'] >= 0.7) &
+        (adata_query.obs['avg_cdist'] <= 0.7))
+        
+cells_dropped = total - mask.sum()
+print(f'\nTotal cells dropped: {cells_dropped} '
+      f'({cells_dropped/total*100:.1f}%)')
+'''Total cells dropped: 115347 (9.8%)'''
 
 adata_query = adata_query[mask].copy()
-print(len(adata_query)) # 904,577
+
+# remove noise cells 
+mapping_group_1 = {
+   '01 IT-ET Glut': 'neuronal',
+   '02 NP-CT-L6b Glut': 'neuronal', 
+   '05 OB-IMN GABA': 'neuronal',
+   '06 CTX-CGE GABA': 'neuronal',
+   '07 CTX-MGE GABA': 'neuronal',
+   '08 CNU-MGE GABA': 'neuronal',
+   '09 CNU-LGE GABA': 'neuronal',
+   '10 LSX GABA': 'neuronal',
+   '11 CNU-HYa GABA': 'neuronal',
+   '12 HY GABA': 'neuronal',
+   '13 CNU-HYa Glut': 'neuronal',
+   '14 HY Glut': 'neuronal',
+   '30 Astro-Epen': 'non-neuronal',
+   '31 OPC-Oligo': 'non-neuronal',
+   '33 Vascular': 'non-neuronal',
+   '34 Immune': 'non-neuronal'
+}
+mapping_group_2 = {
+   '01 IT-ET Glut': 'Glut',
+   '02 NP-CT-L6b Glut': 'Glut', 
+   '05 OB-IMN GABA': 'GABA',
+   '06 CTX-CGE GABA': 'GABA',
+   '07 CTX-MGE GABA': 'GABA',
+   '08 CNU-MGE GABA': 'GABA',
+   '09 CNU-LGE GABA': 'GABA',
+   '10 LSX GABA': 'GABA',
+   '11 CNU-HYa GABA': 'GABA',
+   '12 HY GABA': 'GABA',
+   '13 CNU-HYa Glut': 'Glut',
+   '14 HY Glut': 'Glut',
+   '30 Astro-Epen': 'Glia',
+   '31 OPC-Oligo': 'Glia',
+   '33 Vascular': 'Glia',
+   '34 Immune': 'Glia'
+}
+adata_query = adata_query.copy()
+adata_query.obs['group_1'] = adata_query.obs['class'].map(mapping_group_1)
+adata_query.obs['group_2'] = adata_query.obs['class'].map(mapping_group_2)
+
+adata_query.X = adata_query.layers['volume_log1p']
+sc.pp.highly_variable_genes(adata_query, n_top_genes=2000, batch_key='sample')
+sc.tl.pca(adata_query)
+sc.pp.neighbors(adata_query)
+
+nn_mat = adata_query.obsp['distances'].astype(bool)
+labels = adata_query.obs['group_2'].values
+confidences = []
+for i in range(len(labels)):
+    neighbor_idx = nn_mat[i].indices
+    confidence = np.mean(labels[neighbor_idx] == labels[i])
+    confidences.append(confidence)
+adata_query.obs['group_2_confidence'] = confidences
+
+sns.ecdfplot(data=adata_query.obs, x='group_2_confidence')
+plt.savefig(f'{working_dir}/figures/merfish/broad_class_confidence_ecdf.png',
+            dpi=200, bbox_inches='tight')
+
+mask = adata_query.obs['group_2_confidence'] < 0.8
+print(sum(mask))
+# 151541
+
+sc.tl.umap(adata_query)
+sc.pl.umap(adata_query, color=['group_2', 'group_2_confidence'])
+plt.savefig(f'{working_dir}/figures/merfish/broad_class_confidence_umap.png',
+           dpi=200, bbox_inches='tight')
+plt.close()
+
+adata_query = adata_query[~mask]
+
+# keep cell types with at least 5 cells in at least 3 samples per condition
+min_cells, min_samples = 10, 3
+conditions = ['CTRL', 'PREG', 'POSTPART']
+kept_types = [
+    subclass for subclass in adata_query.obs['subclass'].unique()
+    if all(sum(sum((adata_query.obs['sample'] == s) & 
+              (adata_query.obs['subclass'] == subclass)) >= min_cells
+          for s in adata_query.obs['sample'][
+              adata_query.obs['sample'].str.contains(c)].unique()) >= min_samples
+        for c in conditions)
+]
+
+print("Kept cell types:")
+for t in sorted(kept_types):
+    print(f"- {t}")
+
+print("\nDropped cell types:")
+for t in sorted(set(adata_query.obs['subclass']) - set(kept_types)):
+    print(f"- {t}")
+
+adata_query.obs['keep_subclass'] = adata_query.obs['subclass'].isin(kept_types)
+print(adata_query.obs['keep_subclass'].value_counts())
+'''
+True     902685
+False      1952
+'''
+
+# add colors 
+cells_joined = pd.read_csv(
+  'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
+  'views/cells_joined.csv')
+color_mappings = {
+   'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
+                     cells_joined['class_color'])),
+   'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+       cells_joined['subclass'].str.replace('/', '_'), 
+       cells_joined['subclass_color'])).items()}
+}
+for level in ['class', 'subclass']:
+  unique_categories = adata_query.obs[level].unique()
+  category_colors = [color_mappings[level][cat] for cat in unique_categories]
+  adata_query.uns[f'{level}_colors'] = category_colors
+  adata_query.uns[f'{level}_color_dict'] = color_mappings[level]
+
+# umap
+seed = 0
+sc.pp.neighbors(adata_query, metric='cosine', random_state=seed)
+sc.tl.umap(adata_query, min_dist=0.4, spread=1.0, random_state=seed)
+
+sc.pl.umap(adata_query, color='class', title=None)
+plt.savefig(f'{working_dir}/figures/merfish/umap_class.png',
+            dpi=300, bbox_inches='tight')
 
 # save
 adata_query.X = adata_query.layers['counts']
 adata_query.write(
     f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 
-# Post-processing ##############################################################
+# plotting #####################################################################
 
 import os
-import sys
-import warnings
-import scanorama
-import polars as pl
 import numpy as np
 import pandas as pd
-import anndata as ad
 import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
-import scanpy.external as sce
-
-warnings.filterwarnings('ignore')
 
 working_dir = 'project/spatial-pregnancy-postpart'
 
-sys.path.append('project/utils')
-
-from single_cell import SingleCell, options
-from utils import debug, Timer, print_df
-
-options(num_threads=-1, seed=42)
-debug(third_party=True)
-
-sc_query = SingleCell(
-    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')\
-    .with_uns(QCed=True)
-
-subclasses = sc_query.obs.group_by('subclass')\
-    .count()\
-    .filter(pl.col.count.ge(10))\
-    .get_column('subclass')
-
-sc_query = sc_query\
-    .filter_obs(pl.col('subclass').is_in(subclasses))
-
-file = 'project/single-cell/ABC/anndata/zeng_combined_10Xv3_sub.h5ad'
-if not os.path.exists(file):
-    sc_ref = SingleCell(
-        'project/single-cell/ABC/anndata/zeng_combined_10Xv3.h5ad')\
-        .filter_obs(pl.col.subclass.is_not_null())\
-        .subsample_obs(fraction=0.25, by_column='class')
-    sc_ref.save(file)
-else:
-    sc_ref = SingleCell(file)
-
-sc_ref = sc_ref\
-    .with_uns(QCed=True)\
-    .set_var_names('gene_identifier')\
-    .filter_obs(pl.col.subclass.cast(pl.String).is_in(subclasses))
-
-sc_query = sc_query.normalize(allow_float=True)
-sc_ref = sc_ref.normalize(allow_float=True)
-
-sc_query, sc_ref = sc_query.PCA(sc_ref, hvg_column=None)
-sc_query, sc_ref = sc_query.harmonize(sc_ref, max_harmony_iterations=20)
-
-sc_query = sc_query.neighbors(PC_key='Harmony_PCs')
-sc_query = sc_query.embed()
-
-sc_query.plot_embedding(
-    'class', 
-    f'{working_dir}/figures/merfish/pacmap_class.png',
-    label=True, label_kwargs={'size': 6},
-    legend=True, legend_kwargs={'fontsize': 'x-small', 'ncols': 1})
-
-
-# load query data
-adata_query = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
-adata_query.X = adata_query.layers['volume_log1p']
-
-# load reference data
-# adata_ref = ad.read_h5ad(
-#     f'{working_dir}/output/data/adata_ref_zeng_imputed.h5ad')
-# adata_ref.var.index = adata_ref.var['gene_identifier']
-
-adata_ref = ad.read_h5ad(
-    'project/single-cell/ABC/anndata/zeng_combined_10Xv3_sub.h5ad')
-adata_ref.var.index = adata_ref.var['gene_identifier']
-
-adata_ref
-
-# batch correct 
-adata_query, adata_ref  = scanorama.correct_scanpy([adata_query, adata_ref])
-adata_comb = ad.concat(
-    [adata_query, adata_ref], axis=0, merge='same', label='dataset')
-
-# pca
-sc.pp.pca(adata_comb)
-# harmony
-sce.pp.harmony_integrate(
-    adata_comb, 
-    'dataset', 
-    max_iter_harmony=20)
-# umap
-sc.pp.neighbors(
-    adata_comb, 
-    use_rep='X_pca_harmony',
-    n_neighbors=50,    
-    n_pcs=30)
-sc.tl.umap(
-    adata_comb, 
-    min_dist=0.01,
-    spread=5)
-
-# temp save
-# adata_comb.write(
-#     f'{working_dir}/output/merfish/adata_comb_temp.h5ad')
-
-adata_query = adata_comb[adata_comb.obs['dataset'] == '0']
-adata_ref = adata_comb[adata_comb.obs['dataset'] == '1']
-
-cells_joined = pd.read_csv(
-    'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
-    'views/cells_joined.csv')
-color_mappings = {
-    'class': dict(zip(cells_joined['class'], cells_joined['class_color'])),
-    'subclass': dict(zip(cells_joined['subclass'], cells_joined['subclass_color']))
-}
-
-# umaps 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-sc.pl.umap(adata_ref,
-           color='class',
-           palette=color_mappings['class'],
-           ax=ax1,
-           legend_loc='none',
-           title='Reference',
-           show=False)
-sc.pl.umap(adata_query,
-           color='class',
-           palette=color_mappings['class'],
-           ax=ax2,
-           legend_loc='right margin',
-           title='Query',
-           show=False)
-plt.savefig(f'{working_dir}/figures/merfish/umaps_harmony_class.png', dpi=300)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# load query data
-adata_query = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
-adata_query.X = adata_query.layers['volume_log1p']
-
-# add cell type colors
-cells_joined = pd.read_csv(
-    'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
-    'views/cells_joined.csv')
-color_mappings = {
-    'class': dict(zip(cells_joined['class'], cells_joined['class_color'])),
-    'subclass': dict(zip(cells_joined['subclass'], cells_joined['subclass_color']))
-}
-
-sc.tl.pca(adata_query)
-sc.pp.neighbors(adata_query)
-sc.tl.umap(adata_query)
-
-sc.pl.umap(adata_query, color='class', palette=color_mappings['class'])
-plt.savefig(f'{working_dir}/figures/merfish/umap_class.svg', 
-            bbox_inches='tight')
-
-sc.pl.umap(adata_query, color='subclass', palette=color_mappings['subclass'])
-plt.savefig(f'{working_dir}/figures/merfish/umap_subclass.png', 
-            dpi=200, bbox_inches='tight')
-
-
-
-
-
-
-sys.path.append('project/utils')
-
-from single_cell import SingleCell, options
-from utils import debug
-
-options(num_threads=-1, seed=42)
-debug(third_party=True)
-
-sc_query = SingleCell(
-    f'{working_dir}/output/data/adata_query_merfish_final.h5ad',
-    X_key='layers/volume_log1p')\
-    .with_uns(QCed=True, normalized=True)
-
-sc_ref = SingleCell(
-    f'{working_dir}/output/data/adata_ref_zeng_imputed.h5ad')\
-    .set_var_names('gene_identifier')\
-    .with_uns(QCed=True)
-
-sc_query, sc_ref = sc_query.PCA(sc_ref, hvg_column=None)
-
-sc_query, sc_ref = sc_query.harmonize(sc_ref)
-sc_query = sc_query.neighbors(PC_key='Harmony_PCs')
-
-sc_query = sc_query.embed()
-sc_query.plot_embedding(
-    'class', 
-    f'{working_dir}/figures/merfish/pacmap_class.png',
-    label=True, label_kwargs={'size': 6},
-    legend=True, legend_kwargs={'fontsize': 'x-small', 'ncols': 1})
-
-sc_query.plot_embedding(
-    'subclass', 
-    f'{working_dir}/figures/merfish/pacmap_subclass.png',
-    label=True, label_kwargs={'size': 6},
-    legend=True, legend_kwargs={'fontsize': 'x-small', 'ncols': 1})
-
-
-
-
-
-
-
-
-
-sc_query = SingleCell(
-    f'{working_dir}/output/data/adata_query_merfish_final.h5ad',
-    X_key='layers/volume_log1p')\
-    .with_uns(QCed=True, normalized=True)
-
-sc_query = sc_query.PCA(hvg_column=None)
-sc_query = sc_query.neighbors()
-sc_query = sc_query.embed()
-
-sc_query.plot_embedding(
-    'class', 
-    f'{working_dir}/figures/merfish/pacmap_class.svg',
-    label=True, label_kwargs={'size': 6},
-    legend=True, legend_kwargs={'fontsize': 'x-small', 'ncols': 1})
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# create multi-sample plots
-adata_comb = ad.read_h5ad(
-    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
+adata_comb = sc.read_h5ad(
+    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
 obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
 
-adata_query = ad.read_h5ad(
+adata_query = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 obs_query = adata_query.obs
 
+cells_joined = pd.read_csv(
+  'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
+  'views/cells_joined.csv')
+color_mappings = {
+   'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
+                     cells_joined['class_color'])),
+   'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+       cells_joined['subclass'].str.replace('/', '_'), 
+       cells_joined['subclass_color'])).items()}
+}
+
+# create multi-sample plots
 def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     ref_samples = ref_obs['sample'].unique()
     query_samples = query_obs['sample'].unique() 
@@ -1269,8 +1157,7 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 5*n_rows))
     axes = axes.flatten()
     
-    # get color from query obs
-    cell_color = query_obs[f'{col}_color'].loc[query_obs[col] == cell_type].iloc[0]
+    cell_color = color_mappings[col][cell_type]
     coord_cols = ['x_ffd', 'y_ffd']
     
     for i, (sample, obs) in enumerate(
@@ -1284,10 +1171,10 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
         if mask.sum() > 0:
             ax.scatter(plot_df[~mask][coord_cols[0]], 
                       plot_df[~mask][coord_cols[1]], 
-                      c='grey', s=0.1, alpha=0.1)
+                      c='grey', s=0.2, alpha=0.1)
             ax.scatter(plot_df[mask][coord_cols[0]], 
                       plot_df[mask][coord_cols[1]], 
-                      c=cell_color, s=1.1)
+                      c=cell_color, s=1)
         else:
             ax.text(0.5, 0.5, 'no cells of this type', 
                    ha='center', va='center', transform=ax.transAxes)
@@ -1304,24 +1191,19 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     plt.close(fig)
 
 col = 'subclass'
-output_dir = f'{working_dir}/figures/merfish/spatial_cell_types_{col}_final'
+output_dir = f'{working_dir}/figures/merfish/spatial_cell_types_{col}'
 os.makedirs(output_dir, exist_ok=True)
-cell_types = pd.concat([obs_ref[col], obs_query[col]]).unique()
-
+cell_types = obs_query[col].unique()
 for cell_type in cell_types:
-    if obs_query[col].value_counts().get(cell_type, 0) > 0:
-        create_multi_sample_plot(
-            obs_ref, obs_query, col, cell_type, output_dir)
+    create_multi_sample_plot(obs_ref, obs_query, col, cell_type, output_dir)
 
 # radius plot 
 plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'PREG3']
 
 fig, ax = plt.subplots(figsize=(8, 8))
 ax.scatter(plot_df['x_ffd'], plot_df['y_ffd'], c='grey', s=1)
-
 random_point = plot_df.sample(n=1)
 ax.scatter(random_point['x_ffd'], random_point['y_ffd'], c='red', s=10)
-
 from matplotlib.patches import Circle
 radius = 0.546297587762388  # ave_dist_fold=30
 circle = Circle((random_point['x_ffd'].values[0], 

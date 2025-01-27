@@ -1,17 +1,18 @@
-import os
+import sys
 import numpy as np
 import pandas as pd
 import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+sys.path.append('project/utils')
+from single_cell import SingleCell, options
+options(num_threads=-1, seed=42)
+
 plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
 
 working_dir = 'project/spatial-pregnancy-postpart'
-
-adata_curio = sc.read_h5ad(
-    f'{working_dir}/output/data/adata_curio_curio_final.h5ad')
 
 cells_joined = pd.read_csv(
   'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
@@ -24,86 +25,220 @@ color_mappings = {
        cells_joined['subclass_color'])).items()}
 }
 
+adata_curio = SingleCell(
+    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
+adata_merfish = SingleCell(
+    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+data = 'curio'
+level = 'class'
+
+adata = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_{data}_final.h5ad')
+
 # spatial exemplar 
 
-level = 'class'
-sample = 'CTRL_2_1'
-plot_color = adata_curio[(adata_curio.obs['sample'] == sample)].obs
-
-fig, ax = plt.subplots(figsize=(10, 8)) 
+sample = 'PREG1'
+plot_color = adata[(adata.obs['sample'] == sample)].obs
+fig, ax = plt.subplots(figsize=(10, 8))
 scatter = ax.scatter(
     plot_color['x_ffd'], plot_color['y_ffd'],
-    c=[color_mappings[level][c] for c in plot_color[level]], s=8)
-unique_classes = plot_color[level].unique()
+    c=[color_mappings[level][c] for c in plot_color[level]], 
+    s=1, linewidths=0)
+unique_classes = sorted(plot_color[level].unique(),
+                      key=lambda x: int(x.split()[0]))
 legend_elements = [plt.Line2D(
-    [0], [0], marker='o', color='w', 
+    [0], [0], marker='o', color='w',
     markerfacecolor=color_mappings[level][class_],
     label=class_, markersize=8)
     for class_ in unique_classes]
-ax.legend(handles=legend_elements, loc='center left', 
-         bbox_to_anchor=(1, 0.5), frameon=False) 
-
+ax.legend(handles=legend_elements, loc='center left',
+         bbox_to_anchor=(1, 0.5), frameon=False)
 ax.set_aspect('equal')
 ax.axis('off')
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.png',
+plt.savefig(f'{working_dir}/figures/{data}/spatial_example_{level}.png',
             dpi=300, bbox_inches='tight')
-plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.svg',
+plt.savefig(f'{working_dir}/figures/{data}/spatial_example_{level}.svg',
             format='svg', bbox_inches='tight')
 
 # umap
 
-level = 'class'
-
 fig, ax = plt.subplots(figsize=(10, 8))
 scatter = ax.scatter(
-  adata_curio.obsm['X_umap'][:, 0], adata_curio.obsm['X_umap'][:, 1],
-  c=[color_mappings[level][c] for c in adata_curio.obs[level]], s=0.5)
+  adata.obsm['X_umap'][:, 0], adata.obsm['X_umap'][:, 1],
+  c=[color_mappings[level][c] for c in adata.obs[level]],
+  s=0.2, linewidths=0)
 ax.set_aspect('equal')
 ax.spines[['top', 'right', 'bottom', 'left']].set_visible(True)
 ax.spines[['top', 'right', 'bottom', 'left']].set_linewidth(2)
 ax.set_xticks([])
 ax.set_yticks([])
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/curio/umap_{level}.png', dpi=300,
+plt.savefig(f'{working_dir}/figures/{data}/umap_{level}.png', dpi=300,
           bbox_inches='tight')
-plt.savefig(f'{working_dir}/figures/curio/umap_{level}.svg',
-          format='svg', bbox_inches='tight')
+
+# marker heatmap
+
+
+sc.tl.rank_genes_groups(adata, groupby='class', method='wilcoxon')
+for group in sorted(adata.obs['class'].unique()):
+    print(f'{group}:')
+    print(sc.get.rank_genes_groups_df(
+        adata, group=group, gene_symbols='gene_symbol').head(50))
+
+marker_dict = {
+    '01 IT-ET Glut': ['Slc17a7', 'Satb2', 'Grin2a'],
+    '02 NP-CT-L6b Glut': ['Dpp10', 'Hs3st4'],
+    '05 OB-IMN GABA': ['Sox2ot', 'Dlx6os1', 'Meis2'],
+    '06 CTX-CGE GABA': ['Adarb2', 'Grip1', 'Kcnip1'], 
+    '07 CTX-MGE GABA': ['Nxph1', 'Lhx6', 'Sox6'],
+    '08 CNU-MGE GABA': ['Galntl6'],
+    '09 CNU-LGE GABA': ['Pde10a', 'Rarb', 'Drd1', 'Kcnip2'],
+    '10 LSX GABA': ['Trpc4', 'Myo5b'],
+    '11 CNU-HYa GABA': ['Unc5d'],
+    '12 HY GABA': ['Efna5', 'Nell1'],
+    '13 CNU-HYa Glut': ['Slc17a6', 'Ntng1'],
+    '14 HY Glut': ['Chrm3', 'Tafa1'],  
+    '30 Astro-Epen': ['Slc1a2', 'Gpc5', 'Aqp4'],
+    '31 OPC-Oligo': ['Plp1', 'Pdgfra', 'Mbp'],
+    '33 Vascular': ['Flt1', 'Cldn5', 'Bsg'],
+    '34 Immune': ['Plxdc2', 'Hexb', 'C1qa']
+}
+
+sc.pl.matrixplot(
+    adata, marker_dict, 'class', dendrogram=False, cmap='Reds',
+    standard_scale='var', gene_symbols='gene_symbol',
+    var_group_labels=None)
+plt.savefig(f'{working_dir}/figures/{data}/marker_heatmap_{level}.png',
+            dpi=300, bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/{data}/marker_heatmap_{level}.svg',
+            format='svg', bbox_inches='tight')
+
+sc.pl.dotplot(adata, marker_dict, 'class', dendrogram=False)
+plt.savefig(f'{working_dir}/figures/{data}/marker_dotplot_{level}.png',
+            dpi=300, bbox_inches='tight')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+subclass_annotations = pd.read_csv(
+    'project/single-cell/ABC/metadata/WMB-10X/'
+    '20241115/subclass_annotations.csv')\
+    .query("subclass_id_label in @adata.obs['subclass'].unique()")
+
+classes, markers, tf_markers = {}, {}, {}
+for _, row in subclass_annotations.iterrows():
+    cid = row['class_id_label']
+    if cid not in classes:
+        classes[cid] = []
+        markers[cid] = []
+        tf_markers[cid] = []
+    classes[cid].append(row['subclass_id'])
+    if pd.notna(row['subclass.markers.combo']):
+        markers[cid].extend(row['subclass.markers.combo'].split(','))
+    if pd.notna(row['subclass.tf.markers.combo']):    
+        tf_markers[cid].extend(row['subclass.tf.markers.combo'].split(','))
+
+marker_dict = {}
+for cid in classes:
+    m = set(markers[cid]) | set(tf_markers[cid])
+    marker_dict[cid] = [x for x in m if markers[cid].count(x) > 
+                        len(classes[cid])/5]
+
+shared = set()
+for c1 in classes:
+    for c2 in classes:
+        if c1 != c2:
+            common = set(marker_dict[c1]) & set(marker_dict[c2])
+            shared.update([x for x in common 
+                         if marker_dict[c1].count(x) < 
+                         2*marker_dict[c2].count(x)])
+
+marker_dict = {k: list(set(v) - shared) for k,v in marker_dict.items()}
+
+
+
+
+
 
 
 
 marker_dict = {
-    "Neuron":["Dpp6"],
-    "Excitatory Neuron":["Slc17a7"],
-    "Inhibitory Neuron":["Slc32a1", "Gad1", "Gad2"],
-    "MSN":["Drd2", "Adora2a"],
-    "Oligodendrocyte":["Olig1", "Olig2", "Opalin", "Mog", "Cldn11"],
-    "OPC":["Pdgfra", "Vcan"],
-    "Astrocyte":["Aqp4", "Gfap", "Aldh1l1"],
-    "Microglia":["Cx3cr1", "Csf1r","C1qa","C1qb","Hexb"],
-    "Endothelial":["Flt1","Cldn5","Apold1","Ly6c1"],
-    "Pericyte":["Kcnj8", "Vtn", "Ifitm1"],
-    "VSMC":["Acta2"],
-    "VLMC":["Slc6a13"],
-    "Ependymal":["Ccdc153", "Rarres2", "Tmem212"],
-    "Neuroblast":["Stmn2", "Dlx6os1", "Igfbpl1", "Dcx", "Cd24a", "Tubb3", "Sox11", "Dlx1"],
-    "NSC":["Pclaf", "H2afx", "Rrm2", "Insm1", "Egfr", "Mki67", "Mcm2", "Cdk1"],
-    "Macrophage":["Mrc1", "Pf4", "Lyz2"],
-    "T cell":["Cd3e","Nkg7","Ccl5","Ms4a4b","Cd3g"],
-    "B cell":["Cd79a","Cd19","Ighm","Ighd"],
-    "Neutrophil":["S100a9","Itgam","Cxcr2"],
-    "Mast cell":["Hdc", "Cma1"],
-    "Dendritic cell":["Cd209a"],
+    'Neuron':['Dpp6'],
+    'Excitatory Neuron':['Slc17a7'],
+    'Inhibitory Neuron':['Slc32a1', 'Gad1', 'Gad2'],
+    'MSN':['Drd2', 'Adora2a'],
+    'Oligodendrocyte':['Olig1', 'Olig2', 'Opalin', 'Mog', 'Cldn11'],
+    'OPC':['Pdgfra', 'Vcan'],
+    'Astrocyte':['Aqp4', 'Gfap', 'Aldh1l1'],
+    'Microglia':['Cx3cr1', 'Csf1r','C1qa','C1qb','Hexb'],
+    'Endothelial':['Flt1','Cldn5','Apold1','Ly6c1'],
+    'Pericyte':['Kcnj8', 'Vtn', 'Ifitm1'],
+    'VSMC':['Acta2'],
+    'VLMC':['Slc6a13'],
+    'Ependymal':['Ccdc153', 'Rarres2', 'Tmem212'],
+    'Neuroblast':['Stmn2', 'Dlx6os1', 'Igfbpl1', 'Dcx', 'Cd24a', 'Tubb3', 'Sox11', 'Dlx1'],
+    'NSC':['Pclaf', 'H2afx', 'Rrm2', 'Insm1', 'Egfr', 'Mki67', 'Mcm2', 'Cdk1'],
+    'Macrophage':['Mrc1', 'Pf4', 'Lyz2'],
+    'T cell':['Cd3e','Nkg7','Ccl5','Ms4a4b','Cd3g'],
+    'B cell':['Cd79a','Cd19','Ighm','Ighd'],
+    'Neutrophil':['S100a9','Itgam','Cxcr2'],
+    'Mast cell':['Hdc', 'Cma1'],
+    'Dendritic cell':['Cd209a'],
 }
 
 sc.pl.matrixplot(
     adata_query,
     marker_dict,
-    "class",
+    'class',
     dendrogram=True,
-    cmap="Blues",
-    standard_scale="var",
-    colorbar_title="column scaled\nexpression",
+    cmap='Blues',
+    standard_scale='var',
+    colorbar_title='column scaled\nexpression',
 )
 
 

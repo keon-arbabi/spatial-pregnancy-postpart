@@ -751,7 +751,6 @@ plt.savefig(f'{working_dir}/figures/curio/cast_metrics_violin.svg',
            bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/curio/cast_metrics_violin.png',
            dpi=150, bbox_inches='tight')
-plt.close()
 
 # post-processing ##############################################################
 
@@ -778,15 +777,15 @@ for col in new_obs.columns:
 # filter cells 
 total = len(adata_query)
 for name, mask in {
-    'infinite_pdist': np.isinf(adata_query.obs['avg_pdist']),
-    'low_class_confidence': adata_query.obs['class_confidence'] < 0.7,
-    'high_expression_dist': adata_query.obs['avg_cdist'] > 0.8
+    'infinite pdist': np.isinf(adata_query.obs['avg_pdist']),
+    'low class confidence': adata_query.obs['class_confidence'] <= 0.7,
+    'high expression dist': adata_query.obs['avg_cdist'] >= 0.8
 }.items():
     print(f'{name}: {mask.sum()} ({mask.sum()/total*100:.1f}%) cells dropped')
 '''
-infinite_pdist: 1499 (1.6%) cells dropped
-low_class_confidence: 15345 (16.4%) cells dropped
-high_expression_dist: 8074 (8.6%) cells dropped
+infinite pdist: 1499 (1.6%) cells dropped
+low class confidence: 15345 (16.4%) cells dropped
+high expression dist: 8074 (8.6%) cells dropped
 
 '''
 mask = ((~np.isinf(adata_query.obs['avg_pdist'])) &
@@ -837,6 +836,8 @@ mapping_group_2 = {
    '33 Vascular': 'Glia',
    '34 Immune': 'Glia'
 }
+
+adata_query.X = adata_query.layers['log1p']
 adata_query_i = adata_query.copy()
 adata_query_i.obs['group_1'] = adata_query_i.obs['class'].map(mapping_group_1)
 adata_query_i.obs['group_2'] = adata_query_i.obs['class'].map(mapping_group_2)
@@ -846,7 +847,6 @@ adata_query.obs['group_2'] = adata_query_i.obs['group_2'].astype('category')
 sc.pp.highly_variable_genes(adata_query_i, n_top_genes=2000, batch_key='sample')
 sc.tl.pca(adata_query_i)
 sc.pp.neighbors(adata_query_i, n_neighbors=30)
-sc.tl.umap(adata_query_i)
 
 nn_mat = adata_query_i.obsp['distances'].astype(bool)
 labels = adata_query_i.obs['group_2']
@@ -857,8 +857,9 @@ adata_query_i.obs['group_2_confidence'] = prop_same
 sns.ecdfplot(data=adata_query_i.obs, x='group_2_confidence')
 plt.savefig(f'{working_dir}/figures/curio/broad_class_confidence_ecdf.png',
             dpi=200, bbox_inches='tight')
-plt.close()
 
+
+sc.tl.umap(adata_query_i)
 adata_query_i.obs['noise'] = adata_query_i.obs['group_2_confidence'] < 0.6
 print(sum(adata_query_i.obs['noise']))
 # 10886
@@ -866,7 +867,6 @@ print(sum(adata_query_i.obs['noise']))
 sc.pl.umap(adata_query_i, color=['group_2', 'group_2_confidence'])
 plt.savefig(f'{working_dir}/figures/curio/broad_class_confidence_umap.png',
            dpi=200, bbox_inches='tight')
-plt.close()
 
 adata_query = adata_query[adata_query_i.obs['noise'] == False]
 
@@ -916,7 +916,6 @@ for level in ['class', 'subclass']:
 
 # umap
 seed = 0
-adata_query.X = adata_query.layers['log1p']
 sc.pp.highly_variable_genes(adata_query, n_top_genes=2000, batch_key='sample')
 sc.tl.pca(adata_query, random_state=seed)
 sc.pp.neighbors(adata_query, metric='cosine', random_state=seed)
@@ -927,20 +926,19 @@ plt.savefig(f'{working_dir}/figures/curio/umap_class.png',
             dpi=400, bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/curio/umap_class.svg',
             bbox_inches='tight')
-plt.close()
+
 
 sc.pl.umap(adata_query, color='subclass', title=None) 
 plt.savefig(f'{working_dir}/figures/curio/umap_subclass.png',
             dpi=400, bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/curio/umap_subclass.svg',
             bbox_inches='tight')
-plt.close()
+
 
 # save
 adata_query.X = adata_query.layers['counts']
 adata_query.write(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad')
-
 
 # plotting #####################################################################
 
@@ -953,7 +951,6 @@ import seaborn as sns
 
 working_dir = 'project/spatial-pregnancy-postpart'
 
-# create multi-sample plots
 adata_comb = sc.read_h5ad(
     f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
 obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
@@ -961,15 +958,19 @@ obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
 adata_query = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad')
 obs_query = adata_query.obs
-# obs_query = obs_query[obs_query['keep_subclass'] == True]
 
+cells_joined = pd.read_csv(
+  'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
+  'views/cells_joined.csv')
 color_mappings = {
-    'class': dict(zip(adata_query.obs['class'], 
-                      adata_query.obs['class_color'])),
-    'subclass': dict(zip(adata_query.obs['subclass'], 
-                         adata_query.obs['subclass_color']))
+   'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
+                     cells_joined['class_color'])),
+   'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+       cells_joined['subclass'].str.replace('/', '_'), 
+       cells_joined['subclass_color'])).items()}
 }
 
+# create multi-sample plots
 def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     ref_samples = ref_obs['sample'].unique()
     query_samples = query_obs['sample'].unique() 
@@ -1026,10 +1027,8 @@ plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'CTRL_1_1']
 
 fig, ax = plt.subplots(figsize=(8, 8))
 ax.scatter(plot_df['x_ffd'], plot_df['y_ffd'], c='grey', s=1)
-
 random_point = plot_df.sample(n=1)
 ax.scatter(random_point['x_ffd'], random_point['y_ffd'], c='red', s=10)
-
 from matplotlib.patches import Circle
 radius = 0.5536779033973138  # ave_dist_fold=5
 circle = Circle((random_point['x_ffd'].values[0], 
