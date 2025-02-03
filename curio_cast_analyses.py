@@ -581,7 +581,6 @@ for _, (source_sample, target_sample) in source_target_list.items():
         adata_subset = adata_comb[
             (adata_comb.obs[batch_key] == target_sample) |
             (adata_comb.obs[batch_key] == source_sample)]
-
         adata_subset = CAST.Harmony_integration(
             sdata_inte=adata_subset,
             scaled_layer='X_scanorama',
@@ -641,7 +640,7 @@ for sample, (source_sample, target_sample) in source_target_list.items():
     target_obs = target_obs.reset_index(drop=True)
     
     print(f'Processing {target_sample}')
-    k = 5
+    k = 10
     
     for i in range(len(target_obs)):
         weights = project_weight[i][:k]
@@ -784,9 +783,8 @@ for name, mask in {
     print(f'{name}: {mask.sum()} ({mask.sum()/total*100:.1f}%) cells dropped')
 '''
 infinite pdist: 1499 (1.6%) cells dropped
-low class confidence: 15345 (16.4%) cells dropped
-high expression dist: 8074 (8.6%) cells dropped
-
+low class confidence: 18466 (19.7%) cells dropped
+high expression dist: 8033 (8.6%) cells dropped
 '''
 mask = ((~np.isinf(adata_query.obs['avg_pdist'])) &
         (adata_query.obs['class_confidence'] >= 0.7) &
@@ -795,12 +793,13 @@ mask = ((~np.isinf(adata_query.obs['avg_pdist'])) &
 cells_dropped = total - mask.sum()
 print(f'\nTotal cells dropped: {cells_dropped} '
       f'({cells_dropped/total*100:.1f}%)')
-'''Total cells dropped: 19817 (21.1%)'''
+'''Total cells dropped: 18051 (19.2%)'''
 
 adata_query = adata_query[mask].copy()
 
 # remove noise cells 
-mapping_group_1 = {
+
+broad_group = {
    '01 IT-ET Glut': 'neuronal',
    '02 NP-CT-L6b Glut': 'neuronal', 
    '05 OB-IMN GABA': 'neuronal',
@@ -818,125 +817,158 @@ mapping_group_1 = {
    '33 Vascular': 'non-neuronal',
    '34 Immune': 'non-neuronal'
 }
-mapping_group_2 = {
-   '01 IT-ET Glut': 'Glut',
-   '02 NP-CT-L6b Glut': 'Glut', 
-   '05 OB-IMN GABA': 'GABA',
-   '06 CTX-CGE GABA': 'GABA',
-   '07 CTX-MGE GABA': 'GABA',
-   '08 CNU-MGE GABA': 'GABA',
-   '09 CNU-LGE GABA': 'GABA',
-   '10 LSX GABA': 'GABA',
-   '11 CNU-HYa GABA': 'GABA',
-   '12 HY GABA': 'GABA',
-   '13 CNU-HYa Glut': 'Glut',
-   '14 HY Glut': 'Glut',
-   '30 Astro-Epen': 'Glia',
-   '31 OPC-Oligo': 'Glia',
-   '33 Vascular': 'Glia',
-   '34 Immune': 'Glia'
-}
 
-adata_query.X = adata_query.layers['log1p']
-adata_query_i = adata_query.copy()
-adata_query_i.obs['group_1'] = adata_query_i.obs['class'].map(mapping_group_1)
-adata_query_i.obs['group_2'] = adata_query_i.obs['class'].map(mapping_group_2)
-adata_query.obs['group_1'] = adata_query_i.obs['group_1'].astype('category')
-adata_query.obs['group_2'] = adata_query_i.obs['group_2'].astype('category')
+# preprocessing
+adata_i = adata_query.copy()
+adata_i.obs['broad'] = adata_i.obs['class'].map(broad_group)
+adata_i.X = adata_query.layers['counts'].copy()
+sc.pp.normalize_total(adata_i)
+sc.pp.log1p(adata_i)
+sc.pp.highly_variable_genes(adata_i, batch_key='sample')
+sc.tl.pca(adata_i)
 
-sc.pp.highly_variable_genes(adata_query_i, n_top_genes=2000, batch_key='sample')
-sc.tl.pca(adata_query_i)
-sc.pp.neighbors(adata_query_i, n_neighbors=30)
+# calculate initial global confidence
+sc.pp.neighbors(adata_i, n_neighbors=30)
+nn_mat = adata_i.obsp['distances'].astype(bool)
+broad_labels = adata_i.obs['broad']
+same_broad = nn_mat.multiply(broad_labels.values[:, None] == broad_labels.values)
+global_conf = same_broad.sum(1).A1 / nn_mat.sum(1).A1
+adata_i.obs['global_conf'] = global_conf
 
-nn_mat = adata_query_i.obsp['distances'].astype(bool)
-labels = adata_query_i.obs['group_2']
-same_label = nn_mat.multiply(labels.values[:, None] == labels.values)
-prop_same = same_label.sum(1).A1 / nn_mat.sum(1).A1
-adata_query_i.obs['group_2_confidence'] = prop_same
+# filter and recompute embeddings
+adata_i = adata_i[adata_i.obs['global_conf'] > 0.8].copy()
+sc.pp.neighbors(adata_i, n_neighbors=30)
+sc.tl.umap(adata_i)
 
-sns.ecdfplot(data=adata_query_i.obs, x='group_2_confidence')
-plt.savefig(f'{working_dir}/figures/curio/broad_class_confidence_ecdf.png',
-            dpi=200, bbox_inches='tight')
+# correct both class and subclass labels
+neighbors = adata_i.obsp['connectivities']
+obs_index = adata_i.obs.index
 
+for level in ['class', 'subclass']:
+    # calculate local confidence
+    cell_labels = adata_i.obs[level].values
+    same_cell = neighbors.multiply(cell_labels[:, None] == cell_labels)
+    local_conf = same_cell.sum(1).A1 / neighbors.sum(1).A1
+    adata_i.obs[f'{level}_local_conf'] = local_conf
+    
+    # store original labels
+    adata_i.obs[f'original_{level}'] = adata_i.obs[level].copy()
+    
+    # correction
+    corrections = []
+    for i in range(len(adata_i)):
+        if local_conf[i] < 0.5:
+            neighbor_idx = neighbors[i].indices
+            neighbor_labels = cell_labels[neighbor_idx]
+            label_counts = pd.Series(neighbor_labels).value_counts()
+            majority = label_counts.index[0]
+            maj_frac = label_counts.iloc[0] / len(neighbor_idx)
+            
+            cell_idx = obs_index[i]
+            nbr_idx = obs_index[neighbor_idx[0]]
+            
+            if (maj_frac > 0.6 and majority != cell_labels[i]):
+                if level == 'subclass':
+                    parent_matches = (
+                        adata_i.obs.loc[cell_idx, 'class'] == 
+                        adata_i.obs.loc[nbr_idx, 'class'])
+                    if not parent_matches:
+                        continue
+                corrections.append({
+                    'cell': cell_idx,
+                    'old': cell_labels[i],
+                    'new': majority,
+                    'conf': maj_frac
+                })
+                adata_i.obs.loc[cell_idx, level] = majority
+    print(f"total {level} corrections made: {len(corrections)}")
 
-sc.tl.umap(adata_query_i)
-adata_query_i.obs['noise'] = adata_query_i.obs['group_2_confidence'] < 0.6
-print(sum(adata_query_i.obs['noise']))
-# 10886
+'''
+total class corrections made: 4318
+total subclass corrections made: 7047
+'''
 
-sc.pl.umap(adata_query_i, color=['group_2', 'group_2_confidence'])
-plt.savefig(f'{working_dir}/figures/curio/broad_class_confidence_umap.png',
-           dpi=200, bbox_inches='tight')
+# conf_metrics = ['global_conf', 'class_local_conf', 'subclass_local_conf']
+# thresholds = {m: np.percentile(adata_i.obs[m], 5) for m in conf_metrics}
+# keep = np.all([adata_i.obs[m] > thresholds[m] for m in conf_metrics], axis=0)
 
-adata_query = adata_query[adata_query_i.obs['noise'] == False]
+# adata_i = adata_i[keep].copy()
+# print(f"cells after filtering low confidence: {len(adata_i)}")
+
+# plot results for both levels
+fig, axes = plt.subplots(4, 2, figsize=(20, 32))
+size = 8
+sc.pl.umap(adata_i, color='original_class', size=size, ax=axes[0,0], 
+           show=False, legend_loc='none', title='original class')
+sc.pl.umap(adata_i, color='class', size=size, ax=axes[0,1], 
+           show=False, title='corrected class')
+sc.pl.umap(adata_i, color='original_subclass', size=size, ax=axes[1,0], 
+           show=False, legend_loc='none', title='original subclass')
+sc.pl.umap(adata_i, color='subclass', size=size, ax=axes[1,1], 
+           show=False, title='corrected subclass')
+
+sc.pl.umap(adata_i, color='global_conf', size=size, ax=axes[2,0], 
+           show=False, title='global confidence')
+sc.pl.umap(adata_i, color='class_local_conf', size=size, ax=axes[2,1], 
+           show=False, title='class local confidence')
+sc.pl.umap(adata_i, color='subclass_local_conf', size=size, ax=axes[3,0], 
+           show=False, title='subclass local confidence')
+plt.savefig(f'{working_dir}/figures/curio/umap_correction.png', dpi=200)
+
+# update original adata
+adata_query = adata_query[adata_i.obs.index].copy()
+adata_query.obs['class'] = adata_i.obs['class']
+adata_query.obs['subclass'] = adata_i.obs['subclass']
 
 # keep cell types with at least 5 cells in at least 3 samples per condition
+
 min_cells, min_samples = 5, 3
 conditions = ['CTRL', 'PREG', 'POSTPART']
-kept_types = [
-    subclass for subclass in adata_query.obs['subclass'].unique()
-    if all(sum(sum((adata_query.obs['sample'] == s) & 
-              (adata_query.obs['subclass'] == subclass)) >= min_cells
-          for s in adata_query.obs['sample'][
-              adata_query.obs['sample'].str.contains(c)].unique()) >= min_samples
-        for c in conditions)
-]
 
-print("Kept cell types:")
-for t in sorted(kept_types):
-    print(f"- {t}")
-
-print("\nDropped cell types:")
-for t in sorted(set(adata_query.obs['subclass']) - set(kept_types)):
-    print(f"- {t}")
-
-adata_query.obs['keep_subclass'] = adata_query.obs['subclass'].isin(kept_types)
-print(adata_query.obs['keep_subclass'].value_counts())
-'''
-True     63297
-False     2031
-'''
-
-# add colors 
-cells_joined = pd.read_csv(
-  'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
-  'views/cells_joined.csv')
-color_mappings = {
-   'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
-                     cells_joined['class_color'])),
-   'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
-       cells_joined['subclass'].str.replace('/', '_'), 
-       cells_joined['subclass_color'])).items()}
-}
 for level in ['class', 'subclass']:
-  unique_categories = adata_query.obs[level].unique()
-  category_colors = [color_mappings[level][cat] for cat in unique_categories]
-  adata_query.uns[f'{level}_colors'] = category_colors
-  adata_query.uns[f'{level}_color_dict'] = color_mappings[level]
+    kept = []
+    for type_ in adata_query.obs[level].unique():
+        passes = True
+        for cond in conditions:
+            samples = adata_query.obs.loc[
+                adata_query.obs['sample'].str.contains(cond), 'sample'].unique()
+            n_valid = sum(sum((adata_query.obs['sample'] == s) & 
+                (adata_query.obs[level] == type_)) >= min_cells 
+                for s in samples)
+            if n_valid < min_samples:
+                passes = False
+                break
+        if passes:
+            kept.append(type_)
+    col_name = f'{level}_keep'
+    adata_query.obs[col_name] = adata_query.obs[level].isin(kept)
+    print(f'Kept {level}:')
+    for k in sorted(kept, key=lambda x: int(x.split()[0])):
+        print(f'  {k}')
 
 # umap
 seed = 0
-sc.pp.highly_variable_genes(adata_query, n_top_genes=2000, batch_key='sample')
+adata_query.X = adata_query.layers['counts'].copy()
+sc.pp.normalize_total(adata_query)
+sc.pp.log1p(adata_query)
+adata_query.layers['log1p'] = adata_query.X.copy()
+
+sc.pp.highly_variable_genes(adata_query, batch_key='sample')
 sc.tl.pca(adata_query, random_state=seed)
 sc.pp.neighbors(adata_query, metric='cosine', random_state=seed)
 sc.tl.umap(adata_query, min_dist=0.5, spread=1.0, random_state=seed)
 
-sc.pl.umap(adata_query, color='class', title=None)
-plt.savefig(f'{working_dir}/figures/curio/umap_class.png',
-            dpi=400, bbox_inches='tight')
-plt.savefig(f'{working_dir}/figures/curio/umap_class.svg',
-            bbox_inches='tight')
-
-
-sc.pl.umap(adata_query, color='subclass', title=None) 
-plt.savefig(f'{working_dir}/figures/curio/umap_subclass.png',
-            dpi=400, bbox_inches='tight')
-plt.savefig(f'{working_dir}/figures/curio/umap_subclass.svg',
-            bbox_inches='tight')
-
+# add protein coding genes
+protein_coding_genes = pd.read_csv(
+    'project/single-cell/Kalish/pregnancy-postpart/MRK_ENSEMBL.csv', 
+    header=None)
+protein_coding_genes = protein_coding_genes[
+    protein_coding_genes[8] == 'protein coding gene'][1].to_list()
+adata_query.var['protein_coding'] = adata_query.var['gene_symbol']\
+    .isin(protein_coding_genes)
 
 # save
-adata_query.X = adata_query.layers['counts']
+adata_query.X = adata_query.layers['counts'].copy()
 adata_query.write(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad')
 
@@ -949,15 +981,10 @@ import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+plt.rcParams['svg.fonttype'] = 'none'
+plt.rcParams['font.family'] = 'DejaVu Sans'
+
 working_dir = 'project/spatial-pregnancy-postpart'
-
-adata_comb = sc.read_h5ad(
-    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
-obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
-
-adata_query = sc.read_h5ad(
-    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
-obs_query = adata_query.obs
 
 cells_joined = pd.read_csv(
   'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
@@ -969,6 +996,168 @@ color_mappings = {
        cells_joined['subclass'].str.replace('/', '_'), 
        cells_joined['subclass_color'])).items()}
 }
+
+adata_query = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
+
+for level in ['class', 'subclass']:
+
+    # spatial exemplar 
+
+    sample = 'CTRL_2_1'
+    plot_color = adata_query[(adata_query.obs['sample'] == sample)].obs
+    fig, ax = plt.subplots(figsize=(10, 8))
+    scatter = ax.scatter(
+        plot_color['x_ffd'], plot_color['y_ffd'],
+        c=[color_mappings[level][c] for c in plot_color[level]], 
+        s=12, linewidths=0)
+    if level == 'subclass':
+        unique_classes = sorted(plot_color[
+            plot_color['subclass_keep'] == True][level].unique(),
+            key=lambda x: int(x.split()[0]))
+    else:
+        unique_classes = sorted(plot_color[level].unique(),
+                                key=lambda x: int(x.split()[0]))
+    legend_elements = [plt.Line2D(
+        [0], [0], marker='o', color='w',
+        markerfacecolor=color_mappings[level][class_],
+        label=class_, markersize=8)
+        for class_ in unique_classes]
+    ax.legend(handles=legend_elements, loc='center left',
+            bbox_to_anchor=(1, 0.5), frameon=False)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    plt.tight_layout()
+    plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.png',
+                dpi=300, bbox_inches='tight')
+    plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.svg',
+                format='svg', bbox_inches='tight')
+    plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.pdf',
+                bbox_inches='tight')
+
+    # umap
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    scatter = ax.scatter(
+    adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
+    c=[color_mappings[level][c] for c in adata_query.obs[level]],
+    s=6, linewidths=0)
+    ax.set_aspect('equal')
+    ax.spines[['top', 'right', 'bottom', 'left']].set_visible(True)
+    ax.spines[['top', 'right', 'bottom', 'left']].set_linewidth(2)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    plt.tight_layout()
+    plt.savefig(f'{working_dir}/figures/curio/umap_{level}.png', dpi=300,
+            bbox_inches='tight')
+    plt.savefig(f'{working_dir}/figures/curio/umap_{level}.svg',
+                format='svg', bbox_inches='tight')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# marker heatmap
+marker_dict = {
+    '01 IT-ET Glut': ['Slc17a7', 'Satb2', 'Grin2a'],
+    '02 NP-CT-L6b Glut': ['Dpp10', 'Hs3st4'],
+    '05 OB-IMN GABA': ['Sox2ot', 'Dlx6os1', 'Meis2'],
+    '06 CTX-CGE GABA': ['Adarb2', 'Grip1', 'Kcnip1'], 
+    '07 CTX-MGE GABA': ['Nxph1', 'Lhx6', 'Sox6'],
+    '08 CNU-MGE GABA': ['Galntl6'],
+    '09 CNU-LGE GABA': ['Pde10a', 'Rarb', 'Drd1', 'Kcnip2'],
+    '10 LSX GABA': ['Trpc4', 'Myo5b'],
+    '11 CNU-HYa GABA': ['Unc5d', 'Nhs'],
+    '12 HY GABA': ['Efna5', 'Nell1'],
+    '13 CNU-HYa Glut': ['Slc17a6', 'Ntng1'],
+    '14 HY Glut': ['Chrm3', 'Tafa1'],  
+    '30 Astro-Epen': ['Slc1a2', 'Gpc5', 'Aqp4', 'Mertk'],
+    '31 OPC-Oligo': ['Plp1', 'Pdgfra', 'Mbp', 'Plcl1'],
+    '33 Vascular': ['Flt1', 'Cldn5', 'Bsg'],
+    '34 Immune': ['Plxdc2', 'Hexb', 'C1qa', 'Ly86']
+}
+
+adata_query.X = adata_query.layers['log1p'].copy()
+sc.tl.rank_genes_groups(adata_query, 'class')
+
+sc.pl.rank_genes_groups_dotplot(
+    adata_query, var_names=marker_dict, values_to_plot='logfoldchanges', 
+    vmin=-4, vmax=4, min_logfoldchange=3,
+    cmap='bwr', swap_axes=True, dendrogram=False)
+plt.savefig(f'{working_dir}/figures/curio/marker_dotplot_de_{level}.png',
+            dpi=300, bbox_inches='tight')
+
+
+
+sc.pl.matrixplot(
+    adata_query, marker_dict, groupby='class', layer='log1p', 
+    standard_scale='var', gene_symbols='gene_symbol', 
+    dendrogram=False, cmap='Blues', swap_axes=True)
+plt.savefig(f'{working_dir}/figures/curio/marker_heatmap_{level}.png',
+            dpi=300, bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/curio/marker_heatmap_{level}.svg',
+            format='svg', bbox_inches='tight')
+
+sc.pl.stacked_violin(
+    adata_query, marker_dict, groupby='class', layer='log1p',
+    swap_axes=True, dendrogram=False)
+plt.savefig(f'{working_dir}/figures/curio/marker_stacked_violin_{level}.png',
+            dpi=300, bbox_inches='tight')
+
+sc.pl.dotplot(
+    adata_query, marker_dict, groupby='class', layer='log1p', 
+    standard_scale='var', gene_symbols='gene_symbol', dendrogram=False, 
+    cmap='Blues', swap_axes=True, var_group_labels=None)
+plt.savefig(f'{working_dir}/figures/curio/marker_dotplot_{level}.png',
+            dpi=300, bbox_inches='tight')
+
+
+sc.pl.rank_genes_groups_dotplot(
+    adata_query,
+    n_genes=10,
+    values_to_plot="logfoldchanges", cmap='bwr',
+    vmin=-4,
+    vmax=4,
+    min_logfoldchange=3,
+    colorbar_title='log fold change',
+    swap_axes=True,
+    dendrogram=False
+)
+plt.savefig(f'{working_dir}/figures/curio/tmp.png',
+            dpi=300, bbox_inches='tight')
+
+
+
+
+
+
+
+
+
+
+
+
+adata_comb = sc.read_h5ad(
+    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
+obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
+
+obs_query = adata_query.obs
 
 # create multi-sample plots
 def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
@@ -1012,7 +1201,7 @@ def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
                 bbox_inches='tight')
     plt.close(fig)
 
-col = 'class'
+col = 'subclass'
 output_dir = f'{working_dir}/figures/curio/spatial_cell_types_{col}'
 os.makedirs(output_dir, exist_ok=True)
 cell_types = obs_query[col].unique()

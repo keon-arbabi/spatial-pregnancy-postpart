@@ -194,219 +194,11 @@ mapping.update({
    'Fcrls': 'ENSMUSG00000015852'
 })
 adata_query.var['gene_id'] = adata_query.var['gene_symbol'].map(mapping)
-adata_query.var.index = adata_query.var['gene_id']
-
-# temp save
-# adata_query.write(f'{working_dir}/output/data/adata_query_merfish.h5ad')
-
-# get cell type labels 
-# https://github.com/AllenInstitute/cell_type_mapper/tree/main
-# run('''
-#     python -m cell_type_mapper.cli.from_specified_markers \
-#         --query_path project/spatial-pregnancy-postpart/output/data/adata_query_merfish.h5ad \
-#         --extended_result_path project/spatial-pregnancy-postpart/output/merfish/mapper_output.json \
-#         --log_path project/spatial-pregnancy-postpart/output/merfish/mapper_log.txt \
-#         --csv_result_path project/spatial-pregnancy-postpart/output/merfish/mapper_output.csv \
-#         --drop_level CCN20230722_SUPT \
-#         --cloud_safe False \
-#         --query_markers.serialized_lookup cell_type_mapper/mouse_markers_230821.json \
-#         --precomputed_stats.path cell_type_mapper/precomputed_stats_ABC_revision_230821.h5 \
-#         --type_assignment.normalization log2CPM \
-#         --type_assignment.n_processors 64
-# ''')
-
-# load mapper results  
-with open(f'{working_dir}/output/merfish/mapper_output.json') as f:
-    mapper_json = json.load(f)
-
-# get reference cell types and map to taxonomy ids
-obs_ref_zeng = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_ref_zeng_raw.h5ad').obs
-obs_ref_zhuang = ad.read_h5ad(
-    f'{working_dir}/output/data/adata_ref_zhuang.h5ad').obs
-
-keep_cell_types = (obs_ref_zeng['subclass'].value_counts()[
-    obs_ref_zeng['subclass'].value_counts() > 20].index.union(
-    obs_ref_zhuang['subclass'].value_counts()[
-        obs_ref_zhuang['subclass'].value_counts() > 20].index))
-print(len(keep_cell_types))
-
-# get reverse mapping from names to ids for filtering
-mapper_names = {
-    level: mapper_json['taxonomy_tree']['name_mapper'][
-        f'CCN20230722_{level.upper()}'] 
-    for level in ['clas', 'subc']
-}
-name_to_id = {
-    name: id 
-    for id, data in mapper_names['subc'].items() 
-    for name in [data.get('name')]
-}
-keep_cell_type_ids = [
-    name_to_id[name] for name in keep_cell_types if name in name_to_id
-]
-
-# create expanded dataframe including runner-up info
-rows = []
-for result in mapper_json['results']:
-    cell_id = result['cell_id']
-    for level, data in result.items():
-        if isinstance(data, dict):
-            # add main assignment
-            row = {
-                'cell_id': cell_id,
-                'level': level,
-                'assignment': data['assignment'],
-                'bootstrapping_probability': data['bootstrapping_probability'],
-                'avg_correlation': data['avg_correlation']
-            }
-            rows.append(row)
-            # add runner-up assignments if they exist
-            if 'runner_up_assignment' in data:
-                for i, runner_up in enumerate(data['runner_up_assignment']):
-                    row = {
-                        'cell_id': cell_id,
-                        'level': level,
-                        'assignment': runner_up,
-                        'bootstrapping_probability': 
-                            data['runner_up_probability'][i],
-                        'avg_correlation': data['runner_up_correlation'][i]
-                    }
-                    rows.append(row)
-
-mapper_df = pd.DataFrame(rows)
-
-# pre-filter and sort data frames 
-subc_df = (mapper_df[mapper_df['level'] == 'subc']
-           .sort_values('cell_id')
-           .set_index('cell_id'))
-class_df = (mapper_df[mapper_df['level'] == 'clas']
-           .groupby('cell_id').first())
-
-# get main assignments (first row for each cell)
-main_assignments = subc_df.groupby('cell_id').first()
-valid_main = main_assignments[
-    main_assignments['assignment'].isin(keep_cell_type_ids)]
-
-# for cells without valid main, get first valid runner-up
-invalid_cells = set(subc_df.index) - set(valid_main.index)
-runner_ups = subc_df.loc[list(invalid_cells)].groupby('cell_id').apply(
-    lambda x: x[x['assignment'].isin(keep_cell_type_ids)].iloc[0] 
-    if any(x['assignment'].isin(keep_cell_type_ids)) else None
-).dropna()
-
-# combine valid assignments
-valid_subc = pd.concat([valid_main, runner_ups])
-valid_class = class_df.loc[valid_subc.index]
-valid_assignments = pd.concat([valid_subc, valid_class])
-
-# reset index to make cell_id a column before pivoting
-mapper_df = valid_assignments.reset_index()
-
-# pivot and flatten column names
-mapper_df = mapper_df.pivot(
-    index='cell_id',
-    columns='level',
-    values=['assignment', 'bootstrapping_probability', 'avg_correlation'])
-mapper_df.columns = [f'{col[0]}_{col[1]}' for col in mapper_df.columns]
-
-# mark invalid assignments as NA
-invalid_mask = ~mapper_df['assignment_subc'].isin(keep_cell_type_ids)
-mapper_df.loc[invalid_mask] = np.nan
-
-# join mapper results to anndata
-adata_query.obs = adata_query.obs.join(mapper_df)
-
-# map ids back to names
-for level, new_col in [('clas', 'class_mapper'), ('subc', 'subclass_mapper')]:
-    mapper_df[new_col] = mapper_df[f'assignment_{level}'].map(
-        lambda x: mapper_names[level].get(x, {}).get('name', 'Unknown')
-        ).astype('category')
-
-# convert data types
-for metric in ['bootstrapping_probability', 'avg_correlation']:
-    for level in ['clas', 'subc']:
-        mapper_df[f'{metric}_{level}'] = mapper_df[
-            f'{metric}_{level}'].astype(float)
-for level in ['clas', 'subc']:
-    mapper_df[f'assignment_{level}'] = mapper_df[
-        f'assignment_{level}'].astype('category')
-
-# plot mapping metrics
-metrics = ['bootstrapping_probability', 'avg_correlation']
-titles = ['Bootstrapping Probability', 'Average Correlation']
-pink = sns.color_palette('PiYG')[0]
-
-fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
-for i, (metric, title) in enumerate(zip(metrics, titles)):
-    plot_df = pd.DataFrame({
-        'value': mapper_df[f'{metric}_subc'],
-        'sample': adata_query.obs['sample'],
-        'cell_type': mapper_df['subclass_mapper']
-    })
-    sns.violinplot(
-        data=plot_df, x='sample', y='value', ax=axes[i],
-        color=pink, alpha=0.5, linewidth=1, linecolor=pink,
-        order=sample_order)
-
-    axes[i].set_title(title, fontsize=12, fontweight='bold')
-    axes[i].set_ylabel('Score', fontsize=11, fontweight='bold')
-    if i < len(metrics) - 1:
-        axes[i].set_xticklabels([])
-        axes[i].set_xlabel('')
-        axes[i].set_xticks([])
-    else:
-        axes[i].set_xticklabels(
-            sample_labels, rotation=45, ha='right', va='top')
-        axes[i].tick_params(axis='x', rotation=45)
-        plt.setp(axes[i].get_xticklabels(), ha='right', va='top')
-
-plt.tight_layout()
-plt.savefig(
-    f'{working_dir}/figures/merfish/mapping_scores_violin.svg',
-    bbox_inches='tight')
-plt.savefig(
-    f'{working_dir}/figures/merfish/mapping_scores_violin.png',
-    dpi=150, bbox_inches='tight')
-
-# join mapper results to anndata, keeping only mapped cells
-adata_query = adata_query[mapper_df.index]
-adata_query.obs = adata_query.obs.join(mapper_df)
-
-# plot mapping metrics vs qc metrics
-fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-plots = [
-    ('n_genes_by_counts', 'avg_correlation_subc', 'Genes vs Correlation'),
-    ('n_genes_by_counts', 'bootstrapping_probability_subc', 
-     'Genes vs Probability'),
-    ('avg_correlation_subc', 'bootstrapping_probability_subc', 
-     'Correlation vs Probability')
-]
-for i, (x, y, title) in enumerate(plots):
-    sns.scatterplot(
-        data=adata_query.obs, x=x, y=y, ax=axes[i], 
-        color=pink, alpha=0.005, s=10, linewidth=0)
-    if x == 'n_genes_by_counts':
-        axes[i].set_xscale('log')
-    axes[i].set_title(title, fontsize=12, fontweight='bold')
-
-plt.tight_layout()
-plt.savefig(
-    f'{working_dir}/figures/merfish/qc_vs_mapping_scatter.png',
-    dpi=150, bbox_inches='tight')
-
-# # filter cells based on mapping metrics
-# print(adata_query.shape[0])
-# mask = (
-#     (adata_query.obs['bootstrapping_probability_subc'] > 0.4) &
-#     (adata_query.obs['avg_correlation_subc'] > 0.3))
-# print(sum(mask))
-# adata_query = adata_query[mask].copy()
 
 # save
 adata_query.write(f'{working_dir}/output/adata_query_merfish.h5ad')
 
-# CAST-MARK ####################################################################
+# CAST_MARK ####################################################################
 
 import os
 import warnings
@@ -718,7 +510,6 @@ adata_comb.write(f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
 
 import numpy as np
 import pandas as pd
-import anndata as ad
 import scanpy as sc
 import sys
 import os
@@ -739,7 +530,7 @@ working_dir = 'project/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-PROJECT', exist_ok=True)
 
 # load data
-adata_comb = ad.read_h5ad(
+adata_comb = sc.read_h5ad(
     f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
 
 # add batch, we will process all reference samples together with each query 
@@ -764,6 +555,7 @@ color_dict = (
 )
 color_dict['Unknown'] = '#A9A9A9'
 
+# run CAST_PROJECT
 list_ts = {}
 for _, (source_sample, target_sample) in source_target_list.items():
     print(f'Processing {target_sample}')
@@ -989,7 +781,7 @@ print(f'\nTotal cells dropped: {cells_dropped} '
 
 adata_query = adata_query[mask].copy()
 
-# remove noise cells 
+# remove noise cells
 mapping_group_1 = {
    '01 IT-ET Glut': 'neuronal',
    '02 NP-CT-L6b Glut': 'neuronal', 
@@ -1061,57 +853,34 @@ plt.close()
 adata_query = adata_query[~mask]
 
 # keep cell types with at least 5 cells in at least 3 samples per condition
-min_cells, min_samples = 10, 3
+min_cells, min_samples = 5, 3
 conditions = ['CTRL', 'PREG', 'POSTPART']
-kept_types = [
-    subclass for subclass in adata_query.obs['subclass'].unique()
-    if all(sum(sum((adata_query.obs['sample'] == s) & 
-              (adata_query.obs['subclass'] == subclass)) >= min_cells
-          for s in adata_query.obs['sample'][
-              adata_query.obs['sample'].str.contains(c)].unique()) >= min_samples
-        for c in conditions)
-]
 
-print("Kept cell types:")
-for t in sorted(kept_types):
-    print(f"- {t}")
-
-print("\nDropped cell types:")
-for t in sorted(set(adata_query.obs['subclass']) - set(kept_types)):
-    print(f"- {t}")
-
-adata_query.obs['keep_subclass'] = adata_query.obs['subclass'].isin(kept_types)
-print(adata_query.obs['keep_subclass'].value_counts())
-'''
-True     902685
-False      1952
-'''
-
-# add colors 
-cells_joined = pd.read_csv(
-  'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
-  'views/cells_joined.csv')
-color_mappings = {
-   'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
-                     cells_joined['class_color'])),
-   'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
-       cells_joined['subclass'].str.replace('/', '_'), 
-       cells_joined['subclass_color'])).items()}
-}
 for level in ['class', 'subclass']:
-  unique_categories = adata_query.obs[level].unique()
-  category_colors = [color_mappings[level][cat] for cat in unique_categories]
-  adata_query.uns[f'{level}_colors'] = category_colors
-  adata_query.uns[f'{level}_color_dict'] = color_mappings[level]
+    kept = []
+    for type_ in adata_query.obs[level].unique():
+        passes = True
+        for cond in conditions:
+            samples = adata_query.obs.loc[
+                adata_query.obs['sample'].str.contains(cond), 'sample'].unique()
+            n_valid = sum(sum((adata_query.obs['sample'] == s) & 
+                (adata_query.obs[level] == type_)) >= min_cells 
+                for s in samples)
+            if n_valid < min_samples:
+                passes = False
+                break
+        if passes:
+            kept.append(type_)
+    col_name = f'{level}_keep'
+    adata_query.obs[col_name] = adata_query.obs[level].isin(kept)
+    print(f'Kept {level}:')
+    for k in sorted(kept, key=lambda x: int(x.split()[0])):
+        print(f'  {k}')
 
 # umap
 seed = 0
 sc.pp.neighbors(adata_query, metric='cosine', random_state=seed)
 sc.tl.umap(adata_query, min_dist=0.4, spread=1.0, random_state=seed)
-
-sc.pl.umap(adata_query, color='class', title=None)
-plt.savefig(f'{working_dir}/figures/merfish/umap_class.png',
-            dpi=300, bbox_inches='tight')
 
 # save
 adata_query.X = adata_query.layers['counts']
@@ -1129,14 +898,6 @@ import seaborn as sns
 
 working_dir = 'project/spatial-pregnancy-postpart'
 
-adata_comb = sc.read_h5ad(
-    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
-obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
-
-adata_query = sc.read_h5ad(
-    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
-obs_query = adata_query.obs
-
 cells_joined = pd.read_csv(
   'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
   'views/cells_joined.csv')
@@ -1148,7 +909,61 @@ color_mappings = {
        cells_joined['subclass_color'])).items()}
 }
 
+adata_query = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+
+for level in ['class', 'subclass']:
+
+    # spatial exemplar 
+    sample = 'PREG1'
+    plot_color = adata_query[(adata_query.obs['sample'] == sample)].obs
+    fig, ax = plt.subplots(figsize=(10, 8))
+    scatter = ax.scatter(
+        plot_color['x_ffd'], plot_color['y_ffd'],
+        c=[color_mappings[level][c] for c in plot_color[level]], 
+        s=1, linewidths=0)
+    unique_classes = sorted(plot_color[level].unique(),
+                        key=lambda x: int(x.split()[0]))
+    legend_elements = [plt.Line2D(
+        [0], [0], marker='o', color='w',
+        markerfacecolor=color_mappings[level][class_],
+        label=class_, markersize=8)
+        for class_ in unique_classes]
+    if not level == 'subclass':
+        ax.legend(handles=legend_elements, loc='center left',
+                bbox_to_anchor=(1, 0.5), frameon=False)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    plt.tight_layout()
+    plt.savefig(f'{working_dir}/figures/merfish/spatial_example_{level}.png',
+                dpi=300, bbox_inches='tight')
+    plt.savefig(f'{working_dir}/figures/merfish/spatial_example_{level}.svg',
+                format='svg', bbox_inches='tight')
+    plt.savefig(f'{working_dir}/figures/merfish/spatial_example_{level}.pdf',
+                bbox_inches='tight')
+
+    # umap
+    fig, ax = plt.subplots(figsize=(10, 10))
+    scatter = ax.scatter(
+    adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
+    c=[color_mappings[level][c] for c in adata_query.obs[level]],
+    s=1, linewidths=0)
+    ax.set_aspect('equal')
+    ax.spines[['top', 'right', 'bottom', 'left']].set_visible(True)
+    ax.spines[['top', 'right', 'bottom', 'left']].set_linewidth(2)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    plt.tight_layout()
+    plt.savefig(f'{working_dir}/figures/merfish/umap_{level}.png', dpi=300,
+            bbox_inches='tight')
+
+
 # create multi-sample plots
+adata_comb = sc.read_h5ad(
+    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
+obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
+obs_query = adata_query.obs
+
 def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
     ref_samples = ref_obs['sample'].unique()
     query_samples = query_obs['sample'].unique() 
@@ -1216,5 +1031,212 @@ ax.axis('off')
 plt.tight_layout()
 plt.savefig(f'{working_dir}/figures/merfish/radius.png', dpi=200)
 
+# scratchpad ###################################################################
 
+# temp save
+adata_query.var.index = adata_query.var['gene_id']
+adata_query.write(f'{working_dir}/output/data/adata_query_merfish.h5ad')
 
+# get cell type labels 
+# https://github.com/AllenInstitute/cell_type_mapper/tree/main
+run('''
+    python -m cell_type_mapper.cli.from_specified_markers \
+        --query_path project/spatial-pregnancy-postpart/output/data/adata_query_merfish.h5ad \
+        --extended_result_path project/spatial-pregnancy-postpart/output/merfish/mapper_output.json \
+        --log_path project/spatial-pregnancy-postpart/output/merfish/mapper_log.txt \
+        --csv_result_path project/spatial-pregnancy-postpart/output/merfish/mapper_output.csv \
+        --drop_level CCN20230722_SUPT \
+        --cloud_safe False \
+        --query_markers.serialized_lookup cell_type_mapper/mouse_markers_230821.json \
+        --precomputed_stats.path cell_type_mapper/precomputed_stats_ABC_revision_230821.h5 \
+        --type_assignment.normalization log2CPM \
+        --type_assignment.n_processors 64
+''')
+
+# load mapper results  
+with open(f'{working_dir}/output/merfish/mapper_output.json') as f:
+    mapper_json = json.load(f)
+
+# get reference cell types and map to taxonomy ids
+obs_ref_zeng = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_ref_zeng_raw.h5ad').obs
+obs_ref_zhuang = ad.read_h5ad(
+    f'{working_dir}/output/data/adata_ref_zhuang.h5ad').obs
+
+keep_cell_types = (obs_ref_zeng['subclass'].value_counts()[
+    obs_ref_zeng['subclass'].value_counts() > 20].index.union(
+    obs_ref_zhuang['subclass'].value_counts()[
+        obs_ref_zhuang['subclass'].value_counts() > 20].index))
+print(len(keep_cell_types))
+
+# get reverse mapping from names to ids for filtering
+mapper_names = {
+    level: mapper_json['taxonomy_tree']['name_mapper'][
+        f'CCN20230722_{level.upper()}'] 
+    for level in ['clas', 'subc']
+}
+name_to_id = {
+    name: id 
+    for id, data in mapper_names['subc'].items() 
+    for name in [data.get('name')]
+}
+keep_cell_type_ids = [
+    name_to_id[name] for name in keep_cell_types if name in name_to_id
+]
+
+# create expanded dataframe including runner-up info
+rows = []
+for result in mapper_json['results']:
+    cell_id = result['cell_id']
+    for level, data in result.items():
+        if isinstance(data, dict):
+            # add main assignment
+            row = {
+                'cell_id': cell_id,
+                'level': level,
+                'assignment': data['assignment'],
+                'bootstrapping_probability': data['bootstrapping_probability'],
+                'avg_correlation': data['avg_correlation']
+            }
+            rows.append(row)
+            # add runner-up assignments if they exist
+            if 'runner_up_assignment' in data:
+                for i, runner_up in enumerate(data['runner_up_assignment']):
+                    row = {
+                        'cell_id': cell_id,
+                        'level': level,
+                        'assignment': runner_up,
+                        'bootstrapping_probability': 
+                            data['runner_up_probability'][i],
+                        'avg_correlation': data['runner_up_correlation'][i]
+                    }
+                    rows.append(row)
+
+mapper_df = pd.DataFrame(rows)
+
+# pre-filter and sort data frames 
+subc_df = (mapper_df[mapper_df['level'] == 'subc']
+           .sort_values('cell_id')
+           .set_index('cell_id'))
+class_df = (mapper_df[mapper_df['level'] == 'clas']
+           .groupby('cell_id').first())
+
+# get main assignments (first row for each cell)
+main_assignments = subc_df.groupby('cell_id').first()
+valid_main = main_assignments[
+    main_assignments['assignment'].isin(keep_cell_type_ids)]
+
+# for cells without valid main, get first valid runner-up
+invalid_cells = set(subc_df.index) - set(valid_main.index)
+runner_ups = subc_df.loc[list(invalid_cells)].groupby('cell_id').apply(
+    lambda x: x[x['assignment'].isin(keep_cell_type_ids)].iloc[0] 
+    if any(x['assignment'].isin(keep_cell_type_ids)) else None
+).dropna()
+
+# combine valid assignments
+valid_subc = pd.concat([valid_main, runner_ups])
+valid_class = class_df.loc[valid_subc.index]
+valid_assignments = pd.concat([valid_subc, valid_class])
+
+# reset index to make cell_id a column before pivoting
+mapper_df = valid_assignments.reset_index()
+
+# pivot and flatten column names
+mapper_df = mapper_df.pivot(
+    index='cell_id',
+    columns='level',
+    values=['assignment', 'bootstrapping_probability', 'avg_correlation'])
+mapper_df.columns = [f'{col[0]}_{col[1]}' for col in mapper_df.columns]
+
+# mark invalid assignments as NA
+invalid_mask = ~mapper_df['assignment_subc'].isin(keep_cell_type_ids)
+mapper_df.loc[invalid_mask] = np.nan
+
+# join mapper results to anndata
+adata_query.obs = adata_query.obs.join(mapper_df)
+
+# map ids back to names
+for level, new_col in [('clas', 'class_mapper'), ('subc', 'subclass_mapper')]:
+    mapper_df[new_col] = mapper_df[f'assignment_{level}'].map(
+        lambda x: mapper_names[level].get(x, {}).get('name', 'Unknown')
+        ).astype('category')
+
+# convert data types
+for metric in ['bootstrapping_probability', 'avg_correlation']:
+    for level in ['clas', 'subc']:
+        mapper_df[f'{metric}_{level}'] = mapper_df[
+            f'{metric}_{level}'].astype(float)
+for level in ['clas', 'subc']:
+    mapper_df[f'assignment_{level}'] = mapper_df[
+        f'assignment_{level}'].astype('category')
+
+# plot mapping metrics
+metrics = ['bootstrapping_probability', 'avg_correlation']
+titles = ['Bootstrapping Probability', 'Average Correlation']
+pink = sns.color_palette('PiYG')[0]
+
+fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
+for i, (metric, title) in enumerate(zip(metrics, titles)):
+    plot_df = pd.DataFrame({
+        'value': mapper_df[f'{metric}_subc'],
+        'sample': adata_query.obs['sample'],
+        'cell_type': mapper_df['subclass_mapper']
+    })
+    sns.violinplot(
+        data=plot_df, x='sample', y='value', ax=axes[i],
+        color=pink, alpha=0.5, linewidth=1, linecolor=pink,
+        order=sample_order)
+
+    axes[i].set_title(title, fontsize=12, fontweight='bold')
+    axes[i].set_ylabel('Score', fontsize=11, fontweight='bold')
+    if i < len(metrics) - 1:
+        axes[i].set_xticklabels([])
+        axes[i].set_xlabel('')
+        axes[i].set_xticks([])
+    else:
+        axes[i].set_xticklabels(
+            sample_labels, rotation=45, ha='right', va='top')
+        axes[i].tick_params(axis='x', rotation=45)
+        plt.setp(axes[i].get_xticklabels(), ha='right', va='top')
+
+plt.tight_layout()
+plt.savefig(
+    f'{working_dir}/figures/merfish/mapping_scores_violin.svg',
+    bbox_inches='tight')
+plt.savefig(
+    f'{working_dir}/figures/merfish/mapping_scores_violin.png',
+    dpi=150, bbox_inches='tight')
+
+# join mapper results to anndata, keeping only mapped cells
+adata_query = adata_query[mapper_df.index]
+adata_query.obs = adata_query.obs.join(mapper_df)
+
+# plot mapping metrics vs qc metrics
+fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+plots = [
+    ('n_genes_by_counts', 'avg_correlation_subc', 'Genes vs Correlation'),
+    ('n_genes_by_counts', 'bootstrapping_probability_subc', 
+     'Genes vs Probability'),
+    ('avg_correlation_subc', 'bootstrapping_probability_subc', 
+     'Correlation vs Probability')
+]
+for i, (x, y, title) in enumerate(plots):
+    sns.scatterplot(
+        data=adata_query.obs, x=x, y=y, ax=axes[i], 
+        color=pink, alpha=0.005, s=10, linewidth=0)
+    if x == 'n_genes_by_counts':
+        axes[i].set_xscale('log')
+    axes[i].set_title(title, fontsize=12, fontweight='bold')
+
+plt.tight_layout()
+plt.savefig(
+    f'{working_dir}/figures/merfish/qc_vs_mapping_scatter.png',
+    dpi=150, bbox_inches='tight')
+
+# filter cells based on mapping metrics
+print(adata_query.shape[0])
+mask = (
+    (adata_query.obs['bootstrapping_probability_subc'] > 0.4) &
+    (adata_query.obs['avg_correlation_subc'] > 0.3))
+print(sum(mask))
+adata_query = adata_query[mask].copy()

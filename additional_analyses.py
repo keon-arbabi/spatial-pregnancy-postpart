@@ -1,18 +1,515 @@
-import sys
+import scanpy as sc
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import seaborn as sns
-
-sys.path.append('project/utils')
-from single_cell import SingleCell, options
-options(num_threads=-1, seed=42)
+from scipy.spatial.distance import pdist
+import scipy.cluster.hierarchy as hc
+import matplotlib as mpl
+from scipy.stats import zscore
 
 plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
 
 working_dir = 'project/spatial-pregnancy-postpart'
+
+# load metadata and color mappings
+cells_joined = pd.read_csv(
+    'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
+    'views/cells_joined.csv')
+color_mappings = {
+    'class': dict(zip(
+        cells_joined['class'].str.replace('/', '_'), 
+        cells_joined['class_color'])),
+    'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+        cells_joined['subclass'].str.replace('/', '_'), 
+        cells_joined['subclass_color'])).items()}
+}
+
+# load data
+adata_curio = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
+adata_merfish = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+adata_merfish.var.index = adata_merfish.var['gene_symbol']
+
+# get common subclasses
+common_subclasses = (
+    set(adata_curio.obs[adata_curio.obs['subclass_keep']]['subclass'])
+    & set(adata_merfish.obs[adata_merfish.obs['subclass_keep']]['subclass']))
+
+# filter curio data
+adata_curio = adata_curio[
+    adata_curio.obs['subclass'].isin(common_subclasses),
+    adata_curio.var['protein_coding']].copy()
+adata_curio.X = adata_curio.layers['log1p'].copy()
+
+# define marker genes
+curio_markers = [
+    # excitatory neurons (glut)
+    'Slc17a7',   # pan-glutamatergic marker
+    'Cux2',      # l2/3 it marker
+    'Rorb',      # l4/5 it marker
+    'Tshz2',     # l5 marker
+    'Syt6',      # l6 marker
+    
+    # inhibitory neurons (gaba)
+    'Gad2',      # pan-gabaergic marker
+    'Lhx6',      # mge-derived interneurons
+    'Lamp5',     # lamp5 interneurons
+    'Vip',       # vip interneurons
+    'Pvalb',     # parvalbumin interneurons
+    'Sst',       # somatostatin interneurons
+    
+    # striatal neurons
+    'Drd1',      # d1 
+    'Drd2',      # d2 
+    
+    # non-neuronal cells (nn)
+    'Slc1a3',    # astro
+    'Pdgfra',    # opcs
+    'Cspg4',     # opcs
+    'Mbp',       # oligo
+    'Plp1',      # oligo
+    'Igf2',      # vlmc
+    'Vtn',       # peri
+    'Flt1',      # endo
+    'Cldn5',     # endo
+    'Ctss',      # microglia
+    'C1qa'       # microglia
+]
+
+merfish_markers = [
+    # excitatory neurons (glut)
+    'Slc17a7',   # pan-glutamatergic
+    'Cux2',      # l2/3 it
+    'Sox5',      # deep layer marker
+    'Tbr1',      # deep layer marker
+    'Fezf2',     # deep layer marker
+    
+    # inhibitory neurons (gaba)
+    'Gad2',      # pan-gabaergic
+    'Lhx6',      # mge-derived
+    'Pvalb',     # pv interneurons
+    'Sst',       # sst interneurons
+    'Calb2',     # lamp5/vip-related
+    'Reln',      # interneuron marker
+    
+    # non-neuronal cells (nn)
+    'Slc1a3',    # astrocytes
+    'Pdgfra',    # opcs
+    'Cspg4',     # opcs
+    'Mbp',       # oligodendrocytes
+    'Igf2',      # vlmc
+    'Pdgfrb',    # pericytes
+    'Anpep',     # pericytes
+    'Flt1',      # endothelial
+    'Pecam1',    # endothelial
+    'Ctss',      # microglia
+    'Cx3cr1',    # microglia
+    'P2ry12',    # microglia
+]
+
+# calculate clustering
+clust_avg_curio = []
+clust_ids = sorted(list(common_subclasses))
+for i in clust_ids:
+    clust_avg_curio.append(
+        adata_curio[adata_curio.obs['subclass'] == i].X.mean(0))
+clust_avg_curio = np.vstack(clust_avg_curio)
+
+D = pdist(clust_avg_curio, 'correlation')
+Z = hc.linkage(D, 'complete', optimal_ordering=False)
+
+# set up figure
+f = plt.figure(figsize=(10,14))
+gs = plt.GridSpec(nrows=8, ncols=1, 
+                 height_ratios=[5,6,2,6,25,25,6,6],  
+                 hspace=0.1)
+
+# plot dendrogram
+ax0 = plt.subplot(gs[0])
+dn = hc.dendrogram(Z, ax=ax0, labels=clust_ids, leaf_font_size=10, 
+                   color_threshold=0, above_threshold_color='k')
+ax0.axis('off')
+lbl_order = sorted(clust_ids)
+
+# add first blank subplot for spacing
+ax_blank1 = plt.subplot(gs[1])
+ax_blank1.axis('off')
+
+# get counts and plot colorbar
+curio_counts = pd.Series({
+    sub: len(adata_curio[adata_curio.obs['subclass'] == sub]) 
+    for sub in lbl_order})
+merfish_counts = pd.Series({
+    sub: len(adata_merfish[adata_merfish.obs['subclass'] == sub]) 
+    for sub in lbl_order})
+
+# plot subclass colors
+ax1 = plt.subplot(gs[2])
+curr_cols = mpl.colors.ListedColormap([color_mappings['subclass'][c] 
+                                      for c in lbl_order])
+ax1.imshow(np.expand_dims(np.arange(len(lbl_order)), 1).T,
+           cmap=curr_cols, aspect='auto', interpolation='none',
+           extent=[-0.5, len(lbl_order)-0.5, 0.5, 1])
+
+ax1.set_xticks(np.arange(len(lbl_order)))
+ax1.set_xticklabels([f"{curio_counts[c]:,}" for c in lbl_order],
+                    rotation=90, ha='right', va='top')
+ax1.tick_params(axis='x', length=0, pad=15)
+
+ax1_2 = ax1.twiny()
+ax1_2.set_xlim(ax1.get_xlim())
+ax1_2.set_xticks(np.arange(len(lbl_order)))
+ax1_2.set_xticklabels([f"{merfish_counts[c]:,}" for c in lbl_order],
+                      rotation=90, ha='right', va='top')
+ax1_2.tick_params(axis='x', length=0, pad=45)
+
+ax1.set_yticks([])
+ax1_2.set_yticks([])
+
+for spine in ax1.spines.values():
+    spine.set_visible(False)
+for spine in ax1_2.spines.values():
+    spine.set_visible(False)
+
+# add second blank subplot between colorbar and dotplot
+ax_blank2 = plt.subplot(gs[3])
+ax_blank2.axis('off')
+
+# calculate dotplot values for curio
+ax2 = plt.subplot(gs[4])
+dotplot_vals_curio = np.zeros((len(curio_markers), len(lbl_order)))
+dotplot_frac_curio = np.zeros((len(curio_markers), len(lbl_order)))
+
+# reverse marker order before calculations
+curio_markers_rev = curio_markers[::-1]
+for n, i in enumerate(lbl_order):
+    mask = adata_curio.obs['subclass'] == i
+    curr_data = adata_curio[mask][:,curio_markers_rev].X.toarray()
+    dotplot_vals_curio[:,n] = np.mean(curr_data, 0)
+    dotplot_frac_curio[:,n] = np.sum(curr_data > 0, 0) / np.sum(mask)
+
+# z-score the expression values
+for n in range(len(curio_markers_rev)):
+    dotplot_vals_curio[n,:] = zscore(dotplot_vals_curio[n,:])
+
+# plot curio dotplot
+dotscale = 35
+for i in range(dotplot_vals_curio.shape[1]):
+    s = dotscale * (0.05 + 2.0 * dotplot_frac_curio[:,i])
+    scatter = ax2.scatter(i * np.ones(dotplot_vals_curio.shape[0]),
+                         np.arange(dotplot_vals_curio.shape[0]), 
+                         c=dotplot_vals_curio[:,i],
+                         s=s,
+                         cmap='seismic', vmin=-2, vmax=2)
+
+ax2.set_yticks(np.arange(len(curio_markers_rev)))
+ax2.set_yticklabels(curio_markers_rev)
+ax2.set_xlim([-0.5, dotplot_vals_curio.shape[1]-0.5])
+ax2.set_xticks([])
+sns.despine(ax=ax2, bottom=True)
+
+# calculate dotplot values for merfish
+ax3 = plt.subplot(gs[5])
+dotplot_vals_merfish = np.zeros((len(merfish_markers), len(lbl_order)))
+dotplot_frac_merfish = np.zeros((len(merfish_markers), len(lbl_order)))
+
+# reverse marker order before calculations
+merfish_markers_rev = merfish_markers[::-1]
+for n, i in enumerate(lbl_order):
+    mask = adata_merfish.obs['subclass'] == i
+    curr_data = adata_merfish[mask][:,merfish_markers_rev].X.toarray()
+    dotplot_vals_merfish[:,n] = np.mean(curr_data, 0)
+    dotplot_frac_merfish[:,n] = np.sum(curr_data > 0, 0) / np.sum(mask)
+
+# z-score the expression values
+for n in range(len(merfish_markers_rev)):
+    dotplot_vals_merfish[n,:] = zscore(dotplot_vals_merfish[n,:])
+
+# plot merfish dotplot
+for i in range(dotplot_vals_merfish.shape[1]):
+    s = dotscale * (0.05 + 2.0 * dotplot_frac_merfish[:,i])
+    scatter = ax3.scatter(i * np.ones(dotplot_vals_merfish.shape[0]),
+                         np.arange(dotplot_vals_merfish.shape[0]), 
+                         c=dotplot_vals_merfish[:,i],
+                         s=s,
+                         cmap='seismic', vmin=-2, vmax=2)
+
+ax3.set_yticks(np.arange(len(merfish_markers_rev)))
+ax3.set_yticklabels(merfish_markers_rev)
+ax3.set_xlim([-0.5, dotplot_vals_merfish.shape[1]-0.5])
+ax3.set_xticks([])
+sns.despine(ax=ax3, bottom=True)
+
+# calculate condition proportions
+n_bins = 200
+conditions = ['PREG', 'CTRL', 'POSTPART']
+total_cells = {cond: np.sum(adata_merfish.obs['condition'] == cond) 
+               for cond in conditions}
+
+frac_per_condition = np.zeros((len(lbl_order), n_bins))
+for n, subclass in enumerate(lbl_order):
+    curr_cells = adata_merfish[adata_merfish.obs['subclass'] == subclass]
+    
+    props = {}
+    for cond in conditions:
+        count = np.sum(curr_cells.obs['condition'] == cond)
+        props[cond] = (count / total_cells[cond]) / curr_cells.shape[0]
+    
+    total = sum(props.values())
+    for cond in conditions:
+        props[cond] /= total
+    
+    start_idx = 0
+    for cond, prop in props.items():
+        n_cond_bins = int(round(n_bins * prop))
+        val = 2 if cond == 'PREG' else (1 if cond == 'CTRL' else 0)
+        end_idx = start_idx + n_cond_bins
+        frac_per_condition[n, start_idx:end_idx] = val
+        start_idx = end_idx
+
+# plot condition proportions
+ax4 = plt.subplot(gs[6])
+condition_colors = ['#f72585', '#b5179e', '#7209b7']
+condition_cmap = mpl.colors.LinearSegmentedColormap.from_list(
+    'custom_condition', condition_colors)
+ax4.imshow(frac_per_condition.T, aspect='auto', interpolation='none',
+           cmap=condition_cmap)
+ax4.set_yticks([])
+ax4.set_xticks([])
+sns.despine(ax=ax4, left=True)
+ax4.axhline(n_bins/3, color='w', linestyle='--')
+ax4.axhline(2*n_bins/3, color='w', linestyle='--')
+
+# calculate modality proportions
+frac_per_modality = np.zeros((len(lbl_order), n_bins))
+total_curio = len(adata_curio)
+total_merfish = len(adata_merfish)
+
+for n, subclass in enumerate(lbl_order):
+    curio_count = np.sum(adata_curio.obs['subclass'] == subclass)
+    merfish_count = np.sum(adata_merfish.obs['subclass'] == subclass)
+    
+    curio_prop = (curio_count / total_curio)
+    merfish_prop = (merfish_count / total_merfish)
+    
+    total = curio_prop + merfish_prop
+    curio_prop /= total
+    merfish_prop /= total
+    
+    n_curio_bins = int(round(n_bins * curio_prop))
+    frac_per_modality[n, :n_curio_bins] = 1
+    frac_per_modality[n, n_curio_bins:] = 0
+
+# plot modality proportions
+ax5 = plt.subplot(gs[7])
+modality_colors = ['#4361ee', '#4cc9f0']
+modality_cmap = mpl.colors.LinearSegmentedColormap.from_list(
+    'custom_modality', modality_colors)
+ax5.imshow(frac_per_modality.T, aspect='auto', interpolation='none',
+           cmap=modality_cmap)
+ax5.set_yticks([])
+ax5.set_xticks(np.arange(len(lbl_order)))
+ax5.set_xticklabels(lbl_order, rotation=90)
+sns.despine(ax=ax5, left=True)
+ax5.axhline(n_bins/2, color='w', linestyle='--')
+
+# add unified legends for expression
+norm = plt.Normalize(vmin=-2, vmax=2)
+sm = plt.cm.ScalarMappable(cmap='seismic', norm=norm)
+cax = f.add_axes([0.97, 0.4, 0.02, 0.1])
+cbar = plt.colorbar(sm, cax=cax)
+cbar.outline.set_visible(False)
+cbar.ax.set_title('z-scored expression', pad=10)
+
+# size legend
+legend_elements = []
+for size in [0.05, 1.0, 2.05]: 
+    legend_elements.append(plt.scatter([],[], 
+                                     c='gray',
+                                     s=dotscale * size, 
+                                     label=f'{int(size*100)}%'))
+
+size_legend = f.legend(handles=legend_elements,
+                      title='fraction of cells\nexpressing gene',
+                      loc='center right',
+                      bbox_to_anchor=(1.05, 0.25),
+                      frameon=False,
+                      title_fontsize=8)
+size_legend._legend_box.align = "right"
+
+plt.savefig(f'{working_dir}/figures/cell_types_overview.png', 
+            dpi=300, bbox_inches='tight',
+            bbox_extra_artists=[size_legend])
+plt.savefig(f'{working_dir}/figures/cell_types_overview.svg', 
+            format='svg', bbox_inches='tight',
+            bbox_extra_artists=[size_legend])
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+sc.tl.rank_genes_groups(adata_merfish, 'subclass')
+
+sc.pl.rank_genes_groups_dotplot(
+    adata_merfish, n_genes=5, 
+    values_to_plot='logfoldchanges', standard_scale=None,
+    vmin=-4, vmax=4, min_logfoldchange=3, cmap='bwr', 
+    swap_axes=True, dendrogram=False)
+plt.savefig(
+    f'{working_dir}/figures/tmp.png',
+    dpi=300, bbox_inches='tight')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+sc_curio = SingleCell(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')\
+    .with_uns(QCed=True)\
+    .filter_obs(pl.col(f'subclass_keep'))\
+    .filter_var(pl.col('protein_coding'))
+
+markers_df = sc_curio\
+    .find_markers(
+        cell_type_column='subclass',
+        min_detection_rate=0.20,
+        min_fold_change=1.2)\
+    .unique('gene', keep='none')\
+    .group_by('cell_type')\
+    .head(5)\
+    .sort('cell_type', descending=True)
+
+markers_list = [
+   'Nr4a2', 'Gria4', 'Satb2', 'Rims1', 'Rorb', 'Cux2', 'Cntn5', 'Gria2', 'Grik3', 
+   'Sdk2', 'Ptprd', 'Tshz2', 'Vip', 'Grik2', 'Fgf12', 'Grin3a', 'Adamts5', 'Cntnap4',
+   'Nos1', 'Elavl2', 'Drd3', 'Drd1', 'Drd2', 'Sema5b', 'Tshz1', 'Gria1', 'Cadm1', 
+   'Cep112', 'Zfhx4', 'Agt', 'Gli2', 'Pdgfra', 'Plp1', 'Prdm6', 'Abcc9', 'Flt1', 
+   'Csf3r'
+]
+
+from matplotlib.colors import LogNorm
+sc_curio.plot_markers(
+    genes=markers_df['gene'],
+    cell_type_column='subclass',
+    filename=f'{working_dir}/figures/curio/marker_dot_subclass_pareto.png',
+    colormap='coolwarm')
+
+
+
+
+
+sc_merfish = SingleCell(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad', 
+    X_key='layers/volume_log1p')\
+    .with_uns(QCed=True)\
+    .set_var_names('gene_symbol')\
+    .filter_obs(pl.col('keep_subclass'))
+
+markers_merfish = sc_merfish.find_markers(
+    cell_type_column='class', all_genes=False)
+
+print(set(sc_curio.var['gene_symbol'].unique()).intersection(
+    sc_merfish.var['gene_symbol'].unique()))
+
+
+common_subclasses = set(sc_curio.obs['subclass'].unique()).union(
+    sc_merfish.obs['subclass'].unique())
+
+subclass_annotations = pl.read_csv(
+    'project/single-cell/ABC/metadata/WMB-10X/'
+    '20241115/subclass_annotations.csv')\
+    .filter(pl.col('subclass_id_label').is_in(common_subclasses))
+
+
+
+
+
+
+
+
+
+
+
+markers_allen = pd.read_csv(
+   'project/single-cell/ABC/metadata/WMB-10X/'
+   '20241115/subclass_annotations.csv')\
+    .query("subclass_id_label in @adata_query_filt.obs['subclass']")
+
+marker_map = dict(zip(
+    markers_allen['subclass_id_label'], 
+    markers_allen['subclass.markers.combo'].str.split(',')))
+
+sc.pl.stacked_violin(
+    adata_query_filt,
+    marker_map,  
+    groupby='subclass',             
+    swap_axes=False,
+    dendrogram=False)
+plt.savefig(f'{working_dir}/figures/marker_stacked_violin.png', dpi=300,
+            bbox_inches='tight')
+
+
+
+
+
+
+
+
+
+
+
+
 
 cells_joined = pd.read_csv(
   'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
@@ -25,40 +522,8 @@ color_mappings = {
        cells_joined['subclass_color'])).items()}
 }
 
-adata_curio = SingleCell(
-    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
-adata_merfish = SingleCell(
-    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-data = 'curio'
-level = 'class'
+data = 'merfish'
+level = 'subclass'
 
 adata = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_{data}_final.h5ad')
@@ -88,6 +553,8 @@ plt.savefig(f'{working_dir}/figures/{data}/spatial_example_{level}.png',
             dpi=300, bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/{data}/spatial_example_{level}.svg',
             format='svg', bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/{data}/spatial_example_{level}.pdf',
+            bbox_inches='tight')
 
 # umap
 
@@ -107,13 +574,6 @@ plt.savefig(f'{working_dir}/figures/{data}/umap_{level}.png', dpi=300,
 
 # marker heatmap
 
-
-sc.tl.rank_genes_groups(adata, groupby='class', method='wilcoxon')
-for group in sorted(adata.obs['class'].unique()):
-    print(f'{group}:')
-    print(sc.get.rank_genes_groups_df(
-        adata, group=group, gene_symbols='gene_symbol').head(50))
-
 marker_dict = {
     '01 IT-ET Glut': ['Slc17a7', 'Satb2', 'Grin2a'],
     '02 NP-CT-L6b Glut': ['Dpp10', 'Hs3st4'],
@@ -123,26 +583,64 @@ marker_dict = {
     '08 CNU-MGE GABA': ['Galntl6'],
     '09 CNU-LGE GABA': ['Pde10a', 'Rarb', 'Drd1', 'Kcnip2'],
     '10 LSX GABA': ['Trpc4', 'Myo5b'],
-    '11 CNU-HYa GABA': ['Unc5d'],
+    '11 CNU-HYa GABA': ['Unc5d', 'Nhs'],
     '12 HY GABA': ['Efna5', 'Nell1'],
     '13 CNU-HYa Glut': ['Slc17a6', 'Ntng1'],
     '14 HY Glut': ['Chrm3', 'Tafa1'],  
-    '30 Astro-Epen': ['Slc1a2', 'Gpc5', 'Aqp4'],
-    '31 OPC-Oligo': ['Plp1', 'Pdgfra', 'Mbp'],
+    '30 Astro-Epen': ['Slc1a2', 'Gpc5', 'Aqp4', 'Mertk'],
+    '31 OPC-Oligo': ['Plp1', 'Pdgfra', 'Mbp', 'Plcl1'],
     '33 Vascular': ['Flt1', 'Cldn5', 'Bsg'],
-    '34 Immune': ['Plxdc2', 'Hexb', 'C1qa']
+    '34 Immune': ['Plxdc2', 'Hexb', 'C1qa', 'Ly86']
 }
 
+sc.pp.normalize_total(adata)
+sc.pp.log1p(adata)
+
+sc.tl.rank_genes_groups(adata, 'class')
+sc.pl.rank_genes_groups_dotplot(
+    adata,
+    n_genes=10,
+    values_to_plot="logfoldchanges", cmap='bwr',
+    vmin=-4,
+    vmax=4,
+    min_logfoldchange=3,
+    colorbar_title='log fold change',
+    swap_axes=True,
+    dendrogram=False
+)
+plt.savefig(f'{working_dir}/figures/{data}/tmp.png',
+            dpi=300, bbox_inches='tight')
+
+
+
+sc.pl.rank_genes_groups_dotplot(
+    adata, var_names=marker_dict, values_to_plot='logfoldchanges', 
+    vmin=-4, vmax=4, min_logfoldchange=3,
+    cmap='bwr', swap_axes=True, dendrogram=False)
+plt.savefig(f'{working_dir}/figures/{data}/marker_dotplot_de_{level}.png',
+            dpi=300, bbox_inches='tight')
+
+
+
 sc.pl.matrixplot(
-    adata, marker_dict, 'class', dendrogram=False, cmap='Reds',
-    standard_scale='var', gene_symbols='gene_symbol',
-    var_group_labels=None)
+    adata, marker_dict, groupby='class', layer='log1p', standard_scale='var',
+    gene_symbols='gene_symbol', dendrogram=False, cmap='Blues',
+    swap_axes=True)
 plt.savefig(f'{working_dir}/figures/{data}/marker_heatmap_{level}.png',
             dpi=300, bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/{data}/marker_heatmap_{level}.svg',
             format='svg', bbox_inches='tight')
 
-sc.pl.dotplot(adata, marker_dict, 'class', dendrogram=False)
+sc.pl.stacked_violin(
+    adata, marker_dict, groupby='class', layer='log1p',
+    swap_axes=True, dendrogram=False)
+plt.savefig(f'{working_dir}/figures/{data}/marker_stacked_violin_{level}.png',
+            dpi=300, bbox_inches='tight')
+
+sc.pl.dotplot(
+    adata, marker_dict, groupby='class', layer='log1p', 
+    standard_scale='var', gene_symbols='gene_symbol', dendrogram=False, 
+    cmap='Blues', swap_axes=True, var_group_labels=None)
 plt.savefig(f'{working_dir}/figures/{data}/marker_dotplot_{level}.png',
             dpi=300, bbox_inches='tight')
 
@@ -157,7 +655,11 @@ plt.savefig(f'{working_dir}/figures/{data}/marker_dotplot_{level}.png',
 
 
 
-
+sc.tl.rank_genes_groups(adata, groupby='class')
+for group in sorted(adata.obs['class'].unique()):
+    print(f'{group}:')
+    print(sc.get.rank_genes_groups_df(
+        adata, group=group, gene_symbols='gene_symbol').head(10))
 
 
 
