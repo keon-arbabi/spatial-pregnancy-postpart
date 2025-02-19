@@ -1002,6 +1002,23 @@ adata_query = sc.read_h5ad(
 
 for level in ['class', 'subclass']:
 
+    # umap
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    scatter = ax.scatter(
+        adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
+        c=[color_mappings[level][c] for c in adata_query.obs[level]],
+        s=6, linewidths=0)
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    plt.tight_layout()
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(2)
+    plt.savefig(f'{working_dir}/figures/curio/umap_{level}.png', dpi=400)
+    plt.savefig(f'{working_dir}/figures/curio/umap_{level}.svg', format='svg')
+
     # spatial exemplar 
 
     sample = 'CTRL_2_1'
@@ -1034,24 +1051,6 @@ for level in ['class', 'subclass']:
                 format='svg', bbox_inches='tight')
     plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.pdf',
                 bbox_inches='tight')
-
-    # umap
-
-    fig, ax = plt.subplots(figsize=(10, 10))
-    scatter = ax.scatter(
-    adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
-    c=[color_mappings[level][c] for c in adata_query.obs[level]],
-    s=6, linewidths=0)
-    ax.set_aspect('equal')
-    ax.spines[['top', 'right', 'bottom', 'left']].set_visible(True)
-    ax.spines[['top', 'right', 'bottom', 'left']].set_linewidth(2)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    plt.tight_layout()
-    plt.savefig(f'{working_dir}/figures/curio/umap_{level}.png', dpi=300,
-            bbox_inches='tight')
-    plt.savefig(f'{working_dir}/figures/curio/umap_{level}.svg',
-                format='svg', bbox_inches='tight')
 
 
 

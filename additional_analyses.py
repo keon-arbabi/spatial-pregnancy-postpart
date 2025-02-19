@@ -122,7 +122,8 @@ clust_avg_curio = np.vstack(clust_avg_curio)
 D = pdist(clust_avg_curio, 'correlation')
 Z = hc.linkage(D, 'complete', optimal_ordering=False)
 
-# set up figure
+
+# Set up figure
 f = plt.figure(figsize=(10,14))
 gs = plt.GridSpec(nrows=8, ncols=1, 
                  height_ratios=[5,6,2,6,25,25,6,6],  
@@ -139,7 +140,7 @@ lbl_order = sorted(clust_ids)
 ax_blank1 = plt.subplot(gs[1])
 ax_blank1.axis('off')
 
-# get counts and plot colorbar
+# get counts
 curio_counts = pd.Series({
     sub: len(adata_curio[adata_curio.obs['subclass'] == sub]) 
     for sub in lbl_order})
@@ -147,13 +148,19 @@ merfish_counts = pd.Series({
     sub: len(adata_merfish[adata_merfish.obs['subclass'] == sub]) 
     for sub in lbl_order})
 
-# plot subclass colors
+# plot subclass colors with discrete color handling
 ax1 = plt.subplot(gs[2])
-curr_cols = mpl.colors.ListedColormap([color_mappings['subclass'][c] 
-                                      for c in lbl_order])
-ax1.imshow(np.expand_dims(np.arange(len(lbl_order)), 1).T,
-           cmap=curr_cols, aspect='auto', interpolation='none',
-           extent=[-0.5, len(lbl_order)-0.5, 0.5, 1])
+color_list = [color_mappings['subclass'][c] for c in lbl_order]
+curr_cols = mpl.colors.ListedColormap(color_list, N=len(lbl_order))
+color_array = np.expand_dims(np.arange(len(lbl_order)), 1).T
+
+ax1.imshow(color_array,
+           cmap=curr_cols,
+           aspect='auto',
+           interpolation='nearest',
+           extent=[-0.5, len(lbl_order)-0.5, 0.5, 1],
+           vmin=-0.5,
+           vmax=len(lbl_order)-0.5)
 
 ax1.set_xticks(np.arange(len(lbl_order)))
 ax1.set_xticklabels([f"{curio_counts[c]:,}" for c in lbl_order],
@@ -246,7 +253,7 @@ sns.despine(ax=ax3, bottom=True)
 
 # calculate condition proportions
 n_bins = 200
-conditions = ['PREG', 'CTRL', 'POSTPART']
+conditions = ['CTRL', 'PREG', 'POSTPART']
 total_cells = {cond: np.sum(adata_merfish.obs['condition'] == cond) 
                for cond in conditions}
 
@@ -272,12 +279,12 @@ for n, subclass in enumerate(lbl_order):
         start_idx = end_idx
 
 # plot condition proportions
+# For the condition proportions section
 ax4 = plt.subplot(gs[6])
-condition_colors = ['#f72585', '#b5179e', '#7209b7']
-condition_cmap = mpl.colors.LinearSegmentedColormap.from_list(
-    'custom_condition', condition_colors)
-ax4.imshow(frac_per_condition.T, aspect='auto', interpolation='none',
-           cmap=condition_cmap)
+condition_colors = ['#f72585', '#7209b7', '#b5179e']
+condition_cmap = mpl.colors.ListedColormap(condition_colors, N=3) 
+ax4.imshow(frac_per_condition.T, aspect='auto', interpolation='nearest',  
+           cmap=condition_cmap, vmin=-0.5, vmax=2.5)
 ax4.set_yticks([])
 ax4.set_xticks([])
 sns.despine(ax=ax4, left=True)
@@ -307,10 +314,9 @@ for n, subclass in enumerate(lbl_order):
 # plot modality proportions
 ax5 = plt.subplot(gs[7])
 modality_colors = ['#4361ee', '#4cc9f0']
-modality_cmap = mpl.colors.LinearSegmentedColormap.from_list(
-    'custom_modality', modality_colors)
-ax5.imshow(frac_per_modality.T, aspect='auto', interpolation='none',
-           cmap=modality_cmap)
+modality_cmap = mpl.colors.ListedColormap(modality_colors, N=2)   
+ax5.imshow(frac_per_modality.T, aspect='auto', interpolation='nearest',
+           cmap=modality_cmap, vmin=-0.5, vmax=1.5) 
 ax5.set_yticks([])
 ax5.set_xticks(np.arange(len(lbl_order)))
 ax5.set_xticklabels(lbl_order, rotation=90)
@@ -347,22 +353,28 @@ plt.savefig(f'{working_dir}/figures/cell_types_overview.png',
 plt.savefig(f'{working_dir}/figures/cell_types_overview.svg', 
             format='svg', bbox_inches='tight',
             bbox_extra_artists=[size_legend])
+plt.savefig(f'{working_dir}/figures/cell_types_overview.pdf', 
+            bbox_inches='tight',
+            bbox_extra_artists=[size_legend])
 
 
 
 
 
+# create standalone legend for common subclasses
+f_legend = plt.figure(figsize=(3, 8))
+legend_elements = [plt.Line2D(
+    [0], [0], marker='o', color='w',
+    markerfacecolor=color_mappings['subclass'][subclass],
+    label=subclass, markersize=8)
+    for subclass in sorted(list(common_subclasses))]
 
-
-
-
-
-
-
-
-
-
-
+f_legend.legend(handles=legend_elements, 
+                loc='center',
+                frameon=False)
+plt.axis('off')
+plt.savefig(f'{working_dir}/figures/common_subclasses_legend.svg',
+            format='svg', bbox_inches='tight')
 
 
 

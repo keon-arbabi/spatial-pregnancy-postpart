@@ -929,9 +929,8 @@ for level in ['class', 'subclass']:
         markerfacecolor=color_mappings[level][class_],
         label=class_, markersize=8)
         for class_ in unique_classes]
-    if not level == 'subclass':
-        ax.legend(handles=legend_elements, loc='center left',
-                bbox_to_anchor=(1, 0.5), frameon=False)
+    # ax.legend(handles=legend_elements, loc='center left',
+    #         bbox_to_anchor=(1, 0.5), frameon=False)
     ax.set_aspect('equal')
     ax.axis('off')
     plt.tight_layout()
@@ -943,7 +942,7 @@ for level in ['class', 'subclass']:
                 bbox_inches='tight')
 
     # umap
-    fig, ax = plt.subplots(figsize=(10, 10))
+    fig, ax = plt.subplots(figsize=(10, 8))
     scatter = ax.scatter(
     adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
     c=[color_mappings[level][c] for c in adata_query.obs[level]],
