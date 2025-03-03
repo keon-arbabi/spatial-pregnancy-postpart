@@ -14,6 +14,209 @@ from matplotlib.colors import LinearSegmentedColormap
 ################################################################################
 #region functions
 
+def get_global_diff(
+    adata: sc.AnnData,
+    dataset_name: str,
+    cell_type_col: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+    df = pd.DataFrame({
+        'sample': adata.obs['sample'], 
+        'condition': adata.obs['condition'],
+        'cell_type': adata.obs[cell_type_col]
+    })
+    counts = pd.crosstab(index=df['sample'], columns=df['cell_type'])
+    meta = df[['sample','condition']].drop_duplicates()
+    
+    to_r(counts, 'counts', format='data.frame')
+    to_r(meta, 'meta', format='data.frame')
+    to_r(working_dir, 'working_dir')
+    to_r(dataset_name, 'dataset_name')
+    
+    r('''
+    suppressPackageStartupMessages({
+        library(crumblr)
+        library(variancePartition)
+    })
+    meta = meta[meta$sample %in% rownames(counts),]
+    rownames(meta) = meta$sample
+    
+    cobj = crumblr(counts)
+    form = ~ 0 + condition
+    L = makeContrastsDream(form, meta,
+        contrasts = c(
+            PREG_vs_CTRL = "conditionPREG - conditionCTRL",
+            POST_vs_PREG = "conditionPOSTPART - conditionPREG"
+        )
+    )
+    fit = dream(cobj, form, meta, L, useWeights=TRUE)
+    fit = eBayes(fit)
+    
+    norm_props = cobj$E
+    norm_props_df = as.data.frame(norm_props)
+    norm_props_df$cell_type = rownames(norm_props_df)
+    
+    norm_props_by_condition = list()
+    for (cond in unique(meta$condition)) {
+        samples = rownames(meta)[meta$condition == cond]
+        if (length(samples) > 1) {
+            means = rowMeans(norm_props[, samples, drop=FALSE])
+            ses = apply(norm_props[, samples, drop=FALSE], 1, sd) / 
+                  sqrt(length(samples))
+            norm_props_by_condition[[cond]] = data.frame(
+                cell_type = rownames(norm_props),
+                condition = cond,
+                mean = means,
+                se = ses
+            )
+        }
+    }
+    norm_props_summary = do.call(rbind, norm_props_by_condition)
+    
+    results = list()
+    for(coef in c("PREG_vs_CTRL", "POST_vs_PREG")) {
+        tt = topTable(fit, coef=coef, number=Inf)
+        tt$SE = fit$stdev.unscaled[,coef] * fit$sigma
+        tt$contrast = coef
+        tt$dataset = dataset_name
+        results[[coef]] = tt
+    }
+    tt_all = do.call(rbind, results)
+    ''')
+    
+    result = to_py('tt_all', format='pandas').reset_index()
+    result['cell_type'] = result['index'].str.split('.', expand=True)[1]
+    result.drop('index', axis=1, inplace=True)
+    
+    norm_props = to_py('norm_props_df', format='pandas')
+    norm_props_long = pd.melt(
+        norm_props, 
+        id_vars=['cell_type'],
+        var_name='sample',
+        value_name='normalized_proportion')
+    norm_props_long = norm_props_long.merge(
+        meta[['sample', 'condition']], 
+        on='sample', 
+        how='left'
+    )
+    norm_props_summary = to_py('norm_props_summary', format='pandas')
+    norm_props_long = norm_props_long.merge(
+        norm_props_summary[['cell_type', 'condition', 'mean', 'se']],
+        on=['cell_type', 'condition'],
+        how='left'
+    )
+    norm_props_long['dataset'] = dataset_name
+    
+    return result, norm_props_long
+
+def plot_cell_type_proportions(
+    norm_props_df: pd.DataFrame,
+    tt_combined: pd.DataFrame = None,
+    cell_types: List[str] = None,
+    ncols: int = 4,
+    base_figsize: Tuple[float, float] = (2, 0.8),
+    palette: dict = {'curio': '#4361ee', 'merfish': '#4cc9f0'},
+    condition_order: List[str] = ['CTRL', 'PREG', 'POSTPART']) -> plt.Figure:
+
+    cell_types = sorted(norm_props_df['cell_type'].unique()) \
+        if cell_types is None else cell_types
+    nrows = int(np.ceil(len(cell_types) / ncols))
+    figsize = (base_figsize[0] * ncols, base_figsize[1] * nrows)
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+    axes = axes.flatten()
+    
+    for i, cell_type in enumerate(cell_types):
+        ax = axes[i]
+        ct_data = norm_props_df[norm_props_df['cell_type'] == cell_type].copy()
+        
+        for dataset, color in palette.items():
+            ds_data = ct_data[ct_data['dataset'] == dataset].copy()
+            if len(ds_data) == 0:
+                continue
+                
+            cond_data = ds_data.drop_duplicates(['condition', 'mean', 'se'])
+            cond_data = cond_data.set_index('condition').loc[[
+                c for c in condition_order
+                if c in cond_data['condition'].values]
+                ].reset_index()
+            
+            if len(cond_data) > 1:
+                mean_val = cond_data['mean'].mean()
+                std_val = cond_data['mean'].std()
+                if std_val > 0:
+                    cond_data['mean'] = (cond_data['mean'] - mean_val) / std_val
+                    cond_data['se'] = cond_data['se'] / std_val
+            
+            ax.errorbar(
+                x=cond_data['condition'],
+                y=cond_data['mean'],
+                yerr=cond_data['se'],
+                fmt='o-',
+                color=color,
+                alpha=0.7,
+                label=dataset,
+                capsize=3,
+                markersize=5,
+                linewidth=1.5
+            )
+            
+            if tt_combined is not None:
+                for j in range(len(condition_order)-1):
+                    c1, c2 = condition_order[j], condition_order[j+1]
+                    contrast = f'{c2}_vs_{c1}'
+                    sig_data = tt_combined[
+                        (tt_combined['cell_type'] == cell_type) &
+                        (tt_combined['dataset'] == dataset) &
+                        (tt_combined['contrast'] == contrast)
+                    ]
+                    if len(sig_data) > 0:
+                        p_val = sig_data['P.Value'].values[0]
+                        if p_val < 0.001:
+                            sig_str = '***'
+                        elif p_val < 0.01:
+                            sig_str = '**'
+                        elif p_val < 0.05:
+                            sig_str = '*'
+                        else:
+                            continue
+                        y_pos = cond_data.loc[
+                            cond_data['condition'].isin([c1, c2]), 'mean'
+                        ].max() + 0.3
+                        ax.text(
+                            (j+j+1)/2,
+                            y_pos,
+                            sig_str,
+                            ha='center',
+                            fontsize=14,
+                            color=color,
+                            fontweight='bold'
+                        )
+        
+        ax.set_title(cell_type, fontsize=10)
+        row_idx = i // ncols
+        is_bottom_row = row_idx == nrows - 1 or i >= len(cell_types) - ncols
+        if is_bottom_row:
+            ax.set_xticks(range(len(condition_order)))
+            ax.set_xticklabels(
+                condition_order,
+                rotation=45,
+                ha='right',
+                fontsize=8
+            )
+        else:
+            ax.set_xticks(range(len(condition_order)))
+            ax.set_xticklabels([], fontsize=8)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        if i == 0:
+            ax.legend(fontsize=8)
+            ax.set_ylabel('z-score', fontsize=8)
+    
+    for i in range(len(cell_types), len(axes)):
+        axes[i].set_visible(False)
+    
+    plt.tight_layout()
+    return fig
+
 def calculate_distance_scale(coords: np.ndarray) -> float:
     tree = KDTree(coords)
     d_scale = np.median(tree.query(coords, k=2)[0][:, 1])
@@ -204,56 +407,94 @@ def plot_spatial_diff_heatmap(
 #region global proportions
 
 working_dir = 'project/spatial-pregnancy-postpart'
-adata = sc.read_h5ad(f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+
+# # load metadata and color mappings
+# cells_joined = pd.read_csv(
+#     'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
+#     'views/cells_joined.csv')
+# color_mappings = {
+#     'class': dict(zip(
+#         cells_joined['class'].str.replace('/', '_'), 
+#         cells_joined['class_color'])),
+#     'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+#         cells_joined['subclass'].str.replace('/', '_'), 
+#         cells_joined['subclass_color'])).items()}
+# }
+
+# load data
+adata_curio = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
+adata_merfish = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+adata_merfish.var.index = adata_merfish.var['gene_symbol']
 
 cell_type_col = 'subclass'
-adata = adata[adata.obs[f'{cell_type_col}_keep']].copy()
-adata.obs[cell_type_col] = adata.obs[cell_type_col].astype(str)\
-    .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
 
-df = pd.DataFrame({
-    'sample': adata.obs['sample'], 
-    'condition': adata.obs['condition'],
-    'cell_type': adata.obs[cell_type_col]
-})
-counts = pd.crosstab(index=df['sample'], columns=df['cell_type'])
-meta = df[['sample','condition']]\
-    .drop_duplicates().set_index('sample', drop=False)
+# filter to common cell types
+common_cell_types = (
+    set(adata_curio.obs[
+        adata_curio.obs[f'{cell_type_col}_keep']][cell_type_col])
+    & set(adata_merfish.obs[
+        adata_merfish.obs[f'{cell_type_col}_keep']][cell_type_col]))
 
-to_r(counts, 'counts', format='data.frame')
-to_r(meta, 'meta', format='data.frame')
-to_r(working_dir, 'working_dir')
+adata_curio = adata_curio[
+    adata_curio.obs[cell_type_col].isin(common_cell_types)].copy()
+adata_merfish = adata_merfish[
+    adata_merfish.obs[cell_type_col].isin(common_cell_types)].copy()
 
-r('''
-suppressPackageStartupMessages({
-    library(crumblr)
-    library(variancePartition)
-})
+# de-number cell types 
+for adata in [adata_curio, adata_merfish]:
+    for col in ['class', 'subclass']:
+        adata.obs[col] = adata.obs[col].astype(str)\
+            .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
 
-cobj = crumblr(counts)
-    
-form = ~ (1 | condition)
-vp = fitExtractVarPartModel(cobj, form, meta)
-png(file.path(working_dir, 'figures/merfish/varpart_fractions.png'))
-plotPercentBars(vp)
-dev.off()
+# get global proportions
+tt_curio, norm_props_curio = \
+    get_global_diff(adata_curio, 'curio', cell_type_col)
+tt_merfish, norm_props_merfish = \
+    get_global_diff(adata_merfish, 'merfish', cell_type_col)
 
-form = ~ 0 + condition
-L = makeContrastsDream(form, meta,
-    contrasts = c(
-        PREG_vs_CTRL = "conditionPREG - conditionCTRL",
-        POST_vs_PREG = "conditionPOSTPART - conditionPREG"
-    )
-)
-fit = dream(cobj, form, meta, L)
-fit = eBayes(fit)
+tt_combined = pd.concat([tt_curio, tt_merfish])
+norm_props_combined = pd.concat([norm_props_curio, norm_props_merfish])
 
-tt_preg_ctrl = topTable(fit, coef="PREG_vs_CTRL", number=Inf)
-tt_post_preg = topTable(fit, coef="POST_vs_PREG", number=Inf)
-''')
+selected_cell_types = [
+    'VLMC NN', 'Astro-TE NN', 'Endo NN', 'Microglia NN', 'OPC NN',
+    'Peri NN', 'Oligo NN', 'Astro-NT NN']
 
-tt_preg_ctrl = to_py('tt_preg_ctrl', format='pandas') 
-tt_post_preg = to_py('tt_post_preg', format='pandas')
+# normalized cell type proportion plots
+fig = plot_cell_type_proportions(
+    norm_props_combined,
+    tt_combined,
+    selected_cell_types,
+    base_figsize=(2, 2),
+    ncols=4)
+fig.savefig(
+    f'{working_dir}/figures/cell_type_proportions.png', 
+    dpi=300, bbox_inches='tight')
+
+# concordant changes 
+for contrast in tt_combined['contrast'].unique():
+    print(f'\n{contrast}:')
+    tt_combined[tt_combined['contrast'] == contrast]\
+        .pivot_table(index='cell_type', columns='dataset', 
+                    values=['logFC', 'P.Value'])\
+        .dropna()\
+        .assign(concordant=lambda df: df[('logFC', 'curio')] * 
+                                      df[('logFC', 'merfish')] > 0)\
+        .loc[lambda df: df['concordant']]\
+        .assign(avg_abs_fc=lambda df: (abs(df[('logFC', 'curio')]) + 
+                                      abs(df[('logFC', 'merfish')]))/2)\
+        .sort_values('avg_abs_fc', ascending=False)\
+        .apply(lambda r: print(f"{r.name}: curio={r[('logFC','curio')]:.2f} "
+                              f"(p={r[('P.Value','curio')]:.3f}), "
+                              f"merfish={r[('logFC','merfish')]:.2f} "
+                              f"(p={r[('P.Value','merfish')]:.3f})"), axis=1)
+
+
+
+
+
+
 
 from scipy.spatial.distance import pdist
 from scipy.cluster import hierarchy as hc
