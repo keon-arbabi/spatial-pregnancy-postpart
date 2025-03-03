@@ -108,21 +108,64 @@ def get_global_diff(
     
     return result, norm_props_long
 
+def get_concordant_changes(tt_combined, top_n=5):
+    results = {}
+    for contrast in tt_combined['contrast'].unique():
+        print(f'\n{contrast}:')
+        concordant_df = tt_combined[tt_combined['contrast'] == contrast]\
+            .pivot_table(
+                index='cell_type', 
+                columns='dataset',
+                values=['logFC', 'P.Value'])\
+            .dropna()\
+            .assign(concordant=lambda df: 
+                    df[('logFC', 'curio')] * 
+                    df[('logFC', 'merfish')] > 0)\
+            .loc[lambda df: df['concordant']]\
+            .assign(avg_abs_fc=lambda df: 
+                    (abs(df[('logFC', 'curio')]) + 
+                     abs(df[('logFC', 'merfish')]))/2)\
+            .sort_values('avg_abs_fc', ascending=False)
+        concordant_df.apply(
+            lambda r: print(
+                f"{r.name}: curio={r[('logFC','curio')]:.2f} "
+                f"(p={r[('P.Value','curio')]:.3f}), "
+                f"merfish={r[('logFC','merfish')]:.2f} "
+                f"(p={r[('P.Value','merfish')]:.3f})"
+            ), axis=1)
+        results[contrast] = concordant_df.head(top_n).index.tolist()
+    
+    return results
+
 def plot_cell_type_proportions(
     norm_props_df: pd.DataFrame,
     tt_combined: pd.DataFrame = None,
     cell_types: List[str] = None,
-    ncols: int = 4,
+    nrows: int = 2,
     base_figsize: Tuple[float, float] = (2, 0.8),
-    palette: dict = {'curio': '#4361ee', 'merfish': '#4cc9f0'},
-    condition_order: List[str] = ['CTRL', 'PREG', 'POSTPART']) -> plt.Figure:
+    palette: dict = {'curio': '#4cc9f0', 'merfish': '#4361ee'},
+    condition_order: List[str] = ['CTRL', 'PREG', 'POSTPART'],
+    legend_position: Tuple[str, Tuple[float, float]] = ('center right', (1.10, 0.5))
+    ) -> plt.Figure:
 
-    cell_types = sorted(norm_props_df['cell_type'].unique()) \
-        if cell_types is None else cell_types
-    nrows = int(np.ceil(len(cell_types) / ncols))
+    if cell_types is None:
+        cell_types = sorted(norm_props_df['cell_type'].unique())
+    else:
+        cell_types = sorted(cell_types)
+        
+    ncols = int(np.ceil(len(cell_types) / nrows))
     figsize = (base_figsize[0] * ncols, base_figsize[1] * nrows)
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
     axes = axes.flatten()
+    
+    condition_labels = {
+        'CTRL': 'Control',
+        'PREG': 'Pregnant',
+        'POSTPART': 'Postpartem'
+    }
+    
+    legend_handles = []
+    legend_labels = []
     
     for i, cell_type in enumerate(cell_types):
         ax = axes[i]
@@ -146,7 +189,7 @@ def plot_cell_type_proportions(
                     cond_data['mean'] = (cond_data['mean'] - mean_val) / std_val
                     cond_data['se'] = cond_data['se'] / std_val
             
-            ax.errorbar(
+            line = ax.errorbar(
                 x=cond_data['condition'],
                 y=cond_data['mean'],
                 yerr=cond_data['se'],
@@ -156,8 +199,14 @@ def plot_cell_type_proportions(
                 label=dataset,
                 capsize=3,
                 markersize=5,
-                linewidth=1.5
+                linewidth=1.5,
+                elinewidth=1,
+                ecolor=color,
+                capthick=1
             )
+            if i == 0:
+                legend_handles.append(line)
+                legend_labels.append(dataset)
             
             if tt_combined is not None:
                 for j in range(len(condition_order)-1):
@@ -190,31 +239,41 @@ def plot_cell_type_proportions(
                             color=color,
                             fontweight='bold'
                         )
-        
         ax.set_title(cell_type, fontsize=10)
         row_idx = i // ncols
         is_bottom_row = row_idx == nrows - 1 or i >= len(cell_types) - ncols
+        
         if is_bottom_row:
             ax.set_xticks(range(len(condition_order)))
             ax.set_xticklabels(
-                condition_order,
+                [condition_labels[c] for c in condition_order],
                 rotation=45,
                 ha='right',
-                fontsize=8
+                fontsize=9,
+                rotation_mode='anchor'
             )
+            plt.setp(ax.get_xticklabels(), y=0.04)
         else:
-            ax.set_xticks(range(len(condition_order)))
-            ax.set_xticklabels([], fontsize=8)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        if i == 0:
-            ax.legend(fontsize=8)
-            ax.set_ylabel('z-score', fontsize=8)
+            ax.set_xticks([])
+            ax.set_xticklabels([])
+            
+        for spine in ax.spines.values():
+            spine.set_visible(True)
     
     for i in range(len(cell_types), len(axes)):
         axes[i].set_visible(False)
     
-    plt.tight_layout()
+    fig.text(0.035, 0.5, 'Normalized Proportion\n(Z-score)', 
+             va='center', ha='center', rotation='vertical', fontsize=9)
+    fig.legend(
+        handles=legend_handles,
+        labels=legend_labels,
+        loc=legend_position[0],
+        bbox_to_anchor=legend_position[1],
+        fontsize=9
+    )
+    plt.tight_layout(rect=[0.05, 0, 0.95, 1])
+    fig.subplots_adjust(wspace=0.3, hspace=0.25)
     return fig
 
 def calculate_distance_scale(coords: np.ndarray) -> float:
@@ -461,92 +520,19 @@ selected_cell_types = [
     'VLMC NN', 'Astro-TE NN', 'Endo NN', 'Microglia NN', 'OPC NN',
     'Peri NN', 'Oligo NN', 'Astro-NT NN']
 
+# selected_cell_types = get_concordant_changes(tt_combined, top_n=20)
+
 # normalized cell type proportion plots
 fig = plot_cell_type_proportions(
     norm_props_combined,
     tt_combined,
     selected_cell_types,
-    base_figsize=(2, 2),
-    ncols=4)
+    base_figsize=(2.2, 1.5),
+    nrows=len(selected_cell_types), 
+    legend_position=('center left', (0, 0)))
 fig.savefig(
     f'{working_dir}/figures/cell_type_proportions.png', 
     dpi=300, bbox_inches='tight')
-
-# concordant changes 
-for contrast in tt_combined['contrast'].unique():
-    print(f'\n{contrast}:')
-    tt_combined[tt_combined['contrast'] == contrast]\
-        .pivot_table(index='cell_type', columns='dataset', 
-                    values=['logFC', 'P.Value'])\
-        .dropna()\
-        .assign(concordant=lambda df: df[('logFC', 'curio')] * 
-                                      df[('logFC', 'merfish')] > 0)\
-        .loc[lambda df: df['concordant']]\
-        .assign(avg_abs_fc=lambda df: (abs(df[('logFC', 'curio')]) + 
-                                      abs(df[('logFC', 'merfish')]))/2)\
-        .sort_values('avg_abs_fc', ascending=False)\
-        .apply(lambda r: print(f"{r.name}: curio={r[('logFC','curio')]:.2f} "
-                              f"(p={r[('P.Value','curio')]:.3f}), "
-                              f"merfish={r[('logFC','merfish')]:.2f} "
-                              f"(p={r[('P.Value','merfish')]:.3f})"), axis=1)
-
-
-
-
-
-
-
-from scipy.spatial.distance import pdist
-from scipy.cluster import hierarchy as hc
-clust_ids = sorted(list(adata.obs[cell_type_col].unique()))
-clust_avg = np.vstack([
-    adata[adata.obs[cell_type_col] == i].layers['volume_log1p'].mean(0)
-    for i in clust_ids
-])
-
-D = pdist(clust_avg, 'correlation')
-Z = hc.linkage(D, 'complete', optimal_ordering=False)
-n = len(clust_ids)
-
-merge_matrix = np.zeros((n-1, 2), dtype=int)
-for i in range(n-1):
-    for j in range(2):
-        val = Z[i,j]
-        merge_matrix[i,j] = -int(val + 1) if val < n else int(val) - n + 1
-
-hc_dict = {
-    'merge': merge_matrix,
-    'height': Z[:,2],
-    'order': np.array([x+1 for x in hc.leaves_list(Z)]),
-    'labels': np.array(clust_ids),
-    'method': 'complete',
-    'call': {},
-    'dist.method': 'correlation'
-}
-
-to_r(hc_dict, 'hc')
-
-r('''
-library(crumblr)
-library(patchwork)
-  
-hc = structure(hc, class = "hclust")
-hc$call = NULL
-
-res = treeTest(fit, cobj, hc, coef = "PREG_vs_CTRL", method = "FE") 
-png(file.path(working_dir, 'figures/merfish/tree_test_ctrl_vs_preg.png'),
-    width=10, height=12, units='in', res=300)
-plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
-    plot_layout(nrow = 1, widths = c(2, 1))
-dev.off()
-  
-res = treeTest(fit, cobj, hc, coef = "POST_vs_PREG", method = "FE") 
-png(file.path(working_dir, 'figures/merfish/tree_test_preg_vs_post.png'),
-    width=10, height=12, units='in', res=300)
-plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
-    plot_layout(nrow = 1, widths = c(2, 1))
-dev.off()
-''')
 
 #endregion
 
@@ -744,5 +730,58 @@ total_b_count >= 1000, nonzero >=  25:  822 total pairs,   12 rare pairs
 total_b_count >= 1000, nonzero >=  50:  822 total pairs,   12 rare pairs
 total_b_count >= 1000, nonzero >= 100:  822 total pairs,   12 rare pairs
 '''
+
+
+from scipy.spatial.distance import pdist
+from scipy.cluster import hierarchy as hc
+clust_ids = sorted(list(adata.obs[cell_type_col].unique()))
+clust_avg = np.vstack([
+    adata[adata.obs[cell_type_col] == i].layers['volume_log1p'].mean(0)
+    for i in clust_ids
+])
+
+D = pdist(clust_avg, 'correlation')
+Z = hc.linkage(D, 'complete', optimal_ordering=False)
+n = len(clust_ids)
+
+merge_matrix = np.zeros((n-1, 2), dtype=int)
+for i in range(n-1):
+    for j in range(2):
+        val = Z[i,j]
+        merge_matrix[i,j] = -int(val + 1) if val < n else int(val) - n + 1
+
+hc_dict = {
+    'merge': merge_matrix,
+    'height': Z[:,2],
+    'order': np.array([x+1 for x in hc.leaves_list(Z)]),
+    'labels': np.array(clust_ids),
+    'method': 'complete',
+    'call': {},
+    'dist.method': 'correlation'
+}
+
+to_r(hc_dict, 'hc')
+
+r('''
+library(crumblr)
+library(patchwork)
+  
+hc = structure(hc, class = "hclust")
+hc$call = NULL
+
+res = treeTest(fit, cobj, hc, coef = "PREG_vs_CTRL", method = "FE") 
+png(file.path(working_dir, 'figures/merfish/tree_test_ctrl_vs_preg.png'),
+    width=10, height=12, units='in', res=300)
+plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
+    plot_layout(nrow = 1, widths = c(2, 1))
+dev.off()
+  
+res = treeTest(fit, cobj, hc, coef = "POST_vs_PREG", method = "FE") 
+png(file.path(working_dir, 'figures/merfish/tree_test_preg_vs_post.png'),
+    width=10, height=12, units='in', res=300)
+plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
+    plot_layout(nrow = 1, widths = c(2, 1))
+dev.off()
+''')
 
 #endregion
