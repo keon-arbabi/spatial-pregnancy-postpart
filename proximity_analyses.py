@@ -423,7 +423,8 @@ def get_spatial_diff(
 def plot_spatial_diff_heatmap(
     df, tested_pairs, contrast, sig=0.10, figsize=(15, 15),
     cell_types_a=None, cell_types_b=None,
-    recompute_fdr=True) -> Tuple[plt.Figure, plt.Axes]:
+    recompute_fdr=True, ax=None, vmin=None, vmax=None) -> Tuple[
+        plt.Figure, plt.Axes, plt.cm.ScalarMappable]:
     
     filtered_df = df.copy()
     if cell_types_a is not None:
@@ -432,7 +433,11 @@ def plot_spatial_diff_heatmap(
         filtered_df = filtered_df[filtered_df['cell_type_b'].isin(cell_types_b)]
         
     if recompute_fdr and len(filtered_df) > 0:
-        filtered_df['adj.P.Val'] = fdrcorrection(filtered_df['P.Value'])[1]
+        for cell_type_b in filtered_df['cell_type_b'].unique():
+            b_mask = filtered_df['cell_type_b'] == cell_type_b
+            if b_mask.sum() > 0:
+                filtered_df.loc[b_mask, 'adj.P.Val'] = fdrcorrection(
+                    filtered_df.loc[b_mask, 'P.Value'])[1]
     
     a_types = sorted(filtered_df['cell_type_a'].unique())
     b_types = sorted(filtered_df['cell_type_b'].unique())
@@ -449,25 +454,47 @@ def plot_spatial_diff_heatmap(
         if row['adj.P.Val'] < sig: 
             sigs[i, j] = '*'
     
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = None
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    
     cmap = LinearSegmentedColormap.from_list(
         "custom_diverging",
         ["#156a2f", "#66b66b", "white", "#813e8f", "#4b0857"], N=100)
-    mabs = np.nanmax(np.abs(mat))
-    im = ax.imshow(mat, cmap=cmap, vmin=-mabs, vmax=mabs, aspect='equal')
+    
+    if vmin is None or vmax is None:
+        if np.all(np.isnan(mat)):
+            mabs = 1.0
+        else:
+            mabs = np.nanmax(np.abs(mat))
+            if np.isnan(mabs) or mabs == 0:
+                mabs = 1.0
+        if vmin is None:
+            vmin = -mabs
+        if vmax is None:
+            vmax = mabs
+    
+    x = np.arange(len(b_types) + 1)
+    y = np.arange(len(a_types) + 1)
+    X, Y = np.meshgrid(x, y)
+    im = ax.pcolormesh(X, Y, mat, cmap=cmap, vmin=vmin, vmax=vmax, 
+                      rasterized=False)
+    
+    ax.set_xlim(0, len(b_types))
+    ax.set_ylim(len(a_types), 0)
     
     for i in range(len(a_types)):
         for j in range(len(b_types)):
             a, b = a_types[i], b_types[j]
             if (a, b) not in tested_pairs:
-                ax.text(j, i, 'X', ha='center', va='center', 
+                ax.text(j + 0.5, i + 0.5, 'X', ha='center', va='center', 
                         color='gray', size=10)
             elif sigs[i, j]=='*':
-                ax.text(j, i, '*', ha='center', va='center',
-                        color='white', size=14)
+                ax.text(j + 0.5, i + 0.5, '*', ha='center', va='center',
+                        color='white', size=14, weight='bold')
     
-    ax.set_xticks(np.arange(len(b_types)))
-    ax.set_yticks(np.arange(len(a_types)))
+    ax.set_xticks(np.arange(len(b_types)) + 0.5)
+    ax.set_yticks(np.arange(len(a_types)) + 0.5)
     ax.set_xticklabels(b_types, rotation=45, ha='right')
     ax.set_yticklabels(a_types)
     ax.set_xlabel('Query (B)')
@@ -477,10 +504,12 @@ def plot_spatial_diff_heatmap(
     if cell_types_a is not None or cell_types_b is not None:
         filtered_str = " (Filtered)"
     ax.set_title(f'{contrast} Spatial Diff{filtered_str}', size=14)
-    cbar = fig.colorbar(im, ax=ax, shrink=0.2) 
-    cbar.set_label('logFC')
-    plt.tight_layout()
-    return fig, ax
+    
+    if fig is not None:
+        cbar = fig.colorbar(im, ax=ax, shrink=0.2) 
+        cbar.set_label('logFC')
+        plt.tight_layout()    
+    return fig, ax, im
 
 #endregion
 
@@ -492,11 +521,20 @@ working_dir = 'project/spatial-pregnancy-postpart'
 # load data
 adata_curio = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad')
+adata_curio.obs['sample'] = adata_curio.obs['sample']\
+    .str.extract(r'(.+)_\d$')[0]
+
 adata_merfish = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 adata_merfish.var.index = adata_merfish.var['gene_symbol']
 
 cell_type_col = 'subclass'
+
+# de-number cell types 
+for adata in [adata_curio, adata_merfish]:
+    for col in ['class', 'subclass']:
+        adata.obs[col] = adata.obs[col].astype(str)\
+            .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
 
 # filter to common cell types
 common_cell_types = (
@@ -509,12 +547,6 @@ adata_curio = adata_curio[
     adata_curio.obs[cell_type_col].isin(common_cell_types)].copy()
 adata_merfish = adata_merfish[
     adata_merfish.obs[cell_type_col].isin(common_cell_types)].copy()
-
-# de-number cell types 
-for adata in [adata_curio, adata_merfish]:
-    for col in ['class', 'subclass']:
-        adata.obs[col] = adata.obs[col].astype(str)\
-            .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
 
 #endregion
 
@@ -545,7 +577,7 @@ fig = plot_cell_type_proportions(
     nrows=len(selected_cell_types), 
     legend_position=('center left', (0, 0)))
 fig.savefig(
-    f'{working_dir}/figures/cell_type_proportions.png', 
+    f'{working_dir}/figures/cell_type_proportions.svg', 
     dpi=300, bbox_inches='tight')
 
 #endregion
@@ -554,105 +586,146 @@ fig.savefig(
 #region local proportions
 
 cell_type_col = 'subclass'
+dataset_name = 'merfish'
+adata = adata_merfish
 
-# collapse runs 
-adata_curio.obs['sample'] = adata_curio.obs['sample']\
-    .str.extract(r'(.+)_\d$')[0]
+print(f'processing {dataset_name} dataset...')
+d_max_scale = 15 if dataset_name == 'merfish' else 10
 
-# process both datasets
-for dataset_name, adata in [('curio', adata_curio), ('merfish', adata_merfish)]:
-    print(f'processing {dataset_name} dataset...')
-    d_max_scale = 15 if dataset_name == 'merfish' else 10
+# plot radius visualization for all samples
+fig, axes = plot_sample_radii(
+    spatial_data=adata.obs,
+    coords_cols=('x_affine', 'y_affine'),
+    sample_col='sample',
+    d_max_scale=d_max_scale,
+    s=0.05 if dataset_name == 'merfish' else 0.5)
+fig.savefig(
+    f'{working_dir}/figures/{dataset_name}/proximity_radii.png', 
+    dpi=300, bbox_inches='tight')
+plt.close(fig)
 
-    # plot radius visualization for all samples
-    fig, axes = plot_sample_radii(
-        spatial_data=adata.obs,
-        coords_cols=('x_affine', 'y_affine'),
-        sample_col='sample',
-        d_max_scale=d_max_scale,
-        s=0.05 if dataset_name == 'merfish' else 0.5)
-    fig.savefig(
-        f'{working_dir}/figures/{dataset_name}/proximity_radii.png', 
-        dpi=300, bbox_inches='tight')
-    plt.close(fig)
-    
-    # get spatial stats per sample
-    file = f'{working_dir}/output/{dataset_name}/' \
-        f'spatial_stats_{cell_type_col}.pkl'
-    if os.path.exists(file):
-        spatial_stats = pd.read_pickle(file)
-    else:
-        results = []
-        for sample in adata.obs['sample'].unique():
-            sample_data = adata.obs[adata.obs['sample'] == sample]
-            stats = get_spatial_stats(
-                spatial_data=sample_data,
-                coords_cols=('x_affine', 'y_affine'),
-                cell_type_col=cell_type_col,
-                condition_col='condition',
-                sample_col='sample',
-                d_min_scale=0,
-                d_max_scale=d_max_scale
-            )
-            results.append(stats)
-        spatial_stats = pd.concat(results)    
-        spatial_stats.to_pickle(file)
-    
-    # minimum number of nonzero interactions required 
-    # in each sample for a cell type pair
-    min_nonzero = 5  
-    pairs = spatial_stats[['cell_type_a', 'cell_type_b']].drop_duplicates()
-    sample_stats = spatial_stats\
-        .groupby(['sample_id', 'cell_type_a', 'cell_type_b'])\
-        .agg(n_nonzero=('b_count', lambda x: (x>0).sum()))
-    filtered_pairs = sample_stats\
-        .groupby(['cell_type_a', 'cell_type_b'])\
-        .agg(min_nonzero_count=('n_nonzero', 'min'))\
-        .query('min_nonzero_count >= @min_nonzero')\
-        .reset_index()[['cell_type_a', 'cell_type_b']]
-    
-    pairs_tested = set(tuple(x) for x in filtered_pairs.values)
-    print(f'testing {len(filtered_pairs)} pairs out of {len(pairs)} pairs')
-    del pairs, sample_stats; gc.collect()
-    
-    # get differential testing results 
-    file = f'{working_dir}/output/{dataset_name}/' \
-        f'spatial_diff_{cell_type_col}.csv'
-    if os.path.exists(file):
-        spatial_diff = pd.read_csv(file)
-    else:
-        res = []
-        with tqdm(total=len(filtered_pairs), desc='Processing pairs') as pbar:
-            for _, row in filtered_pairs.iterrows():
-                pair_result = get_spatial_diff(
-                    spatial_stats=spatial_stats,
-                    cell_type_a=row['cell_type_a'],
-                    cell_type_b=row['cell_type_b'])
-                if pair_result: 
-                    res.extend(pair_result)
-                pbar.update(1)
-        spatial_diff = pd.concat(res, ignore_index=True)
-        spatial_diff['adj.P.Val'] = fdrcorrection(spatial_diff['P.Value'])[1]
-        spatial_diff.to_csv(file, index=False)
-    
-    selected_cell_types = [
-        'VLMC NN', 'Astro-TE NN', 'Endo NN', 'Microglia NN', 'OPC NN',
-        'Peri NN', 'Oligo NN', 'Astro-NT NN']
+# get spatial stats per sample
+file = f'{working_dir}/output/{dataset_name}/' \
+    f'spatial_stats_{cell_type_col}.pkl'
+if os.path.exists(file):
+    spatial_stats = pd.read_pickle(file)
+else:
+    results = []
+    for sample in adata.obs['sample'].unique():
+        sample_data = adata.obs[adata.obs['sample'] == sample]
+        stats = get_spatial_stats(
+            spatial_data=sample_data,
+            coords_cols=('x_affine', 'y_affine'),
+            cell_type_col=cell_type_col,
+            condition_col='condition',
+            sample_col='sample',
+            d_min_scale=0,
+            d_max_scale=d_max_scale
+        )
+        results.append(stats)
+    spatial_stats = pd.concat(results)    
+    spatial_stats.to_pickle(file)
 
-    # generate filtered heatmaps for each contrast
-    for contrast in spatial_diff['contrast'].unique():
-        contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
-        if not contrast_data.empty:
-            # neuron reference, all query
-            fig, ax = plot_spatial_diff_heatmap(
-                contrast_data, pairs_tested, contrast, sig=0.10,
-                cell_types_a=None, cell_types_b=selected_cell_types, 
-                recompute_fdr=True, figsize=(15, 10))
-            plt.savefig(
-                f'{working_dir}/figures/{dataset_name}/'
-                f'heatmap_{cell_type_col}_{contrast}_filtered.png',
-                dpi=300, bbox_inches='tight')
-            plt.close()
+# minimum number of nonzero interactions required 
+# in each sample for a cell type pair
+min_nonzero = 5  
+pairs = spatial_stats[['cell_type_a', 'cell_type_b']].drop_duplicates()
+sample_stats = spatial_stats\
+    .groupby(['sample_id', 'cell_type_a', 'cell_type_b'])\
+    .agg(n_nonzero=('b_count', lambda x: (x>0).sum()))
+filtered_pairs = sample_stats\
+    .groupby(['cell_type_a', 'cell_type_b'])\
+    .agg(min_nonzero_count=('n_nonzero', 'min'))\
+    .query('min_nonzero_count >= @min_nonzero')\
+    .reset_index()[['cell_type_a', 'cell_type_b']]
+
+pairs_tested = set(tuple(x) for x in filtered_pairs.values)
+print(f'testing {len(filtered_pairs)} pairs out of {len(pairs)} pairs')
+del pairs, sample_stats; gc.collect()
+
+# get differential testing results 
+file = f'{working_dir}/output/{dataset_name}/' \
+    f'spatial_diff_{cell_type_col}.csv'
+if os.path.exists(file):
+    spatial_diff = pd.read_csv(file)
+else:
+    res = []
+    with tqdm(total=len(filtered_pairs), desc='Processing pairs') as pbar:
+        for _, row in filtered_pairs.iterrows():
+            pair_result = get_spatial_diff(
+                spatial_stats=spatial_stats,
+                cell_type_a=row['cell_type_a'],
+                cell_type_b=row['cell_type_b'])
+            if pair_result: 
+                res.extend(pair_result)
+            pbar.update(1)
+    spatial_diff = pd.concat(res, ignore_index=True)
+    spatial_diff['adj.P.Val'] = fdrcorrection(spatial_diff['P.Value'])[1]
+    spatial_diff.to_csv(file, index=False)
+
+selected_cell_types = [
+    'VLMC NN', 'Astro-TE NN', 'Endo NN', 'Microglia NN', 'OPC NN',
+    'Peri NN', 'Oligo NN', 'Astro-NT NN']
+
+contrasts = list(spatial_diff['contrast'].unique())
+contrast1, contrast2 = contrasts[0], contrasts[1]
+contrast1_data = spatial_diff[spatial_diff['contrast'] == contrast1].copy()
+contrast2_data = spatial_diff[spatial_diff['contrast'] == contrast2].copy()
+
+# plot heatmaps for both contrasts 
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 15))
+
+all_data = pd.concat([contrast1_data, contrast2_data])
+max_abs_val = np.max(np.abs(all_data['logFC']))
+vmin, vmax = -max_abs_val, max_abs_val
+
+_, _, im1 = plot_spatial_diff_heatmap(
+    contrast1_data, pairs_tested, contrast1, sig=0.10,
+    cell_types_a=None, cell_types_b=selected_cell_types,
+    recompute_fdr=True, ax=ax1, vmin=vmin, vmax=vmax)
+
+_, _, im2 = plot_spatial_diff_heatmap(
+    contrast2_data, pairs_tested, contrast2, sig=0.10,
+    cell_types_a=None, cell_types_b=selected_cell_types,
+    recompute_fdr=True, ax=ax2, vmin=vmin, vmax=vmax)
+
+ax1.set_title('')
+ax2.set_title('')
+ax2.set_yticks([])
+ax2.set_yticklabels([])
+ax2.set_ylabel('')
+
+cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
+cbar = fig.colorbar(im1, cax=cbar_ax, orientation='horizontal')
+cbar.set_label('logFC')
+
+plt.tight_layout(rect=[0, 0.05, 0.91, 1])
+plt.savefig(
+    f'{working_dir}/figures/heatmap_{dataset_name}_{cell_type_col}.svg',
+    dpi=300, bbox_inches='tight')
+plt.close(fig)
+
+
+
+
+
+
+
+
+# generate filtered heatmaps for each contrast
+for contrast in spatial_diff['contrast'].unique():
+    contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
+    if not contrast_data.empty:
+        fig, ax = plot_spatial_diff_heatmap(
+            contrast_data, pairs_tested, contrast, sig=0.10,
+            cell_types_a=None, 
+            cell_types_b=selected_cell_types, 
+            recompute_fdr=True, figsize=(25, 15))
+        plt.savefig(
+            f'{working_dir}/figures/'
+            f'heatmap_{dataset_name}_{cell_type_col}_{contrast}.png',
+            dpi=300, bbox_inches='tight')
+        plt.close()
 
 
 
