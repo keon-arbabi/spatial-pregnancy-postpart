@@ -1,4 +1,4 @@
-# pre-processing ##############################################################
+#region pre-processing #########################################################
 
 import sys
 import os
@@ -6,95 +6,109 @@ import numpy as np
 import pandas as pd
 import anndata as ad
 import scanpy as sc
+import mygene
 from sklearn.cluster import DBSCAN
 import matplotlib.pyplot as plt
 import seaborn as sns
 from ryp import r, to_py, to_r
-import warnings
-
-warnings.filterwarnings('ignore')
-
-sys.path.append('project/utils')
 from single_cell import SingleCell
 
+import warnings
+warnings.filterwarnings('ignore')
+
+plt.rcParams['svg.fonttype'] = 'none'
+plt.rcParams['font.family'] = 'DejaVu Sans'
+
 # set paths
-working_dir = 'project/spatial-pregnancy-postpart'
+working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/curio', exist_ok=True)
 os.makedirs(f'{working_dir}/figures/curio', exist_ok=True)
 
-# load query anndata objects 
-query_dir = 'project/single-cell/Kalish/pregnancy-postpart/curio/raw-anndata'
-samples_query = [file.replace('.h5ad', '') for file in os.listdir(query_dir)]
-samples_query = sorted(samples_query)
+# load query anndata objects
+query_dir = 'projects/rrg-wainberg/single-cell/Kalish/' \
+    'pregnancy-postpart/curio/cellbender_positioned'
+files = [f for f in os.listdir(query_dir) if f.endswith('.h5ad')]
+samples_query = sorted([
+    f.split('_Positioned_anndata_matched')[0] for f in files])
 
 # munge each sample, adding placeholders for later concat
-adatas_query = []
-for sample in samples_query:
-    adata = sc.read_h5ad(f'{query_dir}/{sample}.h5ad')
-    # DBSCAN filtering for spatial outliers
-    coords = adata.obs[['x', 'y']]
-    if sample.startswith('PREG_3'):  # matches both PREG_3_1 and PREG_3_2
-        outliers = DBSCAN(eps=800, min_samples=90).fit(coords)
-    else:
-        outliers = DBSCAN(eps=500, min_samples=110).fit(coords)    
-    adata = adata[outliers.labels_ == 0].copy()
-    
-    adata.obs['sample'] = sample
-    adata.obs['condition'] = sample.split('_')[0]
-    adata.obs['source'] = 'curio'
-    adata.obs = adata.obs[[
-        'sample', 'condition', 'source', 'cell_id', 'x', 'y']]
-    adata.obs = adata.obs.rename(columns={'x': 'x_raw', 'y': 'y_raw'})
-    adata.obs[['class', 'class_color', 'subclass', 'subclass_color']] = 'Unknown'
-    adata.obs.index = adata.obs.index.str.split('_', n=3).str[3] + '_' + \
-        adata.obs['sample'].astype(str)
-    print(f'[{sample}] {adata.shape[0]} cells after DBSCAN filtering')
-    adatas_query.append(adata)
-
-# concat and store raw counts 
-adata_query = sc.concat(adatas_query, axis=0, merge='same')
-adata_query.layers['counts'] = adata_query.X.copy()
-adata_query.var = adata_query.var.rename(columns={'gene': 'gene_symbol'})
-
-# detect doublets 
-# https://github.com/plger/scDblFinder
-file = f'{working_dir}/output/curio/coldata.csv'
+# load temp data if exists
+file = f'{working_dir}/output/curio/adata_query_curio_tmp.h5ad'
 if os.path.exists(file):
-    coldata = pd.read_csv(f'{working_dir}/output/curio/coldata.csv')
-    adata_query.obs = coldata.set_index('index')
+    adata_query = sc.read_h5ad(file)
 else:
-    SingleCell(adata_query).to_sce('sce')
-    to_r(working_dir, 'working_dir')
-    r('''
-    library(scDblFinder)
-    library(BiocParallel)
-    set.seed(123)
-    sce = scDblFinder(sce, samples='sample', BPPARAM=MulticoreParam())
-    table(sce$scDblFinder.class)
-    # singlet doublet 
-    #  111180   15773 
-    coldata = as.data.frame(colData(sce))
-    ''')
-    coldata = to_py('coldata', format='pandas')
-    adata_query.obs = coldata
-    coldata.to_csv(file)
+    adatas_query = []
+    for sample in samples_query:
+        adata = sc.read_h5ad(
+            f'{query_dir}/{sample}_Positioned_anndata_matched.h5ad')
+        coords_data = pd.read_csv(
+            f'projects/rrg-wainberg/single-cell/Kalish/pregnancy-postpart/'
+            f'curio/coords/coords_{sample}.txt', delim_whitespace=True)\
+            .rename(columns={'number_clusters': 'SB_number_cluster'})
+        coords_data = coords_data[
+            ~((coords_data['x_um'] == 0) & (coords_data['y_um'] == 0))]
+        
+        # dbscan filtering for spatial outliers
+        coords = adata.obsm['X_spatial']
+        eps = 800 if sample.startswith('PREG_3') else 500
+        min_samples = 90 if sample.startswith('PREG_3') else 110
+        outliers = DBSCAN(eps=eps, min_samples=min_samples).fit(coords)
+        n = adata.shape[0]
+        adata = adata[outliers.labels_ == 0].copy()
+        print(f'[{sample}] {n - adata.shape[0]} cells filtered by dbscan')
+        
+        # add metadata
+        adata.obs['sample_rep'] = sample
+        adata.obs['sample'] = sample.rsplit('_', 1)[0]
+        adata.obs['condition'] = sample.split('_')[0]
+        adata.obs['source'] = 'curio'
+        adata.obs['cell_id_orig'] = adata.obs.index.str.rstrip('-1')
+        adata.obs.reset_index(drop=True, inplace=True)
+        adata.obs['cell_id'] = adata.obs['sample'] + '_' + \
+            adata.obs['cell_id_orig'] + '-' + adata.obs.index.astype(str)
+        adata.obs['x_raw'] = adata.obsm['X_spatial'][:, 0]
+        adata.obs['y_raw'] = adata.obsm['X_spatial'][:, 1]
+        adata.obs = adata.obs[[
+            'sample', 'sample_rep', 'condition', 'source', 'cell_id',
+            'cell_id_orig', 'x_raw', 'y_raw']]
+        
+        # find duplicate coordinates
+        dupes = coords_data.duplicated(subset=['x_um', 'y_um'], keep=False)
+        coords_unique = coords_data[~dupes].copy()
+        print(f'[{sample}] removed {dupes.sum()} coords with duplicate positions')
+        
+        coords_unique['x_abs'] = coords_unique['x_um'].abs()
+        coords_unique['y_abs'] = coords_unique['y_um'].abs()
+        adata.obs['x_abs'] = adata.obs['x_raw'].abs()
+        adata.obs['y_abs'] = adata.obs['y_raw'].abs()
+        
+        # merge coords data into adata
+        n_before = len(adata)
+        adata.obs = pd.merge(
+            adata.obs, coords_unique,
+            left_on=['x_abs', 'y_abs'],
+            right_on=['x_abs', 'y_abs'],
+            how='left')
+        matched_count = (~adata.obs['cell_bc'].isna()).sum()
+        print(f'[{sample}] matched {matched_count}/{n_before} cells')
+        
+        adata.obs = adata.obs.drop(['x_abs', 'y_abs', 'x_um', 'y_um'], axis=1)
+        adata.obs.index = adata.obs['cell_id']
+        adata.obs.index.name = None
+        del adata.obsm
+        
+        # detect doublets 
+        adata = sc.pp.scrublet(adata, copy=True)
+        print(f'[{sample}] detected {adata.obs['predicted_doublet'].sum()} doublets')
+        adatas_query.append(adata)
 
-# add expression-based qc score 
-# see methods: 
-# https://www.nature.com/articles/s41586-023-06812-z#Sec49
-qc_genes = ['Atp5g1', 'Guk1', 'Coa3', 'Hras', 'Heph', 'Naca', 'Atp5k', '1810037I17Rik', 'Atp5g3', 'Cycs', 'Fau', 'Nlrc4', 'Rtl8a', 'Uqcrq', 'Pdxp', 'Atp5j2', 'Ndufa4', 'Tpt1', 'Fkbp3', 'Edf1', 'Necap1', 'Cox7a2', 'Cox6b1', 'Polr2m', 'Slc16a2', 'Mif', 'Cox7a2l', 'Ndufb7', 'Ndufa5', 'Acadl', 'Snu13', 'Taf1c', 'Ndufc1', 'Atp5d', 'Cox5b', 'Eef1b2', 'Eif5a', 'Atp5l', 'Mrfap1', 'Chchd10', 'Atp6v1f', 'Cox7b', 'Atp5e', 'Snrpd2', 'Ftl1', 'Ndufv3', 'Usp50', 'Pfn2', 'Rab3a', 'Uqcr11', 'Ndufs7', 'Uqcrb', 'Ubb', 'Atp5j', 'Ndufa1', 'Cox6a1', 'Cox6c', 'Timm8b', 'Ap2s1', 'Ndufa2']
-sc.pp.normalize_total(adata_query, target_sum=1e4)
-adata_query.obs['qc_score'] = np.log1p(
-    adata_query[:, qc_genes].X).mean(axis=1)
-adata_query.X = adata_query.layers['counts'].copy()
-
-# plot qc metrics
-metrics = ['qc_score', 'n_genes_by_counts', 'total_counts', 'scDblFinder.score',
-          'pct_counts_mt']
-titles = ['Expression QC Score', 'Genes per Cell', 'Total UMI Counts', 
-          'Doublet Score', 'Mitochondrial %']
-y_labels = ['QC Score', 'Number of Genes', 'UMI Counts', 'scDblFinder Score',
-           'MT %']
+    # concat and store raw counts 
+    adata_query = sc.concat(adatas_query, axis=0, merge='same')
+    adata_query.layers['counts'] = adata_query.X.copy()
+    adata_query.var = adata_query.var.rename(columns={'name': 'gene_symbol'})
+    adata_query.obs['predicted_doublet'] = \
+        adata_query.obs['predicted_doublet'].astype(str)
+    # adata_query.write(file)
 
 # get qc metrics
 adata_query.var['mt'] = adata_query.var_names.str.startswith('mt-')
@@ -102,51 +116,55 @@ sc.pp.calculate_qc_metrics(
     adata_query, qc_vars=['mt'], percent_top=None, log1p=True, inplace=True)
 
 # plot qc metrics
-metrics = ['qc_score', 'n_genes_by_counts', 'total_counts', 'scDblFinder.score',
-          'pct_counts_mt']
-titles = ['Expression QC Score', 'Genes per Cell', 'Total UMI Counts', 
-          'Doublet Score', 'Mitochondrial %']
-y_labels = ['QC Score', 'Number of Genes', 'UMI Counts', 'scDblFinder Score',
-           'MT %']
+metrics = [
+    'n_genes_by_counts', 'total_counts', 'doublet_score',
+    'pct_counts_mt']
+titles = [
+    'Genes per Cell', 'Total UMI Counts', 
+    'Doublet Score', 'Mitochondrial %']
+y_labels = [
+    'Number of Genes', 'UMI Counts', 'Doublet Score', 'MT %']
 
 sample_order = [
-    'CTRL_1_1', 'CTRL_1_2', 'CTRL_2_1', 'CTRL_3_1', 'CTRL_3_2',
-    'PREG_1_1', 'PREG_1_2', 'PREG_2_1', 'PREG_2_2', 'PREG_3_1', 'PREG_3_2',
-    'POSTPART_1_1', 'POSTPART_1_2', 'POSTPART_2_1', 'POSTPART_2_2'
+    'CTRL_1', 'CTRL_2', 'CTRL_3', 'PREG_1', 'PREG_2', 'PREG_3',
+    'POSTPART_1', 'POSTPART_2'
 ]
 sample_labels = [
-    'Control 1.1', 'Control 1.2', 'Control 2.1', 'Control 3.1', 'Control 3.2',
-    'Pregnant 1.1', 'Pregnant 1.2', 'Pregnant 2.1', 'Pregnant 2.2', 'Pregnant 3.1',
-    'Pregnant 3.2', 'Postpartum 1.1', 'Postpartum 1.2', 'Postpartum 2.1',
-    'Postpartum 2.2'
+    'Control 1', 'Control 2', 'Control 3',
+    'Pregnant 1', 'Pregnant 2', 'Pregnant 3',
+    'Postpartum 1', 'Postpartum 2'
 ]
 
+fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
 pink = sns.color_palette('PiYG')[0]
-fig, axes = plt.subplots(len(metrics), 1, figsize=(10, 3*len(metrics)))
-
 configs = {
-    'qc_score': dict(
-        log=False, lines=(0.1, None),
-        ticks=[0, 2, 4, 6, 8, 10]),
     'n_genes_by_counts': dict(
-        log=True, lines=(500, None),
-        ticks=[100, 200, 500, 1000, 2000]),
+        log=True, lines=(100, None),
+        ticks=[10, 100, 500, 2000, 5000],
+        ylim=(-5, 6000)),
     'total_counts': dict(
-        log=True, lines=(300, None),
-        ticks=[100, 1000, 10000]),
-    'scDblFinder.score': dict(
-        log=False, lines=(0.4, None),
-        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], invert=True),
+        log=True, lines=(100, None),
+        ticks=[10, 100, 300, 1000, 3000, 10000],
+        ylim=(-5, 12000)),
+    'doublet_score': dict(
+        log=False, lines=(0.10, None),
+        ticks=[0, 0.1, 0.2, 0.3, 0.4, 0.5],
+        ylim=(0.2, -0.05)),
     'pct_counts_mt': dict(
         log=False, lines=(10, None),
-        ticks=[0, 5, 10, 15, 20])
+        ticks=[0, 2, 4, 6, 8, 10, 12],
+        ylim=(-0.5, 12))
 }
-
 for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     cfg = configs[m]
-    sns.violinplot(data=adata_query.obs, x='sample', y=m, ax=axes[i],
-                  color=pink, alpha=0.5, linewidth=1, linecolor=pink,
-                  order=sample_order)
+    plot_df = pd.DataFrame({
+        'sample': adata_query.obs['sample'].values,
+        m: adata_query.obs[m].values
+    })
+    sns.boxplot(data=plot_df, x='sample', y=m, ax=axes[i],
+              color=pink, linewidth=1, width=0.4, showfliers=False, 
+              order=sample_order)
+    
     if cfg['log']:
         axes[i].set_yscale('log')
         axes[i].set_yticks(cfg['ticks'])
@@ -164,50 +182,52 @@ for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
         axes[i].set_xticks([])
     else:
         axes[i].set_xticklabels(sample_labels, rotation=45, ha='right', va='top')
-        axes[i].set_xlabel('Sample', fontsize=11, fontweight='bold')
+        axes[i].set_xlabel('Sample', fontsize=11)
     
-    axes[i].set_title(title, fontsize=12, fontweight='bold')
-    axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
+    axes[i].set_title(title, fontsize=12)
+    axes[i].set_ylabel(ylabel, fontsize=11)
+    axes[i].set_ylim(*cfg['ylim'])
 
 plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/curio/qc_scores_violin.svg',
+plt.savefig(f'{working_dir}/figures/curio/qc_scores_boxplots.svg',
             bbox_inches='tight')
-plt.savefig(f'{working_dir}/figures/curio/qc_scores_violin.png',
+plt.savefig(f'{working_dir}/figures/curio/qc_scores_boxplots.png',
             dpi=150, bbox_inches='tight')
+plt.close()
 
-# filter cells 
+# get filters
 total = len(adata_query)
 for name, mask in {
-   'high_doublet': adata_query.obs['scDblFinder.score'] >= 0.4,
-   'low_qc_score': adata_query.obs['qc_score'] <= 0.1,
-   'low_n_genes': adata_query.obs['n_genes_by_counts'] < 500, 
-   'low_counts': adata_query.obs['total_counts'] <= 300,
+   'high_doublet': adata_query.obs['doublet_score'] >= 0.10,
+   'low_n_genes': adata_query.obs['n_genes_by_counts'] < 100, 
+   'low_counts': adata_query.obs['total_counts'] <= 100,
    'high_mt_pct': adata_query.obs['pct_counts_mt'] >= 10
 }.items():
    print(f'{name}: {mask.sum()} ({mask.sum()/total*100:.1f}%) cells dropped')
-
-'''
-high_doublet: 24252 (19.1%) cells dropped
-low_qc_score: 3127 (2.5%) cells dropped
-low_n_genes: 6199 (4.9%) cells dropped
-low_counts: 0 (0.0%) cells dropped
-high_mt_pct: 241 (0.2%) cells dropped
-'''
 
 keep_idx = []
 for sample in adata_query.obs['sample'].unique():
    mask = adata_query.obs['sample'] == sample
    cells = adata_query.obs.loc[mask]
-   fail_mask = ~((cells['scDblFinder.score'] < 0.4) & 
-                 (cells['qc_score'] > 0.1) & 
-                 (cells['n_genes_by_counts'] >= 500) & 
-                 (cells['total_counts'] > 300) & 
+   fail_mask = ~((cells['doublet_score'] < 0.10) & 
+                 (cells['n_genes_by_counts'] >= 100) & 
+                 (cells['total_counts'] > 100) & 
                  (cells['pct_counts_mt'] < 10))
    keep_idx.extend(cells.index[~fail_mask])
 
 cells_dropped = total - len(keep_idx)
-print(f'\nTotal cells dropped: {cells_dropped} ({cells_dropped/total*100:.1f}%)')
-'''Total cells dropped: 33143 (26.1%)'''
+print(f'\ntotal cells dropped: {cells_dropped} ({cells_dropped/total*100:.1f}%)')
+
+'''
+high_doublet: 14505 (10.8%) cells dropped
+low_n_genes: 10602 (7.9%) cells dropped
+low_counts: 6212 (4.6%) cells dropped
+high_mt_pct: 11126 (8.3%) cells dropped
+
+total cells dropped: 29937 (22.3%)
+'''
+
+# filter cells
 adata_query = adata_query[keep_idx].copy()
 
 # normalize and log transform
@@ -215,28 +235,17 @@ sc.pp.normalize_total(adata_query)
 sc.pp.log1p(adata_query)
 adata_query.layers['log1p'] = adata_query.X.copy()
 
-# add ensembl ids 
-import mygene
-mg = mygene.MyGeneInfo()
-mapping = {
-    r['query']: (r['ensembl']['gene'] if isinstance(r['ensembl'], dict) 
-    else r['ensembl'][0]['gene']) 
-    for r in mg.querymany(
-        adata_query.var['gene_symbol'].to_list(), 
-        scopes='symbol',
-        fields='ensembl.gene',
-        species='mouse')
-    if 'ensembl' in r
-}
-adata_query.var['gene_id'] = adata_query.var['gene_symbol'].map(mapping)
-
 # save
 adata_query.write(f'{working_dir}/output/data/adata_query_curio.h5ad')
 
-# CAST_MARK ####################################################################
+#endregion
+
+#region CAST_MARK ####################################################################
 
 import os
 import warnings
+warnings.filterwarnings('ignore')
+
 import scanorama
 import torch
 import anndata as ad
@@ -249,9 +258,7 @@ from sklearn.cluster import KMeans
 import CAST
 from CAST.models.model_GCNII import Args
 
-warnings.filterwarnings('ignore')
-
-working_dir = 'project/spatial-pregnancy-postpart'
+working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/curio/CAST-MARK', exist_ok=True)
 
 # load query data
@@ -313,7 +320,7 @@ else:
             der=0.5, # edge dropout rate in CCA-SSG
             dfr=0.3, # feature dropout rate in CCA-SSG
             use_encoder=False, # perform single-layer dimension reduction before 
-                            # GNNs, helps save VRAM and time if gene panel large
+                               # GNNs, helps save VRAM and time if gene panel large
             encoder_dim=512 # encoder dimension, ignore if use_encoder is False
         )
     )
@@ -368,8 +375,9 @@ torch.save(coords_raw, f'{working_dir}/output/curio/coords_raw.pt')
 torch.save(exp_dict, f'{working_dir}/output/curio/exp_dict.pt')
 adata_comb.write_h5ad(f'{working_dir}/output/curio/adata_comb_cast_mark.h5ad')
 
+#endregion
 
-# CAST_STACK ###################################################################
+#region CAST_STACK ###################################################################
 
 import os
 import sys
@@ -390,7 +398,7 @@ import CAST
 print(CAST.__file__)
 
 # set paths 
-working_dir = 'project/spatial-pregnancy-postpart'
+working_dir = 'projects/def-wainberg/karbabi/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/curio/CAST-STACK', exist_ok=True)
 
 # rotate query coords to help with registration
@@ -667,8 +675,7 @@ for sample, (source_sample, target_sample) in source_target_list.items():
         target_obs[col] = cell_types
         target_obs[f'{col}_confidence'] = confidences
         target_obs[f'{col}_color'] = target_obs[col].map(
-            dict(zip(source_obs[col], source_obs[f'{col}_color']))
-        )
+            dict(zip(source_obs[col], source_obs[f'{col}_color'])))
     
     new_obs_list.append(target_obs.set_index(target_index))
 
@@ -1051,183 +1058,6 @@ for level in ['class', 'subclass']:
                 format='svg', bbox_inches='tight')
     plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.pdf',
                 bbox_inches='tight')
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# marker heatmap
-marker_dict = {
-    '01 IT-ET Glut': ['Slc17a7', 'Satb2', 'Grin2a'],
-    '02 NP-CT-L6b Glut': ['Dpp10', 'Hs3st4'],
-    '05 OB-IMN GABA': ['Sox2ot', 'Dlx6os1', 'Meis2'],
-    '06 CTX-CGE GABA': ['Adarb2', 'Grip1', 'Kcnip1'], 
-    '07 CTX-MGE GABA': ['Nxph1', 'Lhx6', 'Sox6'],
-    '08 CNU-MGE GABA': ['Galntl6'],
-    '09 CNU-LGE GABA': ['Pde10a', 'Rarb', 'Drd1', 'Kcnip2'],
-    '10 LSX GABA': ['Trpc4', 'Myo5b'],
-    '11 CNU-HYa GABA': ['Unc5d', 'Nhs'],
-    '12 HY GABA': ['Efna5', 'Nell1'],
-    '13 CNU-HYa Glut': ['Slc17a6', 'Ntng1'],
-    '14 HY Glut': ['Chrm3', 'Tafa1'],  
-    '30 Astro-Epen': ['Slc1a2', 'Gpc5', 'Aqp4', 'Mertk'],
-    '31 OPC-Oligo': ['Plp1', 'Pdgfra', 'Mbp', 'Plcl1'],
-    '33 Vascular': ['Flt1', 'Cldn5', 'Bsg'],
-    '34 Immune': ['Plxdc2', 'Hexb', 'C1qa', 'Ly86']
-}
-
-adata_query.X = adata_query.layers['log1p'].copy()
-sc.tl.rank_genes_groups(adata_query, 'class')
-
-sc.pl.rank_genes_groups_dotplot(
-    adata_query, var_names=marker_dict, values_to_plot='logfoldchanges', 
-    vmin=-4, vmax=4, min_logfoldchange=3,
-    cmap='bwr', swap_axes=True, dendrogram=False)
-plt.savefig(f'{working_dir}/figures/curio/marker_dotplot_de_{level}.png',
-            dpi=300, bbox_inches='tight')
-
-
-
-sc.pl.matrixplot(
-    adata_query, marker_dict, groupby='class', layer='log1p', 
-    standard_scale='var', gene_symbols='gene_symbol', 
-    dendrogram=False, cmap='Blues', swap_axes=True)
-plt.savefig(f'{working_dir}/figures/curio/marker_heatmap_{level}.png',
-            dpi=300, bbox_inches='tight')
-plt.savefig(f'{working_dir}/figures/curio/marker_heatmap_{level}.svg',
-            format='svg', bbox_inches='tight')
-
-sc.pl.stacked_violin(
-    adata_query, marker_dict, groupby='class', layer='log1p',
-    swap_axes=True, dendrogram=False)
-plt.savefig(f'{working_dir}/figures/curio/marker_stacked_violin_{level}.png',
-            dpi=300, bbox_inches='tight')
-
-sc.pl.dotplot(
-    adata_query, marker_dict, groupby='class', layer='log1p', 
-    standard_scale='var', gene_symbols='gene_symbol', dendrogram=False, 
-    cmap='Blues', swap_axes=True, var_group_labels=None)
-plt.savefig(f'{working_dir}/figures/curio/marker_dotplot_{level}.png',
-            dpi=300, bbox_inches='tight')
-
-
-sc.pl.rank_genes_groups_dotplot(
-    adata_query,
-    n_genes=10,
-    values_to_plot="logfoldchanges", cmap='bwr',
-    vmin=-4,
-    vmax=4,
-    min_logfoldchange=3,
-    colorbar_title='log fold change',
-    swap_axes=True,
-    dendrogram=False
-)
-plt.savefig(f'{working_dir}/figures/curio/tmp.png',
-            dpi=300, bbox_inches='tight')
-
-
-
-
-
-
-
-
-
-
-
-
-adata_comb = sc.read_h5ad(
-    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
-obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
-
-obs_query = adata_query.obs
-
-# create multi-sample plots
-def create_multi_sample_plot(ref_obs, query_obs, col, cell_type, output_dir):
-    ref_samples = ref_obs['sample'].unique()
-    query_samples = query_obs['sample'].unique() 
-    n_cols = 4
-    n_rows = 1 + -(-len(query_samples) // n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 5*n_rows))
-    axes = axes.flatten()
-    
-    cell_color = color_mappings[col][cell_type]
-    coord_cols = ['x_ffd', 'y_ffd']
-    
-    for i, (sample, obs) in enumerate(
-            [(s, ref_obs) for s in ref_samples] +
-            [(s, query_obs) for s in query_samples]):
-        if i >= len(axes):
-            break
-        ax = axes[i]
-        plot_df = obs[obs['sample'] == sample]
-        mask = plot_df[col] == cell_type
-        if mask.sum() > 0:
-            ax.scatter(plot_df[~mask][coord_cols[0]], 
-                      plot_df[~mask][coord_cols[1]], 
-                      c='grey', s=1, alpha=0.1)
-            ax.scatter(plot_df[mask][coord_cols[0]], 
-                      plot_df[mask][coord_cols[1]], 
-                      c=cell_color, s=6)
-        else:
-            ax.text(0.5, 0.5, 'no cells of this type', 
-                   ha='center', va='center', transform=ax.transAxes)
-        ax.set_title(f'{sample}\n{col}: {cell_type}')
-        ax.axis('off')
-        ax.set_aspect('equal')
-    
-    for ax in axes[i+1:]:
-        fig.delaxes(ax)
-    plt.tight_layout()
-    safe_filename = cell_type.replace('/', '_').replace(' ', '_')
-    plt.savefig(f'{output_dir}/{safe_filename}.png', dpi=200, 
-                bbox_inches='tight')
-    plt.close(fig)
-
-col = 'subclass'
-output_dir = f'{working_dir}/figures/curio/spatial_cell_types_{col}'
-os.makedirs(output_dir, exist_ok=True)
-cell_types = obs_query[col].unique()
-for cell_type in cell_types:
-    create_multi_sample_plot(obs_ref, obs_query, col, cell_type, output_dir)
-
-# radius plot 
-adata_comb = sc.read_h5ad(
-    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
-
-plot_df = adata_comb.obs[adata_comb.obs['sample'] == 'CTRL_1_1']
-
-fig, ax = plt.subplots(figsize=(8, 8))
-ax.scatter(plot_df['x_ffd'], plot_df['y_ffd'], c='grey', s=1)
-random_point = plot_df.sample(n=1)
-ax.scatter(random_point['x_ffd'], random_point['y_ffd'], c='red', s=10)
-from matplotlib.patches import Circle
-radius = 0.5536779033973138  # ave_dist_fold=5
-circle = Circle((random_point['x_ffd'].values[0], 
-                random_point['y_ffd'].values[0]), 
-                radius, fill=False, color='red')
-ax.add_artist(circle)
-ax.set_aspect('equal')
-ax.axis('off')
-
-plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/curio/radius.png', dpi=200)
 
 
 
