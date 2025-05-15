@@ -1,9 +1,10 @@
-import os, sys, gc
+import os, re, gc
 import numpy as np
 import pandas as pd
 import scanpy as sc
 from scipy.sparse import coo_array
 from scipy.spatial import KDTree
+from scipy.stats import ttest_ind
 from typing import Tuple, List
 from ryp import r, to_r, to_py
 from tqdm.auto import tqdm
@@ -11,8 +12,10 @@ from statsmodels.stats.multitest import fdrcorrection
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
-################################################################################
-#region functions
+plt.rcParams['svg.fonttype'] = 'none'
+plt.rcParams['font.family'] = 'DejaVu Sans'
+
+#region functions #############################################################
 
 def get_global_diff(
     adata: sc.AnnData,
@@ -29,7 +32,6 @@ def get_global_diff(
     
     to_r(counts, 'counts', format='data.frame')
     to_r(meta, 'meta', format='data.frame')
-    to_r(working_dir, 'working_dir')
     to_r(dataset_name, 'dataset_name')
     
     r('''
@@ -45,7 +47,8 @@ def get_global_diff(
     L = makeContrastsDream(form, meta,
         contrasts = c(
             PREG_vs_CTRL = "conditionPREG - conditionCTRL",
-            POST_vs_PREG = "conditionPOSTPART - conditionPREG"
+            POST_vs_PREG = "conditionPOSTPART - conditionPREG",
+            POST_vs_CTRL = "conditionPOSTPART - conditionCTRL"
         )
     )
     fit = dream(cobj, form, meta, L, useWeights=TRUE)
@@ -61,11 +64,20 @@ def get_global_diff(
         if (length(samples) > 1) {
             means = rowMeans(norm_props[, samples, drop=FALSE])
             ses = apply(norm_props[, samples, drop=FALSE], 1, sd) / 
-                  sqrt(length(samples))
+                    sqrt(length(samples))
             norm_props_by_condition[[cond]] = data.frame(
                 cell_type = rownames(norm_props),
                 condition = cond,
                 mean = means,
+                se = ses
+            )
+        } else if (length(samples) == 1) {
+            means = norm_props[, samples, drop=FALSE]
+            ses = rep(0, length(means))
+            norm_props_by_condition[[cond]] = data.frame(
+                cell_type = rownames(norm_props),
+                condition = cond,
+                mean = means[,1],
                 se = ses
             )
         }
@@ -105,156 +117,202 @@ def get_global_diff(
         how='left'
     )
     norm_props_long['dataset'] = dataset_name
-    
-    return result, norm_props_long
 
-def get_concordant_changes(tt_combined, top_n=5):
-    results = {}
-    for contrast in tt_combined['contrast'].unique():
-        print(f'\n{contrast}:')
-        concordant_df = tt_combined[tt_combined['contrast'] == contrast]\
-            .pivot_table(
-                index='cell_type', 
-                columns='dataset',
-                values=['logFC', 'P.Value'])\
-            .dropna()\
-            .assign(concordant=lambda df: 
-                    df[('logFC', 'curio')] * 
-                    df[('logFC', 'merfish')] > 0)\
-            .loc[lambda df: df['concordant']]\
-            .assign(avg_abs_fc=lambda df: 
-                    (abs(df[('logFC', 'curio')]) + 
-                     abs(df[('logFC', 'merfish')]))/2)\
-            .sort_values('avg_abs_fc', ascending=False)
-        concordant_df.apply(
-            lambda r: print(
-                f"{r.name}: curio={r[('logFC','curio')]:.2f} "
-                f"(p={r[('P.Value','curio')]:.3f}), "
-                f"merfish={r[('logFC','merfish')]:.2f} "
-                f"(p={r[('P.Value','merfish')]:.3f})"
-            ), axis=1)
-        results[contrast] = concordant_df.head(top_n).index.tolist()
+    t_test_results = []
+    contrasts_map = {
+        "PREG_vs_CTRL": ("PREG", "CTRL"),
+        "POST_vs_PREG": ("POSTPART", "PREG")
+    }
+
+    for cell_type_val in norm_props_long['cell_type'].unique():
+        ct_data = norm_props_long[
+            norm_props_long['cell_type'] == cell_type_val
+        ]
+        for contrast_name, (cond2_str, cond1_str) in contrasts_map.items():
+            group1_values = ct_data[
+                ct_data['condition'] == cond1_str
+            ]['normalized_proportion'].dropna()
+            group2_values = ct_data[
+                ct_data['condition'] == cond2_str
+            ]['normalized_proportion'].dropna()
+
+            if len(group1_values) >= 2 and len(group2_values) >= 2:
+                t_stat, p_val = ttest_ind(
+                    group1_values, 
+                    group2_values, 
+                    equal_var=False, 
+                    nan_policy='omit'
+                )
+            else:
+                p_val = np.nan
+            
+            t_test_results.append({
+                'cell_type': cell_type_val,
+                'contrast': contrast_name,
+                't_test_P.Value': p_val
+            })
     
-    return results
+    t_test_df = pd.DataFrame(t_test_results)
+    result = result.merge(
+        t_test_df, 
+        on=['cell_type', 'contrast'], 
+        how='left'
+    )
+    return result, norm_props_long
 
 def plot_cell_type_proportions(
     norm_props_df: pd.DataFrame,
     tt_combined: pd.DataFrame = None,
     cell_types: List[str] = None,
     nrows: int = 2,
-    base_figsize: Tuple[float, float] = (2, 0.8),
+    base_figsize: Tuple[float, float] = (2.0, 2.0),
     palette: dict = {'curio': '#4cc9f0', 'merfish': '#4361ee'},
     condition_order: List[str] = ['CTRL', 'PREG', 'POSTPART'],
-    legend_position: Tuple[str, Tuple[float, float]] = ('center right', (1.10, 0.5))
+    legend_position: Tuple[str, Tuple[float, float]] =
+        ('center right', (1.10, 0.5)),
+    datasets_to_plot: List[str] = ['merfish']
     ) -> plt.Figure:
 
     if cell_types is None:
         cell_types = sorted(norm_props_df['cell_type'].unique())
     else:
         cell_types = sorted(cell_types)
-        
+
     ncols = int(np.ceil(len(cell_types) / nrows))
     figsize = (base_figsize[0] * ncols, base_figsize[1] * nrows)
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
     axes = axes.flatten()
-    
+
     condition_labels = {
         'CTRL': 'Control',
         'PREG': 'Pregnant',
         'POSTPART': 'Postpartem'
     }
-    
+
     legend_handles = []
     legend_labels = []
-    
-    for i, cell_type in enumerate(cell_types):
+
+    for i, cell_type_val in enumerate(cell_types):
         ax = axes[i]
-        ct_data = norm_props_df[norm_props_df['cell_type'] == cell_type].copy()
-        
-        for dataset, color in palette.items():
-            ds_data = ct_data[ct_data['dataset'] == dataset].copy()
-            if len(ds_data) == 0:
+        ct_data = norm_props_df[
+            norm_props_df['cell_type'] == cell_type_val
+        ].copy()
+
+        plotted_conditions_on_ax = []
+
+        for dataset_name, line_color in palette.items():
+            if datasets_to_plot and dataset_name not in datasets_to_plot:
                 continue
-                
-            cond_data = ds_data.drop_duplicates(['condition', 'mean', 'se'])
-            cond_data = cond_data.set_index('condition').loc[[
+
+            ds_data = ct_data[ct_data['dataset'] == dataset_name].copy()
+            if ds_data.empty:
+                continue
+
+            cond_data_initial = ds_data.drop_duplicates(
+                subset=['condition', 'mean', 'se']
+            )
+            ordered_cond_values_for_ds = [
                 c for c in condition_order
-                if c in cond_data['condition'].values]
-                ].reset_index()
+                if c in cond_data_initial['condition'].values
+            ]
+            if not ordered_cond_values_for_ds:
+                continue
             
+            cond_data = cond_data_initial.set_index('condition').loc[
+                ordered_cond_values_for_ds
+            ].reset_index()
+
+            if not plotted_conditions_on_ax:
+                plotted_conditions_on_ax = cond_data['condition'].tolist()
+
             if len(cond_data) > 1:
                 mean_val = cond_data['mean'].mean()
                 std_val = cond_data['mean'].std()
-                if std_val > 0:
-                    cond_data['mean'] = (cond_data['mean'] - mean_val) / std_val
+                if pd.notna(std_val) and std_val > 0:
+                    cond_data['mean'] = (cond_data['mean']-mean_val)/std_val
                     cond_data['se'] = cond_data['se'] / std_val
-            
-            line = ax.errorbar(
+
+            current_line = ax.errorbar(
                 x=cond_data['condition'],
                 y=cond_data['mean'],
                 yerr=cond_data['se'],
-                fmt='o-',
-                color=color,
-                alpha=0.7,
-                label=dataset,
-                capsize=3,
-                markersize=5,
-                linewidth=1.5,
-                elinewidth=1,
-                ecolor=color,
-                capthick=1
+                fmt='o-', color=line_color, alpha=0.7, label=dataset_name,
+                capsize=3, markersize=5, linewidth=1.5,
+                elinewidth=1, ecolor=line_color, capthick=1
             )
-            if i == 0:
-                legend_handles.append(line)
-                legend_labels.append(dataset)
-            
+            if dataset_name not in legend_labels:
+                legend_handles.append(current_line)
+                legend_labels.append(dataset_name)
+
+            asterisks_to_plot_on_line = []
             if tt_combined is not None:
                 for j in range(len(condition_order)-1):
-                    c1, c2 = condition_order[j], condition_order[j+1]
-                    contrast = f'{c2}_vs_{c1}'
-                    sig_data = tt_combined[
-                        (tt_combined['cell_type'] == cell_type) &
-                        (tt_combined['dataset'] == dataset) &
-                        (tt_combined['contrast'] == contrast)
+                    cond1_plot_name = condition_order[j]
+                    cond2_plot_name = condition_order[j+1]
+
+                    c1_lookup = cond1_plot_name
+                    c2_lookup = cond2_plot_name
+                    if cond2_plot_name == 'POSTPART':
+                        c2_lookup = 'POST'
+                    contrast_lookup = f'{c2_lookup}_vs_{c1_lookup}'
+
+                    filter_ct = (tt_combined['cell_type'] == cell_type_val)
+                    filter_ds = (tt_combined['dataset'] == dataset_name)
+                    filter_cn = (tt_combined['contrast'] == contrast_lookup)
+                    sig_data_row = tt_combined[
+                        filter_ct & filter_ds & filter_cn
                     ]
-                    if len(sig_data) > 0:
-                        p_val = sig_data['P.Value'].values[0]
-                        if p_val < 0.001:
-                            sig_str = '***'
-                        elif p_val < 0.01:
-                            sig_str = '**'
-                        elif p_val < 0.05:
-                            sig_str = '*'
-                        else:
-                            continue
-                        y_pos = cond_data.loc[
-                            cond_data['condition'].isin([c1, c2]), 'mean'
-                        ].max() + 0.3
-                        ax.text(
-                            (j+j+1)/2,
-                            y_pos,
-                            sig_str,
-                            ha='center',
-                            fontsize=14,
-                            color=color,
-                            fontweight='bold'
+                    
+                    if sig_data_row.empty:
+                        continue
+
+                    p_val_col = 't_test_P.Value'
+                    p_val = sig_data_row[p_val_col].iloc[0]
+                    
+                    sig_str = ''
+                    if p_val < 0.01: sig_str = '**'
+                    elif p_val < 0.05: sig_str = '*'
+
+                    if sig_str:
+                        current_plot_conds = cond_data['condition'].tolist()
+                        idx1 = current_plot_conds.index(cond1_plot_name)
+                        idx2 = current_plot_conds.index(cond2_plot_name)
+                        x_txt_pos = (idx1 + idx2) / 2.0
+                        asterisks_to_plot_on_line.append(
+                            {'x': x_txt_pos, 's': sig_str}
                         )
-        ax.set_title(cell_type, fontsize=10)
+            
+            if asterisks_to_plot_on_line:
+                se_safe = cond_data['se'].fillna(0)
+                line_data_tops = cond_data['mean'] + se_safe
+                max_error_bar_top = line_data_tops.max()
+                
+                if pd.notna(max_error_bar_top):
+                    asterisk_y_coord = max_error_bar_top - 0.5
+                    for ast_info in asterisks_to_plot_on_line:
+                        ax.text(
+                            ast_info['x'], asterisk_y_coord, ast_info['s'],
+                            ha='center', va='bottom',
+                            fontsize=12, color='black',
+                            fontweight='bold', clip_on=True, zorder=20
+                        )
+
+        ax.set_title(cell_type_val, fontsize=10)
         row_idx = i // ncols
-        is_bottom_row = row_idx == nrows - 1 or i >= len(cell_types) - ncols
+        is_bottom_row = (row_idx == nrows - 1 or 
+                         i >= len(cell_types) - ncols)
         
+        ax_xtick_lbls_use = (plotted_conditions_on_ax if 
+                             plotted_conditions_on_ax else condition_order)
+        ax.set_xticks(range(len(ax_xtick_lbls_use)))
+
         if is_bottom_row:
-            ax.set_xticks(range(len(condition_order)))
             ax.set_xticklabels(
-                [condition_labels[c] for c in condition_order],
-                rotation=45,
-                ha='right',
-                fontsize=9,
+                [condition_labels.get(c, c) for c in ax_xtick_lbls_use],
+                rotation=45, ha='right', fontsize=9,
                 rotation_mode='anchor'
             )
-            plt.setp(ax.get_xticklabels(), y=0.04)
         else:
-            ax.set_xticks([])
             ax.set_xticklabels([])
             
         for spine in ax.spines.values():
@@ -265,15 +323,17 @@ def plot_cell_type_proportions(
     
     fig.text(0.035, 0.5, 'Normalized Proportion\n(Z-score)', 
              va='center', ha='center', rotation='vertical', fontsize=9)
-    fig.legend(
-        handles=legend_handles,
-        labels=legend_labels,
-        loc=legend_position[0],
-        bbox_to_anchor=legend_position[1],
-        fontsize=9
-    )
+    
+    if legend_handles:
+        fig.legend(
+            handles=legend_handles, labels=legend_labels,
+            loc=legend_position[0], bbox_to_anchor=legend_position[1],
+            fontsize=9
+        )
+    
     plt.tight_layout(rect=[0.05, 0, 0.95, 1])
-    fig.subplots_adjust(wspace=0.3, hspace=0.25)
+    fig.subplots_adjust(wspace=0.3, hspace=0.35)
+    
     return fig
 
 def calculate_distance_scale(coords: np.ndarray) -> float:
@@ -421,7 +481,7 @@ def get_spatial_diff(
     return pair_results
 
 def plot_spatial_diff_heatmap(
-    df, tested_pairs, contrast, sig=0.10, figsize=(15, 15),
+    df, tested_pairs, sig=0.10, figsize=(15, 15),
     cell_types_a=None, cell_types_b=None,
     recompute_fdr=True, ax=None, vmin=None, vmax=None) -> Tuple[
         plt.Figure, plt.Axes, plt.cm.ScalarMappable]:
@@ -460,7 +520,7 @@ def plot_spatial_diff_heatmap(
     
     cmap = LinearSegmentedColormap.from_list(
         "custom_diverging",
-        ["#156a2f", "#66b66b", "white", "#813e8f", "#4b0857"], N=100)
+        ["#4b0857", "#813e8f", "white", "#66b66b", "#156a2f"], N=100)
     
     if vmin is None or vmax is None:
         if np.all(np.isnan(mat)):
@@ -491,19 +551,14 @@ def plot_spatial_diff_heatmap(
                         color='gray', size=10)
             elif sigs[i, j]=='*':
                 ax.text(j + 0.5, i + 0.5, '*', ha='center', va='center',
-                        color='white', size=14, weight='bold')
+                        color='black', size=14, weight='bold')
     
     ax.set_xticks(np.arange(len(b_types)) + 0.5)
     ax.set_yticks(np.arange(len(a_types)) + 0.5)
     ax.set_xticklabels(b_types, rotation=45, ha='right')
     ax.set_yticklabels(a_types)
-    ax.set_xlabel('Query (B)')
-    ax.set_ylabel('Reference (A)')
-    
-    filtered_str = ""
-    if cell_types_a is not None or cell_types_b is not None:
-        filtered_str = " (Filtered)"
-    ax.set_title(f'{contrast} Spatial Diff{filtered_str}', size=14)
+    ax.set_xlabel('Surround Cell Type')
+    ax.set_ylabel('Center Cell Type')
     
     if fig is not None:
         cbar = fig.colorbar(im, ax=ax, shrink=0.2) 
@@ -511,32 +566,292 @@ def plot_spatial_diff_heatmap(
         plt.tight_layout()    
     return fig, ax, im
 
-#endregion
+def plot_spatial_diff_maps(
+    adata, 
+    spatial_stats,
+    spatial_diff,
+    cell_type_pairs,
+    contrast,
+    coords_cols=('x_ffd', 'y_ffd'),
+    cell_type_col='subclass',
+    influence_radius=8,
+    resolution=350,
+    vmax=None):
+    
+    n_pairs = len(cell_type_pairs)
+    fig = plt.figure(figsize=(6, 5 * n_pairs))
+    
+    base_sample = 'PREG1'
+    base_cells = adata[adata.obs['sample'] == base_sample]
+    base_coords = base_cells.obs[list(coords_cols)].values
+    
+    x_min, x_max = base_coords[:, 0].min(), base_coords[:, 0].max()
+    y_min, y_max = base_coords[:, 1].min(), base_coords[:, 1].max()
+    
+    padding = 0.15
+    x_pad, y_pad = (x_max - x_min) * padding, (y_max - y_min) * padding
+    plot_x_min, plot_x_max = x_min - x_pad, x_max + x_pad
+    plot_y_min, plot_y_max = y_min - y_pad, y_max + y_pad
+    
+    condition_map = {'POST': 'POSTPART', 'PREG': 'PREG', 'CTRL': 'CTRL'}
+    cond1, cond2 = contrast.split('_vs_')
+    mapped_cond1 = condition_map.get(cond1, cond1)
+    mapped_cond2 = condition_map.get(cond2, cond2)
+    
+    cond1_samples = adata.obs[adata.obs['condition'] == mapped_cond1]['sample']
+    cond1_samples = cond1_samples.unique()
+    cond2_samples = adata.obs[adata.obs['condition'] == mapped_cond2]['sample']
+    cond2_samples = cond2_samples.unique()
+    
+    max_abs_all = 0
+    plot_data = []
+    
+    for cell_type_a, cell_type_b in cell_type_pairs:
+        diff_data = spatial_diff[
+            (spatial_diff['cell_type_a'] == cell_type_a) &
+            (spatial_diff['cell_type_b'] == cell_type_b) &
+            (spatial_diff['contrast'] == contrast)
+        ]
+        
+        if len(diff_data) == 0:
+            plot_data.append(None)
+            continue
+            
+        pair_stats = spatial_stats[
+            (spatial_stats['cell_type_a'] == cell_type_a) &
+            (spatial_stats['cell_type_b'] == cell_type_b)
+        ]
+        
+        a_cells_all = adata[adata.obs[cell_type_col] == cell_type_a]
+        a_coords_all = a_cells_all.obs[list(coords_cols)].values
+        
+        all_coords, all_b_counts, all_all_counts, all_conditions = [], [], [], []
+        
+        for cond, mapped_cond, samples in [
+            (cond1, mapped_cond1, cond1_samples), 
+            (cond2, mapped_cond2, cond2_samples)
+        ]:
+            for sample in samples:
+                a_cells = adata.obs[
+                    (adata.obs['sample'] == sample) & 
+                    (adata.obs[cell_type_col] == cell_type_a)
+                ]
+                if len(a_cells) == 0:
+                    continue
+                    
+                stats = pair_stats[
+                    (pair_stats['sample_id'] == sample) & 
+                    (pair_stats['cell_id'].isin(a_cells.index))
+                ]
+                
+                if len(stats) == 0:
+                    continue
+                    
+                coords = a_cells[list(coords_cols)].values
+                b_counts = np.zeros(len(coords))
+                tot_counts = np.zeros(len(coords))
+                
+                for i, idx in enumerate(a_cells.index):
+                    stat = stats[stats['cell_id'] == idx]
+                    if len(stat) > 0:
+                        b_counts[i] = stat['b_count'].values[0]
+                        tot_counts[i] = stat['all_count'].values[0]
+                
+                valid = tot_counts > 0
+                if not any(valid):
+                    continue
+                    
+                all_coords.append(coords[valid])
+                all_b_counts.append(b_counts[valid])
+                all_all_counts.append(tot_counts[valid])
+                all_conditions.extend([cond] * np.sum(valid))
+        
+        if not all_coords:
+            plot_data.append(None)
+            continue
+            
+        all_coords = np.vstack(all_coords)
+        all_b_counts = np.concatenate(all_b_counts)
+        all_all_counts = np.concatenate(all_all_counts)
+        all_conditions = np.array(all_conditions)
+        
+        pixel_res = resolution
+        x_grid = np.linspace(x_min, x_max, pixel_res)
+        y_grid = np.linspace(y_min, y_max, pixel_res)
+        X, Y = np.meshgrid(x_grid, y_grid)
+        
+        tissue_mask = np.zeros((pixel_res, pixel_res))
+        for x, y in base_coords:
+            i = int((y - y_min) / (y_max - y_min) * (pixel_res - 1))
+            j = int((x - x_min) / (x_max - x_min) * (pixel_res - 1))
+            if 0 <= i < pixel_res and 0 <= j < pixel_res:
+                tissue_mask[i, j] = 1
+        
+        a_mask = np.zeros_like(tissue_mask)
+        for x, y in a_coords_all:
+            i = int((y - y_min) / (y_max - y_min) * (pixel_res - 1))
+            j = int((x - x_min) / (x_max - x_min) * (pixel_res - 1))
+            if 0 <= i < pixel_res and 0 <= j < pixel_res:
+                a_mask[i, j] = 1
+        
+        d_scale, _ = calculate_distance_scale(all_coords)
+        d_max = influence_radius * d_scale
+        grid_step = (x_max - x_min) / resolution
+        
+        Z_diff = np.zeros_like(X)
+        Z_weight = np.zeros_like(X)
+        
+        other_counts = all_all_counts - all_b_counts
+        clr_values = np.log(all_b_counts + 0.5) - 0.5 * (
+            np.log(all_b_counts + 0.5) + np.log(other_counts + 0.5))
+        
+        base_mask = np.zeros_like(X, dtype=bool)
+        for i in range(len(X)):
+            for j in range(len(X[0])):
+                point = np.array([X[i, j], Y[i, j]])
+                dists = np.sqrt(np.sum((base_coords - point)**2, axis=1))
+                base_mask[i, j] = np.min(dists) < grid_step * 3
+                
+                dists = np.sqrt(np.sum((all_coords - point)**2, axis=1))
+                weights = np.exp(-0.7 * dists/d_max) * (dists <= d_max * 1.2)
+                
+                if np.sum(weights) > 0:
+                    mask1 = all_conditions == cond1
+                    mask2 = all_conditions == cond2
+                    
+                    if np.sum(weights[mask1]) > 0 and np.sum(weights[mask2]) > 0:
+                        avg_clr1 = np.sum(weights[mask1] * clr_values[mask1])
+                        avg_clr1 /= np.sum(weights[mask1])
+                        avg_clr2 = np.sum(weights[mask2] * clr_values[mask2])
+                        avg_clr2 /= np.sum(weights[mask2])
+                        
+                        Z_diff[i, j] = avg_clr2 - avg_clr1
+                        Z_weight[i, j] = min(np.sum(weights[mask1]), 
+                                           np.sum(weights[mask2]))
+        
+        Z_diff = np.where((Z_weight > 0) & base_mask, Z_diff, np.nan)
+        
+        from scipy.ndimage import gaussian_filter
+        valid_mask = ~np.isnan(Z_diff)
+        Z_smooth = np.copy(Z_diff)
+        Z_smooth[valid_mask] = gaussian_filter(
+            Z_diff[valid_mask], sigma=1.5, mode='constant')
+        Z_diff = Z_smooth
+        
+        max_abs = np.nanmax(np.abs(Z_diff))
+        max_abs_all = max(max_abs_all, max_abs)
+        
+        plot_data.append({
+            'X': X, 'Y': Y, 
+            'Z_diff': Z_diff, 
+            'tissue_mask': tissue_mask, 
+            'a_mask': a_mask,
+            'cell_type_a': cell_type_a,
+            'cell_type_b': cell_type_b
+        })
+    
+    if vmax is None:
+        vmax = max_abs_all
+    vmin = -vmax
+    
+    cmap = LinearSegmentedColormap.from_list(
+        'custom_diverging',
+        ['#4b0857', '#813e8f', '#ffffff', '#66b66b', '#156a2f'], N=100)
+    
+    im = None
+    for idx, data in enumerate(plot_data):
+        if data is None:
+            continue
+            
+        ax = fig.add_subplot(n_pairs, 1, idx + 1)
+        
+        title = f"{data['cell_type_a']} (Center)\n{data['cell_type_b']} (Surround)"
+        ax.set_title(title, loc='left', pad=5)
+        
+        ax.pcolormesh(data['X'], data['Y'], data['tissue_mask'], 
+                     cmap='Greys', alpha=0.4, rasterized=True)
+        
+        im = ax.pcolormesh(data['X'], data['Y'], data['Z_diff'], 
+                          cmap=cmap, vmin=vmin, vmax=vmax, alpha=0.9,
+                          shading='gouraud', rasterized=True)
+        
+        ax.pcolormesh(data['X'], data['Y'], data['a_mask'], 
+                     cmap='binary', alpha=0.5, vmin=0, vmax=1, rasterized=True)
+        
+        ax.set_aspect('equal')
+        ax.set_xlim(plot_x_min, plot_x_max)
+        ax.set_ylim(plot_y_min, plot_y_max)
+        
+        ax.set_xticks([])
+        ax.set_yticks([])
+        
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1)
+            spine.set_color('black')
+    
+    if im is not None:
+        cbar_ax = fig.add_axes([0.4, 0.06, 0.2, 0.01])
+        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
+        cbar.set_label('logFC')
+        cbar.set_ticks([-0.25, 0.0, 0.25])
+    
+    plt.subplots_adjust(hspace=0.05, bottom=0.08)
+    return fig
 
-################################################################################
-#region load data 
+#endregion 
 
-working_dir = 'project/spatial-pregnancy-postpart'
+#region load data ##############################################################
 
-# load data
+working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
+
+cell_type_col = 'subclass'
+
+cells_joined = pd.read_csv(
+    'projects/rrg-wainberg/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/'
+    '20231215/views/cells_joined.csv')
+color_mappings = {
+    'class': dict(zip(
+        cells_joined['class'].str.replace('/', '_'), 
+        cells_joined['class_color'])),
+    'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+        cells_joined['subclass'].str.replace('/', '_'), 
+        cells_joined['subclass_color'])).items()}
+}
+for level in color_mappings:
+    color_mappings[level] = {
+        k.split(' ', 1)[1]: v for k, v in color_mappings[level].items()
+}
+
 adata_curio = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad')
-adata_curio.obs['sample'] = adata_curio.obs['sample']\
-    .str.extract(r'(.+)_\d$')[0]
 
 adata_merfish = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 adata_merfish.var.index = adata_merfish.var['gene_symbol']
 
-cell_type_col = 'subclass'
+adata_curio.X = adata_curio.layers['log1p'].copy()
+adata_merfish.X = adata_merfish.layers['volume_log1p'].copy()
 
-# de-number cell types 
+common_subclasses_numbered = (
+    set(adata_curio.obs[adata_curio.obs['subclass_keep']]['subclass'])
+    & set(adata_merfish.obs[adata_merfish.obs['subclass_keep']]['subclass']))
+
+subclass_map = {}
+for subclass in common_subclasses_numbered:
+    if isinstance(subclass, str) and re.match(r'^\d+\s+', subclass):
+        clean_name = re.sub(r'^\d+\s+', '', subclass)
+        subclass_map[clean_name] = subclass
+
 for adata in [adata_curio, adata_merfish]:
     for col in ['class', 'subclass']:
         adata.obs[col] = adata.obs[col].astype(str)\
             .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
 
-# filter to common cell types
+common_subclasses = (
+    set(adata_curio.obs[adata_curio.obs['subclass_keep']]['subclass'])
+    & set(adata_merfish.obs[adata_merfish.obs['subclass_keep']]['subclass']))
+
 common_cell_types = (
     set(adata_curio.obs[
         adata_curio.obs[f'{cell_type_col}_keep']][cell_type_col])
@@ -548,12 +863,10 @@ adata_curio = adata_curio[
 adata_merfish = adata_merfish[
     adata_merfish.obs[cell_type_col].isin(common_cell_types)].copy()
 
-#endregion
+#endregion 
 
-################################################################################
-#region global proportions
+#region global proportions #####################################################
 
-# get global proportions
 tt_curio, norm_props_curio = \
     get_global_diff(adata_curio, 'curio', cell_type_col)
 tt_merfish, norm_props_merfish = \
@@ -566,53 +879,45 @@ selected_cell_types = [
     'VLMC NN', 'Astro-TE NN', 'Endo NN', 'Microglia NN', 'OPC NN',
     'Peri NN', 'Oligo NN', 'Astro-NT NN']
 
-# selected_cell_types = get_concordant_changes(tt_combined, top_n=20)
+tt_combined.sort_values('t_test_P.Value')
+tt_combined[tt_combined['cell_type'].eq('Endo NN')]\
+    .sort_values('t_test_P.Value')
 
-# normalized cell type proportion plots
 fig = plot_cell_type_proportions(
     norm_props_combined,
     tt_combined,
     selected_cell_types,
-    base_figsize=(2.2, 1.5),
-    nrows=len(selected_cell_types), 
-    legend_position=('center left', (0, 0)))
+    datasets_to_plot=['merfish'],
+    base_figsize=(2, 2),
+    nrows=int(np.ceil(len(selected_cell_types)/2)),
+    legend_position=('center left', (0, 0))
+)
 fig.savefig(
-    f'{working_dir}/figures/cell_type_proportions.svg', 
-    dpi=300, bbox_inches='tight')
+    f'{working_dir}/figures/cell_type_proportions.png',
+    dpi=300,
+    bbox_inches='tight'
+)
+fig.savefig(
+    f'{working_dir}/figures/cell_type_proportions.svg',
+    dpi=300,
+    bbox_inches='tight'
+)
 
 #endregion
 
-################################################################################
-#region local proportions
+#region local proportions ######################################################
 
-cell_type_col = 'subclass'
 dataset_name = 'merfish'
-adata = adata_merfish
-
-print(f'processing {dataset_name} dataset...')
-d_max_scale = 15 if dataset_name == 'merfish' else 10
-
-# plot radius visualization for all samples
-fig, axes = plot_sample_radii(
-    spatial_data=adata.obs,
-    coords_cols=('x_affine', 'y_affine'),
-    sample_col='sample',
-    d_max_scale=d_max_scale,
-    s=0.05 if dataset_name == 'merfish' else 0.5)
-fig.savefig(
-    f'{working_dir}/figures/{dataset_name}/proximity_radii.png', 
-    dpi=300, bbox_inches='tight')
-plt.close(fig)
+d_max_scale = 20
 
 # get spatial stats per sample
-file = f'{working_dir}/output/{dataset_name}/' \
-    f'spatial_stats_{cell_type_col}.pkl'
+file = f'{working_dir}/output/{dataset_name}/spatial_stats_{cell_type_col}.pkl'
 if os.path.exists(file):
     spatial_stats = pd.read_pickle(file)
 else:
     results = []
-    for sample in adata.obs['sample'].unique():
-        sample_data = adata.obs[adata.obs['sample'] == sample]
+    for sample in adata_merfish.obs['sample'].unique():
+        sample_data = adata_merfish.obs[adata_merfish.obs['sample'] == sample]
         stats = get_spatial_stats(
             spatial_data=sample_data,
             coords_cols=('x_affine', 'y_affine'),
@@ -623,16 +928,16 @@ else:
             d_max_scale=d_max_scale
         )
         results.append(stats)
-    spatial_stats = pd.concat(results)    
+    spatial_stats = pd.concat(results)
     spatial_stats.to_pickle(file)
 
-# minimum number of nonzero interactions required 
+# minimum number of nonzero interactions required
 # in each sample for a cell type pair
-min_nonzero = 5  
+min_nonzero = 5
 pairs = spatial_stats[['cell_type_a', 'cell_type_b']].drop_duplicates()
 sample_stats = spatial_stats\
     .groupby(['sample_id', 'cell_type_a', 'cell_type_b'])\
-    .agg(n_nonzero=('b_count', lambda x: (x>0).sum()))
+    .agg(n_nonzero=('b_count', lambda x: (x > 0).sum()))
 filtered_pairs = sample_stats\
     .groupby(['cell_type_a', 'cell_type_b'])\
     .agg(min_nonzero_count=('n_nonzero', 'min'))\
@@ -643,49 +948,52 @@ pairs_tested = set(tuple(x) for x in filtered_pairs.values)
 print(f'testing {len(filtered_pairs)} pairs out of {len(pairs)} pairs')
 del pairs, sample_stats; gc.collect()
 
-# get differential testing results 
-file = f'{working_dir}/output/{dataset_name}/' \
-    f'spatial_diff_{cell_type_col}.csv'
+selected_cell_types = [
+    'VLMC NN', 'Astro-TE NN', 'Endo NN', 'Microglia NN', 'OPC NN',
+    'Peri NN', 'Oligo NN', 'Astro-NT NN'
+]
+pairs_to_process = filtered_pairs[
+    filtered_pairs['cell_type_b'].isin(selected_cell_types)].copy()
+print(f'testing {len(pairs_to_process)} pairs out of {len(filtered_pairs)} pairs')
+
+# get differential testing results
+file = f'{working_dir}/output/{dataset_name}/spatial_diff_{cell_type_col}.csv'
 if os.path.exists(file):
     spatial_diff = pd.read_csv(file)
 else:
     res = []
-    with tqdm(total=len(filtered_pairs), desc='Processing pairs') as pbar:
-        for _, row in filtered_pairs.iterrows():
+    with tqdm(total=len(pairs_to_process), desc='Processing pairs') as pbar:
+        for _, row in pairs_to_process.iterrows():
             pair_result = get_spatial_diff(
                 spatial_stats=spatial_stats,
                 cell_type_a=row['cell_type_a'],
                 cell_type_b=row['cell_type_b'])
-            if pair_result: 
+            if pair_result:
                 res.extend(pair_result)
             pbar.update(1)
     spatial_diff = pd.concat(res, ignore_index=True)
     spatial_diff['adj.P.Val'] = fdrcorrection(spatial_diff['P.Value'])[1]
-    spatial_diff.to_csv(file, index=False)
+    # spatial_diff.to_csv(file, index=False)
 
-selected_cell_types = [
-    'VLMC NN', 'Astro-TE NN', 'Endo NN', 'Microglia NN', 'OPC NN',
-    'Peri NN', 'Oligo NN', 'Astro-NT NN']
+# plot heatmaps for both contrasts
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
 
 contrasts = list(spatial_diff['contrast'].unique())
 contrast1, contrast2 = contrasts[0], contrasts[1]
 contrast1_data = spatial_diff[spatial_diff['contrast'] == contrast1].copy()
 contrast2_data = spatial_diff[spatial_diff['contrast'] == contrast2].copy()
 
-# plot heatmaps for both contrasts 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 15))
-
 all_data = pd.concat([contrast1_data, contrast2_data])
 max_abs_val = np.max(np.abs(all_data['logFC']))
 vmin, vmax = -max_abs_val, max_abs_val
 
 _, _, im1 = plot_spatial_diff_heatmap(
-    contrast1_data, pairs_tested, contrast1, sig=0.10,
+    contrast1_data, pairs_tested, sig=0.10,
     cell_types_a=None, cell_types_b=selected_cell_types,
     recompute_fdr=True, ax=ax1, vmin=vmin, vmax=vmax)
 
 _, _, im2 = plot_spatial_diff_heatmap(
-    contrast2_data, pairs_tested, contrast2, sig=0.10,
+    contrast2_data, pairs_tested, sig=0.10,
     cell_types_a=None, cell_types_b=selected_cell_types,
     recompute_fdr=True, ax=ax2, vmin=vmin, vmax=vmax)
 
@@ -701,72 +1009,65 @@ cbar.set_label('logFC')
 
 plt.tight_layout(rect=[0, 0.05, 0.91, 1])
 plt.savefig(
+    f'{working_dir}/figures/heatmap_{dataset_name}_{cell_type_col}.png',
+    dpi=300, bbox_inches='tight')
+plt.savefig(
     f'{working_dir}/figures/heatmap_{dataset_name}_{cell_type_col}.svg',
     dpi=300, bbox_inches='tight')
 plt.close(fig)
 
+# plot spatial maps for both contrasts
+cell_type_pairs = [
+    ('CEA-AAA-BST Six3 Sp9 Gaba', 'Endo NN'),
+    ('Sst Chodl Gaba', 'Endo NN'),
+    ('BAM NN', 'Astro-NT NN')
+]
+plot_spatial_diff_maps(
+    adata_merfish,
+    spatial_stats,
+    spatial_diff,
+    cell_type_pairs=cell_type_pairs,
+    contrast='PREG_vs_CTRL',
+    resolution=250,
+    influence_radius=3.5,
+    vmax=0.4
+)
+plt.savefig(f'{working_dir}/figures/spatial_maps_preg_vs_ctrl.svg', 
+            bbox_inches='tight')
 
+cell_type_pairs = [
+    ('CEA-AAA-BST Six3 Sp9 Gaba', 'Endo NN'),
+    ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
+    ('Tanycyte NN', 'Oligo NN')
+]
+plot_spatial_diff_maps(
+    adata_merfish,
+    spatial_stats,
+    spatial_diff,
+    cell_type_pairs=cell_type_pairs,
+    contrast='POST_vs_PREG',
+    resolution=250,
+    influence_radius=3.5,
+    vmax=0.4
+)
+plt.savefig(f'{working_dir}/figures/spatial_maps_postpart_vs_preg.svg', 
+            bbox_inches='tight')
 
-
-
-
-
-
-# generate filtered heatmaps for each contrast
-for contrast in spatial_diff['contrast'].unique():
-    contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
-    if not contrast_data.empty:
-        fig, ax = plot_spatial_diff_heatmap(
-            contrast_data, pairs_tested, contrast, sig=0.10,
-            cell_types_a=None, 
-            cell_types_b=selected_cell_types, 
-            recompute_fdr=True, figsize=(25, 15))
-        plt.savefig(
-            f'{working_dir}/figures/'
-            f'heatmap_{dataset_name}_{cell_type_col}_{contrast}.png',
-            dpi=300, bbox_inches='tight')
-        plt.close()
-
-
-
-
-
-
-# heatmaps for each contrast
-for contrast in spatial_diff['contrast'].unique():
-    contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
-    if not contrast_data.empty:
-        fig, ax = plot_spatial_diff_heatmap(
-            contrast_data, 
-            pairs_tested, 
-            contrast, 
-            sig=0.10,
-            figsize=(16, 22) if cell_type_col == 'subclass' else (10, 12))
-        plt.savefig(
-            f'{working_dir}/figures/merfish/'
-            f'heatmap_{cell_type_col}_{contrast}.png',
-            dpi=300, bbox_inches='tight')
-        plt.close()
+# plot sample radii
+fig, axes = plot_sample_radii(
+    spatial_data=adata_merfish.obs,
+    coords_cols=('x_affine', 'y_affine'),
+    sample_col='sample',
+    d_max_scale=d_max_scale,
+    s=0.05)
+fig.savefig(
+    f'{working_dir}/figures/{dataset_name}/proximity_radii.png', 
+    dpi=300, bbox_inches='tight')
+plt.close(fig)
 
 #endregion
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# region scratch
+#region scratch ################################################################
 
 # determining get_spatial_diff() thresholds based on rare cell types 
 ct_counts = spatial_stats.groupby('cell_type_a')['cell_id'].nunique()
@@ -897,5 +1198,36 @@ plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
     plot_layout(nrow = 1, widths = c(2, 1))
 dev.off()
 ''')
+
+# generate filtered heatmaps for each contrast
+for contrast in spatial_diff['contrast'].unique():
+    contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
+    if not contrast_data.empty:
+        fig, ax = plot_spatial_diff_heatmap(
+            contrast_data, pairs_tested, contrast, sig=0.10,
+            cell_types_a=None, 
+            cell_types_b=selected_cell_types, 
+            recompute_fdr=True, figsize=(25, 15))
+        plt.savefig(
+            f'{working_dir}/figures/'
+            f'heatmap_{dataset_name}_{cell_type_col}_{contrast}.png',
+            dpi=300, bbox_inches='tight')
+        plt.close()
+
+# heatmaps for each contrast
+for contrast in spatial_diff['contrast'].unique():
+    contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
+    if not contrast_data.empty:
+        fig, ax = plot_spatial_diff_heatmap(
+            contrast_data, 
+            pairs_tested, 
+            contrast, 
+            sig=0.10,
+            figsize=(16, 22) if cell_type_col == 'subclass' else (10, 12))
+        plt.savefig(
+            f'{working_dir}/figures/merfish/'
+            f'heatmap_{cell_type_col}_{contrast}.png',
+            dpi=300, bbox_inches='tight')
+        plt.close()
 
 #endregion

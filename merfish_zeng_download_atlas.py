@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore")
 
 # imputed update ###############################################################
 
-download_base = Path('project/single-cell/ABC')
+download_base = Path('projects/rrg-wainberg/karbabi/single-cell/ABC')
 abc_cache = AbcProjectCache.from_cache_dir(download_base)
 abc_cache.load_manifest('releases/20240831/manifest.json')
 
@@ -71,7 +71,8 @@ cell_joined = cell_joined.join(parcellation_annotation, on='parcellation_index')
 cell_joined = cell_joined.join(parcellation_color, on='parcellation_index')
 
 cell_joined.to_csv(
-    'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/views/'
+    'projects/rrg-wainberg/single-cell/ABC/metadata/'
+    'MERFISH-C57BL6J-638850/20231215/views/'
     'cells_joined.csv')
 
 abc_cache.get_data_path(

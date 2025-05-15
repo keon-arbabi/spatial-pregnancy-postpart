@@ -8,14 +8,14 @@ import scipy.sparse as sparse
 import warnings
 warnings.filterwarnings('ignore')
 
-working_dir = 'project/spatial-pregnancy-postpart'
+working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/data', exist_ok=True)
 
 ########################################################################
 
 # load zeng reference, output from `merfish_zeng_prep_atlas.py`
 # the X matrix is log CPM
-ref_dir = 'project/single-cell/ABC'
+ref_dir = 'projects/rrg-wainberg/single-cell/ABC'
 cell_joined = pd.read_csv(
     f'{ref_dir}/metadata/MERFISH-C57BL6J-638850/20231215/views/'
     'cells_joined.csv')

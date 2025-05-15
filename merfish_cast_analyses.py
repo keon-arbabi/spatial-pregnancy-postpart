@@ -1,4 +1,5 @@
-# Pre-processing ###############################################################
+#region pre-processing #########################################################
+
 import sys
 import os
 import json
@@ -198,7 +199,9 @@ adata_query.var['gene_id'] = adata_query.var['gene_symbol'].map(mapping)
 # save
 adata_query.write(f'{working_dir}/output/adata_query_merfish.h5ad')
 
-# CAST_MARK ####################################################################
+#endregion
+
+#region CAST_MARK ##############################################################
 
 import os
 import warnings
@@ -331,7 +334,9 @@ torch.save(coords_raw, f'{working_dir}/output/merfish/coords_raw.pt')
 torch.save(exp_dict, f'{working_dir}/output/merfish/exp_dict.pt')
 adata_comb.write_h5ad(f'{working_dir}/output/merfish/adata_comb_cast_mark.h5ad')
 
-# CAST_STACK ###################################################################
+#endregion 
+
+#region CAST_STACK #############################################################
 
 import os
 import sys
@@ -506,7 +511,9 @@ torch.save(coords_affine, f'{working_dir}/output/merfish/coords_affine.pt')
 torch.save(coords_ffd, f'{working_dir}/output/merfish/coords_ffd.pt')
 adata_comb.write(f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
 
-# CAST_PROJECT #################################################################
+#endregion 
+
+#region CAST_PROJECT ###########################################################
 
 import numpy as np
 import pandas as pd
@@ -737,7 +744,9 @@ plt.savefig(f'{working_dir}/figures/merfish/cast_metrics_violin.svg',
 plt.savefig(f'{working_dir}/figures/merfish/cast_metrics_violin.png',
             dpi=150, bbox_inches='tight')
 
-# post-processing ##############################################################
+#endregion 
+
+#region post-processing ########################################################
 
 import numpy as np
 import pandas as pd 
@@ -766,18 +775,19 @@ for name, mask in {
     'high expression dist': adata_query.obs['avg_cdist'] >= 0.7
 }.items():
     print(f'{name}: {mask.sum()} ({mask.sum()/total*100:.1f}%) cells dropped')
-'''
-low subclass confidence: 276418 (23.6%) cells dropped
-high expression dist: 42198 (3.6%) cells dropped
 
-'''
 mask = ((adata_query.obs['class_confidence'] >= 0.7) &
         (adata_query.obs['avg_cdist'] <= 0.7))
         
 cells_dropped = total - mask.sum()
 print(f'\nTotal cells dropped: {cells_dropped} '
       f'({cells_dropped/total*100:.1f}%)')
-'''Total cells dropped: 115347 (9.8%)'''
+
+'''
+low subclass confidence: 276418 (23.6%) cells dropped
+high expression dist: 42198 (3.6%) cells dropped
+Total cells dropped: 115347 (9.8%)
+'''
 
 adata_query = adata_query[mask].copy()
 
@@ -887,7 +897,9 @@ adata_query.X = adata_query.layers['counts']
 adata_query.write(
     f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 
-# plotting #####################################################################
+#endregion 
+
+#region plotting ###############################################################
 
 import os
 import numpy as np
@@ -895,6 +907,10 @@ import pandas as pd
 import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+plt.rcParams['svg.fonttype'] = 'none'
+plt.rcParams['font.family'] = 'DejaVu Sans'
+plt.rcParams['figure.dpi'] = 400
 
 working_dir = 'project/spatial-pregnancy-postpart'
 
@@ -921,7 +937,8 @@ for level in ['class', 'subclass']:
     scatter = ax.scatter(
         plot_color['x_ffd'], plot_color['y_ffd'],
         c=[color_mappings[level][c] for c in plot_color[level]], 
-        s=1, linewidths=0)
+        s=1, linewidths=0,
+        rasterized=True)
     unique_classes = sorted(plot_color[level].unique(),
                         key=lambda x: int(x.split()[0]))
     legend_elements = [plt.Line2D(
@@ -938,15 +955,14 @@ for level in ['class', 'subclass']:
                 dpi=300, bbox_inches='tight')
     plt.savefig(f'{working_dir}/figures/merfish/spatial_example_{level}.svg',
                 format='svg', bbox_inches='tight')
-    plt.savefig(f'{working_dir}/figures/merfish/spatial_example_{level}.pdf',
-                bbox_inches='tight')
 
     # umap
     fig, ax = plt.subplots(figsize=(10, 8))
     scatter = ax.scatter(
-    adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
-    c=[color_mappings[level][c] for c in adata_query.obs[level]],
-    s=1, linewidths=0)
+        adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
+        c=[color_mappings[level][c] for c in adata_query.obs[level]],
+        s=1, linewidths=0,
+        rasterized=True)
     ax.set_aspect('equal')
     ax.spines[['top', 'right', 'bottom', 'left']].set_visible(True)
     ax.spines[['top', 'right', 'bottom', 'left']].set_linewidth(2)
@@ -955,11 +971,13 @@ for level in ['class', 'subclass']:
     plt.tight_layout()
     plt.savefig(f'{working_dir}/figures/merfish/umap_{level}.png', dpi=300,
             bbox_inches='tight')
+    plt.savefig(f'{working_dir}/figures/merfish/umap_{level}.svg',
+                format='svg', bbox_inches='tight')
 
 
 # create multi-sample plots
 adata_comb = sc.read_h5ad(
-    f'{working_dir}/output/curio/adata_comb_cast_stack.h5ad')
+    f'{working_dir}/output/merfish/adata_comb_cast_stack.h5ad')
 obs_ref = adata_comb[adata_comb.obs['source'] == 'Zeng-ABCA-Reference'].obs
 obs_query = adata_query.obs
 
@@ -1030,7 +1048,9 @@ ax.axis('off')
 plt.tight_layout()
 plt.savefig(f'{working_dir}/figures/merfish/radius.png', dpi=200)
 
-# scratchpad ###################################################################
+#endregion 
+
+#region scratchpad #############################################################
 
 # temp save
 adata_query.var.index = adata_query.var['gene_id']
@@ -1239,3 +1259,5 @@ mask = (
     (adata_query.obs['avg_correlation_subc'] > 0.3))
 print(sum(mask))
 adata_query = adata_query[mask].copy()
+
+#endregion 

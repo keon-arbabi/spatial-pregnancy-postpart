@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
   "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="212.296875pt" height="575.16875pt" viewBox="0 0 212.296875 575.16875" xmlns="http://www.w3.org/2000/svg" version="1.1">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="190.03125pt" height="604.525pt" viewBox="0 0 190.03125 604.525" xmlns="http://www.w3.org/2000/svg" version="1.1">
  <metadata>
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
     <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
-    <dc:date>2025-02-03T06:11:46.002964</dc:date>
+    <dc:date>2025-04-15T00:49:41.550735</dc:date>
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
-      <dc:title>Matplotlib v3.10.0, https://matplotlib.org/</dc:title>
+      <dc:title>Matplotlib v3.9.3, https://matplotlib.org/</dc:title>
      </cc:Agent>
     </dc:creator>
    </cc:Work>
@@ -21,10 +21,10 @@
  </defs>
  <g id="figure_1">
   <g id="patch_1">
-   <path d="M -0 575.16875 
-L 212.296875 575.16875 
-L 212.296875 0 
-L -0 0 
+   <path d="M 0 604.525 
+L 190.03125 604.525 
+L 190.03125 0 
+L 0 0 
 z
 " style="fill: #ffffff"/>
   </g>
@@ -36,7 +36,7 @@ L 21.2 15.298437
 L 31.2 15.298437 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mbcf61ba25b" d="M 0 4 
+     <path id="me837fc66ec" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -49,11 +49,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mbcf61ba25b" x="21.2" y="15.298437" style="fill: #64c2fc; stroke: #ffffff"/>
+     <use xlink:href="#me837fc66ec" x="21.2" y="15.298437" style="fill: #ad5ccc; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_1">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="18.798437" transform="rotate(-0 39.2 18.798437)">001 CLA-EPd-CTX Car3 Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="18.798437" transform="rotate(-0 39.2 18.798437)">Astro-NT NN</text>
    </g>
    <g id="line2d_2">
     <path d="M 11.2 29.976562 
@@ -61,7 +61,7 @@ L 21.2 29.976562
 L 31.2 29.976562 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mbb30956fb0" d="M 0 4 
+     <path id="m344237c614" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -74,11 +74,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mbb30956fb0" x="21.2" y="29.976562" style="fill: #1f665d; stroke: #ffffff"/>
+     <use xlink:href="#m344237c614" x="21.2" y="29.976562" style="fill: #3dccb1; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_2">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="33.476562" transform="rotate(-0 39.2 33.476562)">002 IT EP-CLA Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="33.476562" transform="rotate(-0 39.2 33.476562)">Astro-TE NN</text>
    </g>
    <g id="line2d_3">
     <path d="M 11.2 44.654687 
@@ -86,7 +86,7 @@ L 21.2 44.654687
 L 31.2 44.654687 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m875553af31" d="M 0 4 
+     <path id="m9a56918b5d" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -99,11 +99,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m875553af31" x="21.2" y="44.654687" style="fill: #c0ff4d; stroke: #ffffff"/>
+     <use xlink:href="#m9a56918b5d" x="21.2" y="44.654687" style="fill: #64c2fc; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_3">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="48.154687" transform="rotate(-0 39.2 48.154687)">004 L6 IT CTX Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="48.154687" transform="rotate(-0 39.2 48.154687)">CLA-EPd-CTX Car3 Glut</text>
    </g>
    <g id="line2d_4">
     <path d="M 11.2 59.332812 
@@ -111,7 +111,7 @@ L 21.2 59.332812
 L 31.2 59.332812 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m05cf7c5596" d="M 0 4 
+     <path id="m8a574aca3a" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -124,11 +124,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m05cf7c5596" x="21.2" y="59.332812" style="fill: #660f38; stroke: #ffffff"/>
+     <use xlink:href="#m8a574aca3a" x="21.2" y="59.332812" style="fill: #994567; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_4">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="62.832812" transform="rotate(-0 39.2 62.832812)">005 L5 IT CTX Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="62.832812" transform="rotate(-0 39.2 62.832812)">Endo NN</text>
    </g>
    <g id="line2d_5">
     <path d="M 11.2 74.010937 
@@ -136,7 +136,7 @@ L 21.2 74.010937
 L 31.2 74.010937 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mfa41d7cae8" d="M 0 4 
+     <path id="md0f2a05e32" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -149,11 +149,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mfa41d7cae8" x="21.2" y="74.010937" style="fill: #3dccb7; stroke: #ffffff"/>
+     <use xlink:href="#md0f2a05e32" x="21.2" y="74.010937" style="fill: #d8ff00; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_5">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="77.510937" transform="rotate(-0 39.2 77.510937)">006 L4/5 IT CTX Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="77.510937" transform="rotate(-0 39.2 77.510937)">Ependymal NN</text>
    </g>
    <g id="line2d_6">
     <path d="M 11.2 88.689062 
@@ -161,7 +161,7 @@ L 21.2 88.689062
 L 31.2 88.689062 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m8fa9a17f15" d="M 0 4 
+     <path id="m1c4cd6072a" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -174,11 +174,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m8fa9a17f15" x="21.2" y="88.689062" style="fill: #e9530f; stroke: #ffffff"/>
+     <use xlink:href="#m1c4cd6072a" x="21.2" y="88.689062" style="fill: #1f665d; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_6">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="92.189062" transform="rotate(-0 39.2 92.189062)">007 L2/3 IT CTX Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="92.189062" transform="rotate(-0 39.2 92.189062)">IT EP-CLA Glut</text>
    </g>
    <g id="line2d_7">
     <path d="M 11.2 103.367187 
@@ -186,7 +186,7 @@ L 21.2 103.367187
 L 31.2 103.367187 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mbd1ed67140" d="M 0 4 
+     <path id="mdb0029b689" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -199,11 +199,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mbd1ed67140" x="21.2" y="103.367187" style="fill: #940099; stroke: #ffffff"/>
+     <use xlink:href="#mdb0029b689" x="21.2" y="103.367187" style="fill: #e9530f; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_7">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="106.867187" transform="rotate(-0 39.2 106.867187)">009 L2/3 IT PIR-ENTl Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="106.867187" transform="rotate(-0 39.2 106.867187)">L2/3 IT CTX Glut</text>
    </g>
    <g id="line2d_8">
     <path d="M 11.2 118.045312 
@@ -211,7 +211,7 @@ L 21.2 118.045312
 L 31.2 118.045312 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m3d13aedde5" d="M 0 4 
+     <path id="mf9bcd6884a" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -224,11 +224,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m3d13aedde5" x="21.2" y="118.045312" style="fill: #99a2ff; stroke: #ffffff"/>
+     <use xlink:href="#mf9bcd6884a" x="21.2" y="118.045312" style="fill: #940099; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_8">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="121.545312" transform="rotate(-0 39.2 121.545312)">022 L5 ET CTX Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="121.545312" transform="rotate(-0 39.2 121.545312)">L2/3 IT PIR-ENTl Glut</text>
    </g>
    <g id="line2d_9">
     <path d="M 11.2 132.723437 
@@ -236,7 +236,7 @@ L 21.2 132.723437
 L 31.2 132.723437 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mab0125e9cd" d="M 0 4 
+     <path id="mb17a59a143" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -249,11 +249,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mab0125e9cd" x="21.2" y="132.723437" style="fill: #cc827a; stroke: #ffffff"/>
+     <use xlink:href="#mb17a59a143" x="21.2" y="132.723437" style="fill: #3dccb7; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_9">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="136.223437" transform="rotate(-0 39.2 136.223437)">027 L6b EPd Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="136.223437" transform="rotate(-0 39.2 136.223437)">L4/5 IT CTX Glut</text>
    </g>
    <g id="line2d_10">
     <path d="M 11.2 147.401562 
@@ -261,7 +261,7 @@ L 21.2 147.401562
 L 31.2 147.401562 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="me6d1693872" d="M 0 4 
+     <path id="m4623204f15" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -274,11 +274,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#me6d1693872" x="21.2" y="147.401562" style="fill: #9eff99; stroke: #ffffff"/>
+     <use xlink:href="#m4623204f15" x="21.2" y="147.401562" style="fill: #99a2ff; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_10">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="150.901562" transform="rotate(-0 39.2 150.901562)">029 L6b CTX Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="150.901562" transform="rotate(-0 39.2 150.901562)">L5 ET CTX Glut</text>
    </g>
    <g id="line2d_11">
     <path d="M 11.2 162.079687 
@@ -286,7 +286,7 @@ L 21.2 162.079687
 L 31.2 162.079687 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mb564cda644" d="M 0 4 
+     <path id="md3de0353f5" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -299,11 +299,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mb564cda644" x="21.2" y="162.079687" style="fill: #34661f; stroke: #ffffff"/>
+     <use xlink:href="#md3de0353f5" x="21.2" y="162.079687" style="fill: #660f38; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_11">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="165.579687" transform="rotate(-0 39.2 165.579687)">030 L6 CT CTX Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="165.579687" transform="rotate(-0 39.2 165.579687)">L5 IT CTX Glut</text>
    </g>
    <g id="line2d_12">
     <path d="M 11.2 176.757812 
@@ -311,7 +311,7 @@ L 21.2 176.757812
 L 31.2 176.757812 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m26087a96e6" d="M 0 4 
+     <path id="m289c5a7c5a" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -324,11 +324,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m26087a96e6" x="21.2" y="176.757812" style="fill: #7b7acc; stroke: #ffffff"/>
+     <use xlink:href="#m289c5a7c5a" x="21.2" y="176.757812" style="fill: #7b7acc; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_12">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="180.257812" transform="rotate(-0 39.2 180.257812)">032 L5 NP CTX Glut</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="180.257812" transform="rotate(-0 39.2 180.257812)">L5 NP CTX Glut</text>
    </g>
    <g id="line2d_13">
     <path d="M 11.2 191.435937 
@@ -336,7 +336,7 @@ L 21.2 191.435937
 L 31.2 191.435937 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m44bf522cdb" d="M 0 4 
+     <path id="m8cc35c87b9" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -349,11 +349,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m44bf522cdb" x="21.2" y="191.435937" style="fill: #663d47; stroke: #ffffff"/>
+     <use xlink:href="#m8cc35c87b9" x="21.2" y="191.435937" style="fill: #34661f; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_13">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="194.935937" transform="rotate(-0 39.2 194.935937)">046 Vip Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="194.935937" transform="rotate(-0 39.2 194.935937)">L6 CT CTX Glut</text>
    </g>
    <g id="line2d_14">
     <path d="M 11.2 206.114062 
@@ -361,7 +361,7 @@ L 21.2 206.114062
 L 31.2 206.114062 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m1a3dca1764" d="M 0 4 
+     <path id="m73c37f990f" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -374,11 +374,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m1a3dca1764" x="21.2" y="206.114062" style="fill: #ff764d; stroke: #ffffff"/>
+     <use xlink:href="#m73c37f990f" x="21.2" y="206.114062" style="fill: #c0ff4d; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_14">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="209.614062" transform="rotate(-0 39.2 209.614062)">049 Lamp5 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="209.614062" transform="rotate(-0 39.2 209.614062)">L6 IT CTX Glut</text>
    </g>
    <g id="line2d_15">
     <path d="M 11.2 220.792187 
@@ -386,7 +386,7 @@ L 21.2 220.792187
 L 31.2 220.792187 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mf108b3da25" d="M 0 4 
+     <path id="m9e9e17ff06" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -399,11 +399,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mf108b3da25" x="21.2" y="220.792187" style="fill: #661f3b; stroke: #ffffff"/>
+     <use xlink:href="#m9e9e17ff06" x="21.2" y="220.792187" style="fill: #9eff99; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_15">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="224.292187" transform="rotate(-0 39.2 224.292187)">052 Pvalb Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="224.292187" transform="rotate(-0 39.2 224.292187)">L6b CTX Glut</text>
    </g>
    <g id="line2d_16">
     <path d="M 11.2 235.470312 
@@ -411,7 +411,7 @@ L 21.2 235.470312
 L 31.2 235.470312 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m92e14edd41" d="M 0 4 
+     <path id="md7fe580ebd" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -424,11 +424,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m92e14edd41" x="21.2" y="235.470312" style="fill: #99f2ff; stroke: #ffffff"/>
+     <use xlink:href="#md7fe580ebd" x="21.2" y="235.470312" style="fill: #cc827a; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_16">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="238.970312" transform="rotate(-0 39.2 238.970312)">053 Sst Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="238.970312" transform="rotate(-0 39.2 238.970312)">L6b EPd Glut</text>
    </g>
    <g id="line2d_17">
     <path d="M 11.2 250.148437 
@@ -436,7 +436,7 @@ L 21.2 250.148437
 L 31.2 250.148437 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="me42dbbb837" d="M 0 4 
+     <path id="mf747e7d05e" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -449,11 +449,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#me42dbbb837" x="21.2" y="250.148437" style="fill: #c60f3a; stroke: #ffffff"/>
+     <use xlink:href="#mf747e7d05e" x="21.2" y="250.148437" style="fill: #cca43d; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_17">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="253.648437" transform="rotate(-0 39.2 253.648437)">054 STR Prox1 Lhx6 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="253.648437" transform="rotate(-0 39.2 253.648437)">LSX Nkx2-1 Gaba</text>
    </g>
    <g id="line2d_18">
     <path d="M 11.2 264.826562 
@@ -461,7 +461,7 @@ L 21.2 264.826562
 L 31.2 264.826562 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m52e0509158" d="M 0 4 
+     <path id="m5b2ff272ce" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -474,11 +474,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m52e0509158" x="21.2" y="264.826562" style="fill: #cc3dc9; stroke: #ffffff"/>
+     <use xlink:href="#m5b2ff272ce" x="21.2" y="264.826562" style="fill: #1f6625; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_18">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="268.326562" transform="rotate(-0 39.2 268.326562)">055 STR Lhx8 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="268.326562" transform="rotate(-0 39.2 268.326562)">LSX Prdm12 Zeb2 Gaba</text>
    </g>
    <g id="line2d_19">
     <path d="M 11.2 279.504687 
@@ -486,7 +486,7 @@ L 21.2 279.504687
 L 31.2 279.504687 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="ma33c320bd1" d="M 0 4 
+     <path id="mf008f64476" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -499,11 +499,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#ma33c320bd1" x="21.2" y="279.504687" style="fill: #eda32d; stroke: #ffffff"/>
+     <use xlink:href="#mf008f64476" x="21.2" y="279.504687" style="fill: #ff764d; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_19">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="283.004687" transform="rotate(-0 39.2 283.004687)">056 Sst Chodl Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="283.004687" transform="rotate(-0 39.2 283.004687)">Lamp5 Gaba</text>
    </g>
    <g id="line2d_20">
     <path d="M 11.2 294.182812 
@@ -511,7 +511,7 @@ L 21.2 294.182812
 L 31.2 294.182812 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m02c3904190" d="M 0 4 
+     <path id="m88559067cb" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -524,11 +524,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m02c3904190" x="21.2" y="294.182812" style="fill: #199900; stroke: #ffffff"/>
+     <use xlink:href="#m88559067cb" x="21.2" y="294.182812" style="fill: #ff004f; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_20">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="297.682812" transform="rotate(-0 39.2 297.682812)">057 NDB-SI-MA-STRv Lhx8 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="297.682812" transform="rotate(-0 39.2 297.682812)">MPO-ADP Lhx8 Gaba</text>
    </g>
    <g id="line2d_21">
     <path d="M 11.2 308.860937 
@@ -536,7 +536,7 @@ L 21.2 308.860937
 L 31.2 308.860937 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m61b908bc5e" d="M 0 4 
+     <path id="m3e1cf64d95" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -549,11 +549,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m61b908bc5e" x="21.2" y="308.860937" style="fill: #66580f; stroke: #ffffff"/>
+     <use xlink:href="#m3e1cf64d95" x="21.2" y="308.860937" style="fill: #cc1f4e; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_21">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="312.360937" transform="rotate(-0 39.2 312.360937)">060 OT D3 Folh1 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="312.360937" transform="rotate(-0 39.2 312.360937)">Microglia NN</text>
    </g>
    <g id="line2d_22">
     <path d="M 11.2 323.539062 
@@ -561,7 +561,7 @@ L 21.2 323.539062
 L 31.2 323.539062 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mf0484efa1a" d="M 0 4 
+     <path id="m747ed9bb9e" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -574,11 +574,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mf0484efa1a" x="21.2" y="323.539062" style="fill: #005b66; stroke: #ffffff"/>
+     <use xlink:href="#m747ed9bb9e" x="21.2" y="323.539062" style="fill: #199900; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_22">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="327.039062" transform="rotate(-0 39.2 327.039062)">061 STR D1 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="327.039062" transform="rotate(-0 39.2 327.039062)">NDB-SI-MA-STRv Lhx8 Gaba</text>
    </g>
    <g id="line2d_23">
     <path d="M 11.2 338.217187 
@@ -586,7 +586,7 @@ L 21.2 338.217187
 L 31.2 338.217187 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m3b54a027f7" d="M 0 4 
+     <path id="m5430be00ca" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -599,11 +599,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m3b54a027f7" x="21.2" y="338.217187" style="fill: #ff7800; stroke: #ffffff"/>
+     <use xlink:href="#m5430be00ca" x="21.2" y="338.217187" style="fill: #819945; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_23">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="341.717187" transform="rotate(-0 39.2 341.717187)">062 STR D2 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="341.717187" transform="rotate(-0 39.2 341.717187)">OB-STR-CTX Inh IMN</text>
    </g>
    <g id="line2d_24">
     <path d="M 11.2 352.895312 
@@ -611,7 +611,7 @@ L 21.2 352.895312
 L 31.2 352.895312 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m906e31f640" d="M 0 4 
+     <path id="m2ed9a1a865" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -624,11 +624,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m906e31f640" x="21.2" y="352.895312" style="fill: #663a2d; stroke: #ffffff"/>
+     <use xlink:href="#m2ed9a1a865" x="21.2" y="352.895312" style="fill: #ff26cb; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_24">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="356.395312" transform="rotate(-0 39.2 356.395312)">063 STR D1 Sema5a Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="356.395312" transform="rotate(-0 39.2 356.395312)">OPC NN</text>
    </g>
    <g id="line2d_25">
     <path d="M 11.2 367.573438 
@@ -636,7 +636,7 @@ L 21.2 367.573438
 L 31.2 367.573438 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m540e0b0417" d="M 0 4 
+     <path id="m5245a3dfde" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -649,11 +649,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m540e0b0417" x="21.2" y="367.573438" style="fill: #967b09; stroke: #ffffff"/>
+     <use xlink:href="#m5245a3dfde" x="21.2" y="367.573438" style="fill: #66580f; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_25">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="371.073438" transform="rotate(-0 39.2 371.073438)">064 STR-PAL Chst9 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="371.073438" transform="rotate(-0 39.2 371.073438)">OT D3 Folh1 Gaba</text>
    </g>
    <g id="line2d_26">
     <path d="M 11.2 382.251563 
@@ -661,7 +661,7 @@ L 21.2 382.251563
 L 31.2 382.251563 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="me24c0bb2db" d="M 0 4 
+     <path id="m71b125f44a" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -674,11 +674,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#me24c0bb2db" x="21.2" y="382.251563" style="fill: #cca43d; stroke: #ffffff"/>
+     <use xlink:href="#m71b125f44a" x="21.2" y="382.251563" style="fill: #99ffbc; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_26">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="385.751563" transform="rotate(-0 39.2 385.751563)">069 LSX Nkx2-1 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="385.751563" transform="rotate(-0 39.2 385.751563)">Oligo NN</text>
    </g>
    <g id="line2d_27">
     <path d="M 11.2 396.929688 
@@ -686,7 +686,7 @@ L 21.2 396.929688
 L 31.2 396.929688 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mdf1f7aacee" d="M 0 4 
+     <path id="mb3eb4f8a9f" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -699,11 +699,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mdf1f7aacee" x="21.2" y="396.929688" style="fill: #1f6625; stroke: #ffffff"/>
+     <use xlink:href="#mb3eb4f8a9f" x="21.2" y="396.929688" style="fill: #4dfffa; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_27">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="400.429688" transform="rotate(-0 39.2 400.429688)">071 LSX Prdm12 Zeb2 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="400.429688" transform="rotate(-0 39.2 400.429688)">PAL-STR Gaba-Chol</text>
    </g>
    <g id="line2d_28">
     <path d="M 11.2 411.607813 
@@ -711,7 +711,7 @@ L 21.2 411.607813
 L 31.2 411.607813 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m04488eb03d" d="M 0 4 
+     <path id="m4cb0b06572" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -724,11 +724,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m04488eb03d" x="21.2" y="411.607813" style="fill: #ff4026; stroke: #ffffff"/>
+     <use xlink:href="#m4cb0b06572" x="21.2" y="411.607813" style="fill: #82992e; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_28">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="415.107813" transform="rotate(-0 39.2 415.107813)">081 ACB-BST-FS D1 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="415.107813" transform="rotate(-0 39.2 415.107813)">Peri NN</text>
    </g>
    <g id="line2d_29">
     <path d="M 11.2 426.285938 
@@ -736,7 +736,7 @@ L 21.2 426.285938
 L 31.2 426.285938 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m7875f8071d" d="M 0 4 
+     <path id="mbfa68e2410" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -749,11 +749,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m7875f8071d" x="21.2" y="426.285938" style="fill: #26ffad; stroke: #ffffff"/>
+     <use xlink:href="#mbfa68e2410" x="21.2" y="426.285938" style="fill: #661f3b; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_29">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="429.785938" transform="rotate(-0 39.2 429.785938)">085 SI-MPO-LPO Lhx8 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="429.785938" transform="rotate(-0 39.2 429.785938)">Pvalb Gaba</text>
    </g>
    <g id="line2d_30">
     <path d="M 11.2 440.964063 
@@ -761,7 +761,7 @@ L 21.2 440.964063
 L 31.2 440.964063 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m8e279fc226" d="M 0 4 
+     <path id="me345bd21be" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -774,11 +774,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m8e279fc226" x="21.2" y="440.964063" style="fill: #ff004f; stroke: #ffffff"/>
+     <use xlink:href="#me345bd21be" x="21.2" y="440.964063" style="fill: #26ffad; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_30">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="444.464063" transform="rotate(-0 39.2 444.464063)">086 MPO-ADP Lhx8 Gaba</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="444.464063" transform="rotate(-0 39.2 444.464063)">SI-MPO-LPO Lhx8 Gaba</text>
    </g>
    <g id="line2d_31">
     <path d="M 11.2 455.642188 
@@ -786,7 +786,7 @@ L 21.2 455.642188
 L 31.2 455.642188 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m743022d186" d="M 0 4 
+     <path id="ma513b415f2" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -799,11 +799,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m743022d186" x="21.2" y="455.642188" style="fill: #ad5ccc; stroke: #ffffff"/>
+     <use xlink:href="#ma513b415f2" x="21.2" y="455.642188" style="fill: #005b66; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_31">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="459.142188" transform="rotate(-0 39.2 459.142188)">318 Astro-NT NN</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="459.142188" transform="rotate(-0 39.2 459.142188)">STR D1 Gaba</text>
    </g>
    <g id="line2d_32">
     <path d="M 11.2 470.320313 
@@ -811,7 +811,7 @@ L 21.2 470.320313
 L 31.2 470.320313 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m3cbb640a94" d="M 0 4 
+     <path id="m3a474c73d4" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -824,11 +824,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m3cbb640a94" x="21.2" y="470.320313" style="fill: #3dccb1; stroke: #ffffff"/>
+     <use xlink:href="#m3a474c73d4" x="21.2" y="470.320313" style="fill: #663a2d; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_32">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="473.820313" transform="rotate(-0 39.2 473.820313)">319 Astro-TE NN</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="473.820313" transform="rotate(-0 39.2 473.820313)">STR D1 Sema5a Gaba</text>
    </g>
    <g id="line2d_33">
     <path d="M 11.2 484.998438 
@@ -836,7 +836,7 @@ L 21.2 484.998438
 L 31.2 484.998438 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m0b2eacb978" d="M 0 4 
+     <path id="m9970a48043" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -849,11 +849,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m0b2eacb978" x="21.2" y="484.998438" style="fill: #ff26cb; stroke: #ffffff"/>
+     <use xlink:href="#m9970a48043" x="21.2" y="484.998438" style="fill: #ff7800; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_33">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="488.498438" transform="rotate(-0 39.2 488.498438)">326 OPC NN</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="488.498438" transform="rotate(-0 39.2 488.498438)">STR D2 Gaba</text>
    </g>
    <g id="line2d_34">
     <path d="M 11.2 499.676563 
@@ -861,7 +861,7 @@ L 21.2 499.676563
 L 31.2 499.676563 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m77ef957ae2" d="M 0 4 
+     <path id="me1aff96444" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -874,11 +874,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m77ef957ae2" x="21.2" y="499.676563" style="fill: #99ffbc; stroke: #ffffff"/>
+     <use xlink:href="#me1aff96444" x="21.2" y="499.676563" style="fill: #cc3dc9; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_34">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="503.176563" transform="rotate(-0 39.2 503.176563)">327 Oligo NN</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="503.176563" transform="rotate(-0 39.2 503.176563)">STR Lhx8 Gaba</text>
    </g>
    <g id="line2d_35">
     <path d="M 11.2 514.354688 
@@ -886,7 +886,7 @@ L 21.2 514.354688
 L 31.2 514.354688 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="mef63898729" d="M 0 4 
+     <path id="m067d3426ae" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -899,11 +899,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#mef63898729" x="21.2" y="514.354688" style="fill: #653d66; stroke: #ffffff"/>
+     <use xlink:href="#m067d3426ae" x="21.2" y="514.354688" style="fill: #c60f3a; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_35">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="517.854688" transform="rotate(-0 39.2 517.854688)">330 VLMC NN</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="517.854688" transform="rotate(-0 39.2 517.854688)">STR Prox1 Lhx6 Gaba</text>
    </g>
    <g id="line2d_36">
     <path d="M 11.2 529.032813 
@@ -911,7 +911,7 @@ L 21.2 529.032813
 L 31.2 529.032813 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m358b4c89a8" d="M 0 4 
+     <path id="m9a709938b8" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -924,11 +924,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m358b4c89a8" x="21.2" y="529.032813" style="fill: #82992e; stroke: #ffffff"/>
+     <use xlink:href="#m9a709938b8" x="21.2" y="529.032813" style="fill: #967b09; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_36">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="532.532813" transform="rotate(-0 39.2 532.532813)">331 Peri NN</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="532.532813" transform="rotate(-0 39.2 532.532813)">STR-PAL Chst9 Gaba</text>
    </g>
    <g id="line2d_37">
     <path d="M 11.2 543.710938 
@@ -936,7 +936,7 @@ L 21.2 543.710938
 L 31.2 543.710938 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m97d16af98c" d="M 0 4 
+     <path id="m96e5160b70" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -949,11 +949,11 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m97d16af98c" x="21.2" y="543.710938" style="fill: #994567; stroke: #ffffff"/>
+     <use xlink:href="#m96e5160b70" x="21.2" y="543.710938" style="fill: #eda32d; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_37">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="547.210938" transform="rotate(-0 39.2 547.210938)">333 Endo NN</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="547.210938" transform="rotate(-0 39.2 547.210938)">Sst Chodl Gaba</text>
    </g>
    <g id="line2d_38">
     <path d="M 11.2 558.389063 
@@ -961,7 +961,7 @@ L 21.2 558.389063
 L 31.2 558.389063 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
     <defs>
-     <path id="m0e176c1a19" d="M 0 4 
+     <path id="m09dd2cea6a" d="M 0 4 
 C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
 C 3.578535 2.078319 4 1.060812 4 0 
 C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
@@ -974,11 +974,61 @@ z
 " style="stroke: #ffffff"/>
     </defs>
     <g>
-     <use xlink:href="#m0e176c1a19" x="21.2" y="558.389063" style="fill: #cc1f4e; stroke: #ffffff"/>
+     <use xlink:href="#m09dd2cea6a" x="21.2" y="558.389063" style="fill: #99f2ff; stroke: #ffffff"/>
     </g>
    </g>
    <g id="text_38">
-    <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start" x="39.2" y="561.889063" transform="rotate(-0 39.2 561.889063)">334 Microglia NN</text>
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="561.889063" transform="rotate(-0 39.2 561.889063)">Sst Gaba</text>
+   </g>
+   <g id="line2d_39">
+    <path d="M 11.2 573.067188 
+L 21.2 573.067188 
+L 31.2 573.067188 
+" style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
+    <defs>
+     <path id="m93753ff748" d="M 0 4 
+C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
+C 3.578535 2.078319 4 1.060812 4 0 
+C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
+C 2.078319 -3.578535 1.060812 -4 0 -4 
+C -1.060812 -4 -2.078319 -3.578535 -2.828427 -2.828427 
+C -3.578535 -2.078319 -4 -1.060812 -4 0 
+C -4 1.060812 -3.578535 2.078319 -2.828427 2.828427 
+C -2.078319 3.578535 -1.060812 4 0 4 
+z
+" style="stroke: #ffffff"/>
+    </defs>
+    <g>
+     <use xlink:href="#m93753ff748" x="21.2" y="573.067188" style="fill: #653d66; stroke: #ffffff"/>
+    </g>
+   </g>
+   <g id="text_39">
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="576.567188" transform="rotate(-0 39.2 576.567188)">VLMC NN</text>
+   </g>
+   <g id="line2d_40">
+    <path d="M 11.2 587.745313 
+L 21.2 587.745313 
+L 31.2 587.745313 
+" style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: square"/>
+    <defs>
+     <path id="mfe6bbf5277" d="M 0 4 
+C 1.060812 4 2.078319 3.578535 2.828427 2.828427 
+C 3.578535 2.078319 4 1.060812 4 0 
+C 4 -1.060812 3.578535 -2.078319 2.828427 -2.828427 
+C 2.078319 -3.578535 1.060812 -4 0 -4 
+C -1.060812 -4 -2.078319 -3.578535 -2.828427 -2.828427 
+C -3.578535 -2.078319 -4 -1.060812 -4 0 
+C -4 1.060812 -3.578535 2.078319 -2.828427 2.828427 
+C -2.078319 3.578535 -1.060812 4 0 4 
+z
+" style="stroke: #ffffff"/>
+    </defs>
+    <g>
+     <use xlink:href="#mfe6bbf5277" x="21.2" y="587.745313" style="fill: #663d47; stroke: #ffffff"/>
+    </g>
+   </g>
+   <g id="text_40">
+    <text style="font: 10px 'DejaVu Sans'; text-anchor: start" x="39.2" y="591.245313" transform="rotate(-0 39.2 591.245313)">Vip Gaba</text>
    </g>
   </g>
  </g>
