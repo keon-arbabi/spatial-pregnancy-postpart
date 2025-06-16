@@ -953,17 +953,20 @@ print(f'dropped {cells_dropped} cells ({cells_dropped/connectivity_before*100:.1
 print(f'final cells after all filtering: {len(adata_i)}')
 
 '''
-dropped 10940 cells (11.7%) with low global confidence
-cells after global confidence filtering: 82277
+total cells dropped: 21629 (18.8%)
+cells after filtering: 93217
 
-dropped 4545 cells (5.5%) with low local confidence
-cells after local confidence filtering: 77732
+dropped 10953 cells (11.8%) with low global confidence
+cells after global confidence filtering: 82264
 
-total class corrections: 4087 (5.3% of cells)
-total subclass corrections: 8728 (11.2% of cells)
+dropped 4538 cells (5.5%) with low local confidence
+cells after local confidence filtering: 77726
 
-dropped 1605 cells (2.1%) poorly connected
-final cells after all filtering: 76127
+total class corrections: 4070 (5.2% of cells)
+total subclass corrections: 8744 (11.2% of cells)
+
+dropped 1618 cells (2.1%) poorly connected
+final cells after all filtering: 76108
 '''
 
 # plot results for both levels
