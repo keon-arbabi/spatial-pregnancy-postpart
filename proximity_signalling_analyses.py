@@ -9,6 +9,7 @@ from scipy.stats import ttest_ind
 from typing import Tuple, List
 from ryp import r, to_r, to_py
 from tqdm.auto import tqdm
+from scipy.stats import pearsonr
 from statsmodels.stats.multitest import fdrcorrection
 from matplotlib.colors import LinearSegmentedColormap
 from single_cell import SingleCell
@@ -48,7 +49,7 @@ def get_global_diff(
     L = makeContrastsDream(form, meta,
         contrasts = c(
             PREG_vs_CTRL = "conditionPREG - conditionCTRL",
-            POST_vs_PREG = "conditionPOSTPART - conditionPREG",
+            POSTPART_vs_PREG = "conditionPOSTPART - conditionPREG",
             POST_vs_CTRL = "conditionPOSTPART - conditionCTRL"
         )
     )
@@ -86,7 +87,7 @@ def get_global_diff(
     norm_props_summary = do.call(rbind, norm_props_by_condition)
     
     results = list()
-    for(coef in c("PREG_vs_CTRL", "POST_vs_PREG")) {
+    for(coef in c("PREG_vs_CTRL", "POSTPART_vs_PREG")) {
         tt = topTable(fit, coef=coef, number=Inf)
         tt$SE = fit$stdev.unscaled[,coef] * fit$sigma
         tt$contrast = coef
@@ -122,7 +123,7 @@ def get_global_diff(
     t_test_results = []
     contrasts_map = {
         "PREG_vs_CTRL": ("PREG", "CTRL"),
-        "POST_vs_PREG": ("POSTPART", "PREG")
+        "POSTPART_vs_PREG": ("POSTPART", "PREG")
     }
 
     for cell_type_val in norm_props_long['cell_type'].unique():
@@ -247,11 +248,7 @@ def plot_cell_type_proportions(
                     cond1_plot_name = condition_order[j]
                     cond2_plot_name = condition_order[j+1]
 
-                    c1_lookup = cond1_plot_name
-                    c2_lookup = cond2_plot_name
-                    if cond2_plot_name == 'POSTPART':
-                        c2_lookup = 'POST'
-                    contrast_lookup = f'{c2_lookup}_vs_{c1_lookup}'
+                    contrast_lookup = f'{cond2_plot_name}_vs_{cond1_plot_name}'
 
                     filter_ct = (tt_combined['cell_type'] == cell_type_val)
                     filter_ds = (tt_combined['dataset'] == dataset_name)
@@ -456,14 +453,14 @@ def get_spatial_diff(
     L = makeContrastsDream(form, meta,
         contrasts = c(
         PREG_vs_CTRL="conditionPREG-conditionCTRL",
-        POST_vs_PREG="conditionPOSTPART-conditionPREG"
+        POSTPART_vs_PREG="conditionPOSTPART-conditionPREG"
         )
     )
     fit = dream(cobj, form, meta, L, param=param)
     fit = eBayes(fit)
     tt = list(
     PREG_vs_CTRL=topTable(fit,coef="PREG_vs_CTRL",number=Inf),
-    POST_vs_PREG=topTable(fit,coef="POST_vs_PREG",number=Inf)
+    POSTPART_vs_PREG=topTable(fit,coef="POSTPART_vs_PREG",number=Inf)
     )
     ''')
     
@@ -624,9 +621,9 @@ def plot_spatial_diff_maps(
         
         all_coords, all_b_counts, all_all_counts, all_conditions = [], [], [], []
         
-        for cond, mapped_cond, samples in [
-            (cond1, mapped_cond1, cond1_samples), 
-            (cond2, mapped_cond2, cond2_samples)
+        for cond, samples in [
+            (cond1, cond1_samples), 
+            (cond2, cond2_samples)
         ]:
             for sample in samples:
                 a_cells = adata.obs[
@@ -905,142 +902,813 @@ def get_cellchat_diff(
     return diff_df
 
 def plot_cellchat_heatmap(
-    df: pd.DataFrame, 
+    df: pd.DataFrame,
     ax: plt.Axes,
+    tested_pairs: set = None,
     value_col: str = 'logFC',
-    senders_to_keep: List[str] = None,
+    x_axis_cell_types: List[str] = None,
     vmin: float = None,
     vmax: float = None,
     title: str = '',
-    swap_sender_receiver: bool = False) -> plt.cm.ScalarMappable:
+    x_axis_is_sender: bool = True) -> plt.cm.ScalarMappable:
 
     df_plot = df.copy()
-    df_for_axes = df_plot.copy()
-    if senders_to_keep:
-        df_for_axes = df_for_axes[
-            df_for_axes['cell_type_a'].isin(senders_to_keep)]
-    
-    if df_for_axes.empty:
-        ax.text(0.5, 0.5, "No interactions to plot", ha='center', va='center')
+
+    if x_axis_is_sender:
+        sender_col, receiver_col = 'cell_type_a', 'cell_type_b'
+        if x_axis_cell_types:
+            df_plot = df_plot[df_plot[sender_col].isin(x_axis_cell_types)]
+    else:
+        sender_col, receiver_col = 'cell_type_b', 'cell_type_a'
+        if x_axis_cell_types:
+            df_plot = df_plot[df_plot[sender_col].isin(x_axis_cell_types)]
+
+    if df_plot.empty:
+        ax.text(0.5, 0.5, "No interactions to plot",
+                ha='center', va='center')
         ax.set_xticks([])
         ax.set_yticks([])
         return None
-
-    heatmap_data_for_axes = (
-        df_for_axes.groupby(['cell_type_b', 'cell_type_a'])[value_col]
-        .sum()
-        .unstack(fill_value=0)
-    )
-    
-    y_types = sorted(heatmap_data_for_axes.index)
-    if senders_to_keep:
-        x_types = [
-            ct for ct in senders_to_keep 
-            if ct in heatmap_data_for_axes.columns]
-    else:
-        x_types = sorted(heatmap_data_for_axes.columns)
 
     heatmap_data = (
-        df_plot.groupby(['cell_type_b', 'cell_type_a'])[value_col]
+        df_plot.groupby([receiver_col, sender_col])[value_col]
         .sum()
         .unstack(fill_value=0)
     )
-    
-    if swap_sender_receiver:
-        all_cell_types = sorted(
-            list(set(heatmap_data.index) | set(heatmap_data.columns))
-        )
-        square_data = heatmap_data.reindex(
-            index=all_cell_types, columns=all_cell_types, fill_value=0
-        )
-        swapped_data = square_data.T
-        mat_data = swapped_data.reindex(
-            index=y_types, columns=x_types, fill_value=0
-        )
-        mat = mat_data.values
+
+    if x_axis_cell_types:
+        x_types = [
+            ct for ct in x_axis_cell_types if ct in heatmap_data.columns
+        ]
     else:
-        mat_data = heatmap_data.reindex(
-            index=y_types, columns=x_types, fill_value=0)
-        mat = mat_data.values
- 
-    if mat.size == 0 or np.nansum(np.abs(mat)) == 0:
-        ax.text(0.5, 0.5, "No interactions to plot", ha='center', va='center')
+        x_types = sorted(heatmap_data.columns)
+
+    y_types = sorted(list(heatmap_data.index))
+
+    mat_data = heatmap_data.reindex(
+        index=y_types, columns=x_types, fill_value=0
+    )
+    mat = mat_data.values.astype(float)
+
+    if mat.size == 0:
+        ax.text(0.5, 0.5, "No interactions to plot",
+                ha='center', va='center')
         ax.set_xticks([])
         ax.set_yticks([])
         return None
 
-    cmap = 'seismic'
-    
+    if tested_pairs is not None:
+        for i, y_label in enumerate(y_types):
+            for j, x_label in enumerate(x_types):
+
+                if x_axis_is_sender:
+                    sender, receiver = x_label, y_label
+                else:
+                    sender, receiver = y_label, x_label
+
+                if (receiver, sender) not in tested_pairs:
+                    mat[i, j] = np.nan
+                    ax.text(
+                        j + 0.5, i + 0.5, 'X',
+                        ha='center',
+                        va='center',
+                        color='gray',
+                        size=10
+                    )
+
+    cmap = plt.get_cmap('seismic').copy()
+    cmap.set_bad(color='white')
+
     if vmin is None or vmax is None:
-        mabs = np.nanmax(np.abs(mat))
-        if np.isnan(mabs) or mabs == 0:
-            mabs = 1.0
+        valid_vals = mat[~np.isnan(mat)]
+        mabs = (np.max(np.abs(valid_vals)) if valid_vals.size > 0 else 0)
+        mabs = mabs if mabs > 0 else 1.0
         if vmin is None:
             vmin = -mabs
         if vmax is None:
             vmax = mabs
-            
-    im = ax.pcolormesh(mat, cmap=cmap, vmin=vmin, vmax=vmax, rasterized=False)
-    
+
+    im = ax.pcolormesh(
+        mat, cmap=cmap, vmin=vmin, vmax=vmax, rasterized=False
+    )
+
     ax.set_xticks(np.arange(len(x_types)) + 0.5)
     ax.set_yticks(np.arange(len(y_types)) + 0.5)
     ax.set_xticklabels(x_types, rotation=45, ha='right')
     ax.set_yticklabels(y_types)
-    ax.set_title(title)
-    
-    ax.set_xlim(0, len(x_types))
-    ax.set_ylim(len(y_types), 0)
-        
-    interaction_lookup = df_plot.groupby(
-        ['cell_type_a', 'cell_type_b']
-    )[value_col].sum().to_dict()
 
-    mat = np.zeros((len(y_types), len(x_types)))
-
-    for i, receiver_label in enumerate(y_types):
-        for j, sender_label in enumerate(x_types):
-            if swap_sender_receiver:
-                interaction_tuple = (receiver_label, sender_label)
-            else:
-                interaction_tuple = (sender_label, receiver_label)
-            
-            mat[i, j] = interaction_lookup.get(interaction_tuple, 0)
- 
-    if mat.size == 0 or np.nansum(np.abs(mat)) == 0:
-        ax.text(0.5, 0.5, "No interactions to plot", ha='center', va='center')
-        ax.set_xticks([])
-        ax.set_yticks([])
-        return None
-
-    cmap = 'seismic'
-    
-    if vmin is None or vmax is None:
-        mabs = np.nanmax(np.abs(mat))
-        if np.isnan(mabs) or mabs == 0:
-            mabs = 1.0
-        if vmin is None:
-            vmin = -mabs
-        if vmax is None:
-            vmax = mabs
-            
-    im = ax.pcolormesh(mat, cmap=cmap, vmin=vmin, vmax=vmax, rasterized=False)
-    
-    ax.set_xticks(np.arange(len(x_types)) + 0.5)
-    ax.set_yticks(np.arange(len(y_types)) + 0.5)
-    ax.set_xticklabels(x_types, rotation=45, ha='right')
-    ax.set_yticklabels(y_types)
-    if swap_sender_receiver:
-        ax.set_xlabel('Target Cell Type')
-        ax.set_ylabel('Sender Cell Type')
-    else:
+    if x_axis_is_sender:
         ax.set_xlabel('Sender Cell Type')
         ax.set_ylabel('Target Cell Type')
+    else:
+        ax.set_xlabel('Target Cell Type')
+        ax.set_ylabel('Sender Cell Type')
     ax.set_title(title)
-    
+
     ax.set_xlim(0, len(x_types))
     ax.set_ylim(len(y_types), 0)
-        
+
     return im
+
+def plot_cellchat_vs_proximity_scatter(
+    cellchat_df: pd.DataFrame,
+    spatial_df: pd.DataFrame,
+    contrast: str,
+    ax: plt.Axes,
+    tested_pairs: set,
+    color: str,
+    value_col: str = 'logFC',
+    cell_types_to_include: List[str] = None,
+    align_sender_to_center: bool = False
+):
+    contrast_map = {
+        'PREG_vs_CTRL': 'Pregnancy vs Control',
+        'POSTPART_vs_PREG': 'Postpartum vs Pregnancy'
+    }
+
+    cc_data = cellchat_df[cellchat_df['contrast'] == contrast].copy()
+    if cell_types_to_include:
+        cc_data = cc_data[
+            cc_data['cell_type_a'].isin(cell_types_to_include) |
+            cc_data['cell_type_b'].isin(cell_types_to_include)
+        ]
+
+    cc_agg = (
+        cc_data.groupby(['cell_type_a', 'cell_type_b'])[value_col]
+        .sum().reset_index()
+        .rename(columns={value_col: 'cellchat_value'})
+    )
+
+    spatial_contrast_df = spatial_df[
+        spatial_df['contrast'] == contrast
+    ].copy()
+    spatial_contrast_df = spatial_contrast_df[
+        ['cell_type_a', 'cell_type_b', 'logFC']
+    ].rename(columns={'logFC': 'proximity_logFC'})
+
+    if align_sender_to_center:
+        left_on = ['cell_type_a', 'cell_type_b']
+        right_on = ['cell_type_a', 'cell_type_b']
+    else:
+        left_on = ['cell_type_a', 'cell_type_b']
+        right_on = ['cell_type_b', 'cell_type_a']
+
+    merged_df = pd.merge(
+        cc_agg,
+        spatial_contrast_df,
+        left_on=left_on,
+        right_on=right_on,
+        how='inner'
+    )
+
+    if tested_pairs and not merged_df.empty:
+        if 'cell_type_a_y' in merged_df.columns:
+            pair_cols = ['cell_type_a_y', 'cell_type_b_y']
+        else:
+            pair_cols = ['cell_type_a', 'cell_type_b']
+
+        merged_df = merged_df[
+            merged_df.apply(
+                lambda row: (row[pair_cols[0]], row[pair_cols[1]])
+                in tested_pairs,
+                axis=1
+            )
+        ]
+
+    if merged_df.empty:
+        ax.text(0.5, 0.5, "No data to plot", ha='center', va='center')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return
+
+    x_vals = merged_df['cellchat_value']
+    y_vals = merged_df['proximity_logFC']
+
+    ax.scatter(x_vals, y_vals, alpha=0.6, s=15, c=color)
+
+    m, b = np.polyfit(x_vals, y_vals, 1)
+    x_fit = np.unique(x_vals)
+    ax.plot(x_fit, m * x_fit + b, color=color, linestyle='--')
+
+    r_val, p_val = pearsonr(x_vals, y_vals)
+
+    display_contrast = contrast_map.get(contrast, contrast)
+    legend_text = f"R={r_val:.2f}, p={p_val:.4f}"
+
+    ax.text(
+        0.95, 0.95, legend_text, transform=ax.transAxes, fontsize=9,
+        verticalalignment='top', horizontalalignment='right',
+        bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.5)
+    )
+
+    ax.axhline(0, color='grey', linestyle='--', linewidth=0.8)
+    ax.axvline(0, color='grey', linestyle='--', linewidth=0.8)
+
+    ax.set_title(display_contrast, fontsize=11)
+    ax.set_xlabel(f"Signaling Change ({value_col})", fontsize=9)
+    ax.set_ylabel("Proximity Change (logFC)", fontsize=9)
+    ax.tick_params(axis='both', which='major', labelsize=8)
+
+#endregion 
+
+#region load data ##############################################################
+
+working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
+
+cell_type_col = 'subclass'
+
+cells_joined = pd.read_csv(
+    'projects/rrg-wainberg/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/'
+    '20231215/views/cells_joined.csv')
+color_mappings = {
+    'class': dict(zip(
+        cells_joined['class'].str.replace('/', '_'), 
+        cells_joined['class_color'])),
+    'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+        cells_joined['subclass'].str.replace('/', '_'), 
+        cells_joined['subclass_color'])).items()}
+}
+for level in color_mappings:
+    color_mappings[level] = {
+        k.split(' ', 1)[1]: v for k, v in color_mappings[level].items()
+}
+
+adata_curio = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
+
+adata_merfish = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+adata_merfish.var.index = adata_merfish.var['gene_symbol']
+
+for adata in [adata_curio, adata_merfish]:
+    for col in ['class', 'subclass']:
+        adata.obs[col] = adata.obs[col].astype(str)\
+            .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
+
+common_cell_types = (
+    set(adata_curio.obs[
+        adata_curio.obs[f'{cell_type_col}_keep']][cell_type_col])
+    & set(adata_merfish.obs[
+        adata_merfish.obs[f'{cell_type_col}_keep']][cell_type_col]))
+
+adata_curio = adata_curio[
+    adata_curio.obs[cell_type_col].isin(common_cell_types)].copy()
+adata_merfish = adata_merfish[
+    adata_merfish.obs[cell_type_col].isin(common_cell_types)].copy()
+
+#endregion 
+
+#region global proportions merfish #############################################
+
+tt_curio, norm_props_curio = \
+    get_global_diff(adata_curio, 'curio', cell_type_col)
+tt_merfish, norm_props_merfish = \
+    get_global_diff(adata_merfish, 'merfish', cell_type_col)
+
+tt_combined = pd.concat([tt_curio, tt_merfish])
+norm_props_combined = pd.concat([norm_props_curio, norm_props_merfish])
+
+selected_cell_types = [
+    'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN', 'Microglia NN',
+    'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN']
+
+tt_combined.sort_values('t_test_P.Value')
+tt_combined[tt_combined['cell_type'].eq('Endo NN')]\
+    .sort_values('t_test_P.Value')
+
+fig = plot_cell_type_proportions(
+    norm_props_combined,
+    tt_combined,
+    selected_cell_types,
+    datasets_to_plot=['merfish'],
+    base_figsize=(2, 2),
+    nrows=int(np.ceil(len(selected_cell_types)/2)),
+    legend_position=('center left', (0, 0))
+)
+fig.savefig(
+    f'{working_dir}/figures/cell_type_proportions.png',
+    dpi=300,
+    bbox_inches='tight'
+)
+fig.savefig(
+    f'{working_dir}/figures/cell_type_proportions.svg',
+    dpi=300,
+    bbox_inches='tight'
+)
+
+#endregion
+
+#region local proportions merfish ##############################################
+
+dataset_name = 'merfish'
+d_max_scale = 20
+
+# get spatial stats per sample
+file = f'{working_dir}/output/{dataset_name}/spatial_stats_{cell_type_col}.pkl'
+if os.path.exists(file):
+    spatial_stats = pd.read_pickle(file)
+else:
+    results = []
+    for sample in adata_merfish.obs['sample'].unique():
+        sample_data = adata_merfish.obs[adata_merfish.obs['sample'] == sample]
+        stats = get_spatial_stats(
+            spatial_data=sample_data,
+            coords_cols=('x_affine', 'y_affine'),
+            cell_type_col=cell_type_col,
+            condition_col='condition',
+            sample_col='sample',
+            d_min_scale=0,
+            d_max_scale=d_max_scale
+        )
+        results.append(stats)
+    spatial_stats = pd.concat(results)
+    # spatial_stats.to_pickle(file)
+
+# minimum number of nonzero interactions required
+# in each sample for a cell type pair
+min_nonzero = 5
+pairs = spatial_stats[['cell_type_a', 'cell_type_b']].drop_duplicates()
+sample_stats = spatial_stats\
+    .groupby(['sample_id', 'cell_type_a', 'cell_type_b'])\
+    .agg(n_nonzero=('b_count', lambda x: (x > 0).sum()))
+filtered_pairs = sample_stats\
+    .groupby(['cell_type_a', 'cell_type_b'])\
+    .agg(min_nonzero_count=('n_nonzero', 'min'))\
+    .query('min_nonzero_count >= @min_nonzero')\
+    .reset_index()[['cell_type_a', 'cell_type_b']]
+
+pairs_tested = set(tuple(x) for x in filtered_pairs.values)
+print(f'testing {len(filtered_pairs)} pairs out of {len(pairs)} pairs')
+del pairs, sample_stats; gc.collect()
+
+selected_cell_types = [
+    'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN', 'Microglia NN',
+    'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN']
+
+pairs_to_process = filtered_pairs[
+    filtered_pairs['cell_type_b'].isin(selected_cell_types)].copy()
+print(f'testing {len(pairs_to_process)} pairs out of {len(filtered_pairs)} pairs')
+
+# pairs_to_process = filtered_pairs
+
+# get differential testing results
+file = f'{working_dir}/output/{dataset_name}/spatial_diff_{cell_type_col}.csv'
+if os.path.exists(file):
+    spatial_diff = pd.read_csv(file)
+else:
+    res = []
+    with tqdm(total=len(pairs_to_process), desc='Processing pairs') as pbar:
+        for _, row in pairs_to_process.iterrows():
+            pair_result = get_spatial_diff(
+                spatial_stats=spatial_stats,
+                cell_type_a=row['cell_type_a'],
+                cell_type_b=row['cell_type_b'])
+            if pair_result:
+                res.extend(pair_result)
+            pbar.update(1)
+    spatial_diff = pd.concat(res, ignore_index=True)
+    spatial_diff['adj.P.Val'] = fdrcorrection(spatial_diff['P.Value'])[1]
+    spatial_diff['contrast'] = spatial_diff['contrast']\
+        .str.replace('POST_vs_PREG', 'POSTPART_vs_PREG')
+    spatial_diff.to_csv(file, index=False)
+
+# plot heatmaps for both contrasts
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
+
+contrasts = list(spatial_diff['contrast'].unique())
+contrast1, contrast2 = 'PREG_vs_CTRL', 'POSTPART_vs_PREG'
+contrast1_data = spatial_diff[spatial_diff['contrast'] == contrast1].copy()
+contrast2_data = spatial_diff[spatial_diff['contrast'] == contrast2].copy()
+
+all_data = pd.concat([contrast1_data, contrast2_data])
+max_abs_val = np.max(np.abs(all_data['logFC']))
+vmin, vmax = -max_abs_val, max_abs_val
+
+_, _, im1 = plot_spatial_diff_heatmap(
+    contrast1_data, pairs_tested, sig=0.10,
+    cell_types_a=None, cell_types_b=selected_cell_types,
+    recompute_fdr=True, ax=ax1, vmin=vmin, vmax=vmax)
+
+_, _, im2 = plot_spatial_diff_heatmap(
+    contrast2_data, pairs_tested, sig=0.10,
+    cell_types_a=None, cell_types_b=selected_cell_types,
+    recompute_fdr=True, ax=ax2, vmin=vmin, vmax=vmax)
+
+ax1.set_title('')
+ax2.set_title('')
+ax2.set_yticks([])
+ax2.set_yticklabels([])
+ax2.set_ylabel('')
+
+cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
+cbar = fig.colorbar(im1, cax=cbar_ax, orientation='horizontal')
+cbar.set_label('logFC')
+
+plt.tight_layout(rect=[0, 0.05, 0.91, 1])
+plt.savefig(
+    f'{working_dir}/figures/heatmap_{dataset_name}_{cell_type_col}.png',
+    dpi=300, bbox_inches='tight')
+plt.savefig(
+    f'{working_dir}/figures/heatmap_{dataset_name}_{cell_type_col}.svg',
+    dpi=300, bbox_inches='tight')
+plt.close(fig)
+
+#endregion
+
+#region cellchat curio #########################################################
+
+selected_cell_types = [
+    'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN',
+    'Microglia NN', 'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN'
+]
+
+file_p_vs_c = (
+    f'{working_dir}/output/curio/'
+    f'cellchat_diff_preg_vs_ctrl_{cell_type_col}.pkl'
+)
+if os.path.exists(file_p_vs_c):
+    diff_p_vs_c = pd.read_pickle(file_p_vs_c)
+else:
+    diff_p_vs_c = get_cellchat_diff(
+        adata=adata_curio,
+        cell_type_col=cell_type_col,
+        conditions=('CTRL', 'PREG')
+    )
+    pd.to_pickle(diff_p_vs_c, file_p_vs_c)
+
+file_po_vs_p = (
+    f'{working_dir}/output/curio/'
+    f'cellchat_diff_postpart_vs_preg_{cell_type_col}.pkl'
+)
+if os.path.exists(file_po_vs_p):
+    diff_po_vs_p = pd.read_pickle(file_po_vs_p)
+else:
+    diff_po_vs_p = get_cellchat_diff(
+        adata=adata_curio,
+        cell_type_col=cell_type_col,
+        conditions=('PREG', 'POSTPART')
+    )
+    pd.to_pickle(diff_po_vs_p, file_po_vs_p)
+
+diff_count_p_vs_c = diff_p_vs_c[diff_p_vs_c['measure'] == 'count']
+diff_count_po_vs_p = diff_po_vs_p[diff_po_vs_p['measure'] == 'count']
+cellchat_count_df = pd.concat([diff_count_p_vs_c, diff_count_po_vs_p])
+
+diff_weight_p_vs_c = diff_p_vs_c[diff_p_vs_c['measure'] == 'weight']
+diff_weight_po_vs_p = diff_po_vs_p[diff_po_vs_p['measure'] == 'weight']
+cellchat_weight_df = pd.concat([diff_weight_p_vs_c, diff_weight_po_vs_p])
+
+# The `align_sender_to_center` parameter 
+# - False (default): Aligns CellChat sender with proximity surround and
+#   receiver with center. Tests if signaling correlates with senders being
+#   enriched around receivers.
+# - True: Aligns CellChat sender with proximity center and receiver with
+#   surround. Tests if signaling correlates with receivers being enriched
+#   around senders.
+
+contrasts = ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
+subplot_color = '#4361ee'
+
+for align_sender_to_center_flag in [True, False]:
+    # Generate scatter plots for 'count' measure
+    fig, axes = plt.subplots(
+        len(contrasts), 1, figsize=(4.5, 4 * len(contrasts))
+    )
+    for i, contrast in enumerate(contrasts):
+        plot_cellchat_vs_proximity_scatter(
+            cellchat_df=cellchat_count_df,
+            spatial_df=spatial_diff,
+            contrast=contrast,
+            ax=axes[i],
+            tested_pairs=pairs_tested,
+            color=subplot_color,
+            value_col='logFC',
+            cell_types_to_include=selected_cell_types,
+            align_sender_to_center=align_sender_to_center_flag
+        )
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    fig.savefig(
+        f'{working_dir}/figures/scatter_prox_vs_cellchat_count'
+        f'_sender_is_center_{align_sender_to_center_flag}.png',
+        dpi=200,
+        bbox_inches='tight'
+    )
+    plt.close(fig)
+
+    # Generate scatter plots for 'weight' measure
+    fig, axes = plt.subplots(
+        len(contrasts), 1, figsize=(4.5, 4 * len(contrasts))
+    )
+    for i, contrast in enumerate(contrasts):
+        plot_cellchat_vs_proximity_scatter(
+            cellchat_df=cellchat_weight_df,
+            spatial_df=spatial_diff,
+            contrast=contrast,
+            ax=axes[i],
+            tested_pairs=pairs_tested,
+            color=subplot_color,
+            value_col='logFC',
+            cell_types_to_include=selected_cell_types,
+            align_sender_to_center=align_sender_to_center_flag
+        )
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    fig.savefig(
+        f'{working_dir}/figures/scatter_prox_vs_cellchat_weight'
+        f'_sender_is_center_{align_sender_to_center_flag}.png',
+        dpi=300,
+        bbox_inches='tight'
+    )
+    fig.savefig(
+        f'{working_dir}/figures/scatter_prox_vs_cellchat_weight'
+        f'_sender_is_center_{align_sender_to_center_flag}.svg',
+        dpi=300,
+        bbox_inches='tight'
+    )
+    plt.close(fig)
+
+# Generate heatmap plots
+vmax_count = cellchat_count_df['logFC'].abs().max()
+vmax_weight = cellchat_weight_df['logFC'].abs().max()
+
+# When True, the x-axis cell types are treated as Senders.
+# When False, the x-axis cell types are treated as Receivers.
+for x_axis_are_senders in [True, False]:
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
+    im = plot_cellchat_heatmap(
+        df=diff_count_p_vs_c,
+        ax=ax1,
+        x_axis_is_sender=x_axis_are_senders,
+        x_axis_cell_types=selected_cell_types,
+        tested_pairs=pairs_tested,
+        title='',
+        vmin=-vmax_count,
+        vmax=vmax_count
+    )
+    plot_cellchat_heatmap(
+        df=diff_count_po_vs_p,
+        ax=ax2,
+        x_axis_is_sender=x_axis_are_senders,
+        x_axis_cell_types=selected_cell_types,
+        tested_pairs=pairs_tested,
+        title='',
+        vmin=-vmax_count,
+        vmax=vmax_count
+    )
+    ax2.set_ylabel('')
+    ax2.set_yticklabels([])
+    ax2.set_yticks([])
+    if im:
+        cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
+        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
+        cbar.set_label('Difference in Count')
+        plt.tight_layout(rect=[0, 0.05, 0.91, 1])
+    fig.savefig(
+        f'{working_dir}/figures/cellchat_diff_count_combined_'
+        f'xaxis_is_sender_{x_axis_are_senders}.png',
+        dpi=300,
+        bbox_inches='tight'
+    )
+    fig.savefig(
+        f'{working_dir}/figures/cellchat_diff_count_combined_'
+        f'xaxis_is_sender_{x_axis_are_senders}.svg',
+        dpi=300,
+        bbox_inches='tight'
+    )
+    plt.close(fig)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
+    im = plot_cellchat_heatmap(
+        df=diff_weight_p_vs_c,
+        ax=ax1,
+        x_axis_is_sender=x_axis_are_senders,
+        x_axis_cell_types=selected_cell_types,
+        tested_pairs=pairs_tested,
+        title='',
+        vmin=-vmax_weight,
+        vmax=vmax_weight
+    )
+    plot_cellchat_heatmap(
+        df=diff_weight_po_vs_p,
+        ax=ax2,
+        x_axis_is_sender=x_axis_are_senders,
+        x_axis_cell_types=selected_cell_types,
+        tested_pairs=pairs_tested,
+        title='',
+        vmin=-vmax_weight,
+        vmax=vmax_weight
+    )
+    ax2.set_ylabel('')
+    ax2.set_yticklabels([])
+    ax2.set_yticks([])
+    if im:
+        cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
+        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
+        cbar.set_label('Difference in Strength (logFC)')
+        plt.tight_layout(rect=[0, 0.05, 0.91, 1])
+    fig.savefig(
+        f'{working_dir}/figures/cellchat_diff_weight_combined_'
+        f'xaxis_is_sender_{x_axis_are_senders}.png',
+        dpi=300,
+        bbox_inches='tight'
+    )
+    fig.savefig(
+        f'{working_dir}/figures/cellchat_diff_weight_combined_'
+        f'xaxis_is_sender_{x_axis_are_senders}.svg',
+        dpi=300,
+        bbox_inches='tight'
+    )
+    plt.close(fig)
+
+
+
+
+
+
+
+
+
+
+# plot spatial maps for both contrasts
+cell_type_pairs = [
+    ('CEA-AAA-BST Six3 Sp9 Gaba', 'Endo NN'),
+    ('Sst Chodl Gaba', 'Endo NN'),
+    ('BAM NN', 'Astro-NT NN')
+]
+plot_spatial_diff_maps(
+    adata_merfish,
+    spatial_stats,
+    spatial_diff,
+    cell_type_pairs=cell_type_pairs,
+    contrast='PREG_vs_CTRL',
+    resolution=250,
+    influence_radius=3.5,
+    vmax=0.4
+)
+plt.savefig(f'{working_dir}/figures/spatial_maps_preg_vs_ctrl.svg', 
+            bbox_inches='tight')
+
+cell_type_pairs = [
+    ('CEA-AAA-BST Six3 Sp9 Gaba', 'Endo NN'),
+    ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
+    ('Tanycyte NN', 'Oligo NN')
+]
+plot_spatial_diff_maps(
+    adata_merfish,
+    spatial_stats,
+    spatial_diff,
+    cell_type_pairs=cell_type_pairs,
+    contrast='POSTPART_vs_PREG',
+    resolution=250,
+    influence_radius=3.5,
+    vmax=0.4
+)
+plt.savefig(f'{working_dir}/figures/spatial_maps_postpart_vs_preg.svg', 
+            bbox_inches='tight')
+
+# plot sample radii
+fig, axes = plot_sample_radii(
+    spatial_data=adata_merfish.obs,
+    coords_cols=('x_affine', 'y_affine'),
+    sample_col='sample',
+    d_max_scale=d_max_scale,
+    s=0.05)
+fig.savefig(
+    f'{working_dir}/figures/{dataset_name}/proximity_radii.png', 
+            dpi=300, bbox_inches='tight')
+plt.close(fig)
+
+#endregion
+
+#region scratch ################################################################
+
+# determining get_spatial_diff() thresholds based on rare cell types 
+ct_counts = spatial_stats.groupby('cell_type_a')['cell_id'].nunique()
+print("\nRarest cell types:")
+print(ct_counts.sort_values().head(10))
+
+pair_stats = spatial_stats.groupby(['cell_type_a','cell_type_b']).agg(
+   total_b_count=('b_count','sum'),
+   num_nonzero=('b_count',lambda x:(x>0).sum())
+).reset_index()
+
+pair_stats['a_abundance'] = pair_stats['cell_type_a'].map(ct_counts)
+pair_stats['b_abundance'] = pair_stats['cell_type_b'].map(ct_counts)
+
+print("\nInteraction count percentiles:")
+print(pair_stats['total_b_count'].describe(percentiles=[0.1,0.25,0.5,0.75,0.9]))
+
+rare_pairs = pair_stats[(pair_stats['a_abundance'] < ct_counts.median()/5) | 
+                      (pair_stats['b_abundance'] < ct_counts.median()/5)]
+
+for t in [100,250,500,1000]:
+   for nz in [10,25,50,100]:
+       n_pairs = len(pair_stats[
+           (pair_stats['total_b_count'] >= t) &
+           (pair_stats['num_nonzero'] >= nz)
+       ])
+       n_rare = len(rare_pairs[
+           (rare_pairs['total_b_count'] >= t) &
+           (rare_pairs['num_nonzero'] >= nz)
+       ])
+       print(f'total_b_count >= {t:4d}, nonzero >= {nz:3d}: '
+             f'{n_pairs:4d} total pairs, {n_rare:4d} rare pairs')
+
+'''
+Rare cell types have ~100-350 cells
+With total_b_count ≥250 and ≥25 nonzero cells captures 1,407 pairs (43 rare)
+
+cell_type_a
+MEA Slc17a7 Glut                104
+L6b/CT ENT Glut                 109
+MPN-MPO-LPO Lhx6 Zfhx3 Gaba     144
+BST-SI-AAA Six3 Slc22a3 Gaba    172
+CA2-FC-IG Glut                  197
+SI-MA-ACB Ebf1 Bnc2 Gaba        205
+IT AON-TT-DP Glut               265
+GPe-SI Sox6 Cyp26b1 Gaba        272
+BST Tac2 Gaba                   349
+COAa-PAA-MEA Barhl2 Glut        352
+
+count    6.241000e+03
+mean     2.760008e+03
+std      4.287628e+04
+min      0.000000e+00
+10%      0.000000e+00
+25%      0.000000e+00
+50%      1.200000e+01
+75%      1.860000e+02
+90%      1.625000e+03
+max      2.435302e+06
+
+total_b_count >=  100, nonzero >=  10: 1924 total pairs,   80 rare pairs
+total_b_count >=  100, nonzero >=  25: 1922 total pairs,   80 rare pairs
+total_b_count >=  100, nonzero >=  50: 1895 total pairs,   77 rare pairs
+total_b_count >=  100, nonzero >= 100: 1709 total pairs,   59 rare pairs
+total_b_count >=  250, nonzero >=  10: 1407 total pairs,   43 rare pairs
+total_b_count >=  250, nonzero >=  25: 1407 total pairs,   43 rare pairs
+total_b_count >=  250, nonzero >=  50: 1405 total pairs,   43 rare pairs
+total_b_count >=  250, nonzero >= 100: 1383 total pairs,   37 rare pairs
+total_b_count >=  500, nonzero >=  10: 1074 total pairs,   27 rare pairs
+total_b_count >=  500, nonzero >=  25: 1074 total pairs,   27 rare pairs
+total_b_count >=  500, nonzero >=  50: 1074 total pairs,   27 rare pairs
+total_b_count >=  500, nonzero >= 100: 1070 total pairs,   26 rare pairs
+total_b_count >= 1000, nonzero >=  10:  822 total pairs,   12 rare pairs
+total_b_count >= 1000, nonzero >=  25:  822 total pairs,   12 rare pairs
+total_b_count >= 1000, nonzero >=  50:  822 total pairs,   12 rare pairs
+total_b_count >= 1000, nonzero >= 100:  822 total pairs,   12 rare pairs
+'''
+
+from scipy.spatial.distance import pdist
+from scipy.cluster import hierarchy as hc
+clust_ids = sorted(list(adata.obs[cell_type_col].unique()))
+clust_avg = np.vstack([
+    adata[adata.obs[cell_type_col] == i].layers['volume_log1p'].mean(0)
+    for i in clust_ids
+])
+
+D = pdist(clust_avg, 'correlation')
+Z = hc.linkage(D, 'complete', optimal_ordering=False)
+n = len(clust_ids)
+
+merge_matrix = np.zeros((n-1, 2), dtype=int)
+for i in range(n-1):
+    for j in range(2):
+        val = Z[i,j]
+        merge_matrix[i,j] = -int(val + 1) if val < n else int(val) - n + 1
+
+hc_dict = {
+    'merge': merge_matrix,
+    'height': Z[:,2],
+    'order': np.array([x+1 for x in hc.leaves_list(Z)]),
+    'labels': np.array(clust_ids),
+    'method': 'complete',
+    'call': {},
+    'dist.method': 'correlation'
+}
+
+to_r(hc_dict, 'hc')
+
+r('''
+library(crumblr)
+library(patchwork)
+  
+hc = structure(hc, class = "hclust")
+hc$call = NULL
+
+res = treeTest(fit, cobj, hc, coef = "PREG_vs_CTRL", method = "FE") 
+png(file.path(working_dir, 'figures/merfish/tree_test_ctrl_vs_preg.png'),
+    width=10, height=12, units='in', res=300)
+plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
+    plot_layout(nrow = 1, widths = c(2, 1))
+dev.off()
+  
+res = treeTest(fit, cobj, hc, coef = "POSTPART_vs_PREG", method = "FE") 
+png(file.path(working_dir, 'figures/merfish/tree_test_preg_vs_post.png'),
+    width=10, height=12, units='in', res=300)
+plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
+    plot_layout(nrow = 1, widths = c(2, 1))
+dev.off()
+''')
 
 def get_mast_de(
     adata: sc.AnnData,
@@ -1392,14 +2060,10 @@ def plot_spatial_lr_expression_change(
     base_sample_ref: str = None
 ) -> plt.Figure:
 
-    cond1_str, cond2_str = contrast_name.split('_vs_')
-    # Map short names to full names if necessary (e.g. POST to POSTPART)
-    cond_map = {'CTRL':'CTRL','PREG':'PREG','POST':'POSTPART'}
-    cond1 = cond_map.get(cond1_str, cond1_str)
-    cond2 = cond_map.get(cond2_str, cond2_str)
+    cond2_str, cond1_str = contrast_name.split('_vs_')
 
-    spots_c1 = adata_spots[adata_spots.obs[condition_col] == cond1]
-    spots_c2 = adata_spots[adata_spots.obs[condition_col] == cond2]
+    spots_c1 = adata_spots[adata_spots.obs[condition_col] == cond1_str]
+    spots_c2 = adata_spots[adata_spots.obs[condition_col] == cond2_str]
 
     if spots_c1.shape[0]==0 or spots_c2.shape[0]==0: return plt.figure()
     
@@ -1544,599 +2208,6 @@ def plot_spatial_lr_expression_change(
     plt.subplots_adjust(right=0.80 if adata_all_cells_for_overlay else 0.85, 
                        bottom=0.05, top=0.9, left=0.05)
     return fig
-
-#endregion 
-
-#region load data ##############################################################
-
-working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
-
-cell_type_col = 'subclass'
-
-cells_joined = pd.read_csv(
-    'projects/rrg-wainberg/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/'
-    '20231215/views/cells_joined.csv')
-color_mappings = {
-    'class': dict(zip(
-        cells_joined['class'].str.replace('/', '_'), 
-        cells_joined['class_color'])),
-    'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
-        cells_joined['subclass'].str.replace('/', '_'), 
-        cells_joined['subclass_color'])).items()}
-}
-for level in color_mappings:
-    color_mappings[level] = {
-        k.split(' ', 1)[1]: v for k, v in color_mappings[level].items()
-}
-
-adata_curio = sc.read_h5ad(
-    f'{working_dir}/output/data/adata_query_curio_final.h5ad')
-
-adata_merfish = sc.read_h5ad(
-    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
-adata_merfish.var.index = adata_merfish.var['gene_symbol']
-
-for adata in [adata_curio, adata_merfish]:
-    for col in ['class', 'subclass']:
-        adata.obs[col] = adata.obs[col].astype(str)\
-            .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
-
-common_cell_types = (
-    set(adata_curio.obs[
-        adata_curio.obs[f'{cell_type_col}_keep']][cell_type_col])
-    & set(adata_merfish.obs[
-        adata_merfish.obs[f'{cell_type_col}_keep']][cell_type_col]))
-
-adata_curio = adata_curio[
-    adata_curio.obs[cell_type_col].isin(common_cell_types)].copy()
-adata_merfish = adata_merfish[
-    adata_merfish.obs[cell_type_col].isin(common_cell_types)].copy()
-
-#endregion 
-
-#region global proportions merfish #############################################
-
-tt_curio, norm_props_curio = \
-    get_global_diff(adata_curio, 'curio', cell_type_col)
-tt_merfish, norm_props_merfish = \
-    get_global_diff(adata_merfish, 'merfish', cell_type_col)
-
-tt_combined = pd.concat([tt_curio, tt_merfish])
-norm_props_combined = pd.concat([norm_props_curio, norm_props_merfish])
-
-selected_cell_types = [
-    'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN', 'Microglia NN',
-    'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN']
-
-tt_combined.sort_values('t_test_P.Value')
-tt_combined[tt_combined['cell_type'].eq('Endo NN')]\
-    .sort_values('t_test_P.Value')
-
-fig = plot_cell_type_proportions(
-    norm_props_combined,
-    tt_combined,
-    selected_cell_types,
-    datasets_to_plot=['merfish'],
-    base_figsize=(2, 2),
-    nrows=int(np.ceil(len(selected_cell_types)/2)),
-    legend_position=('center left', (0, 0))
-)
-fig.savefig(
-    f'{working_dir}/figures/cell_type_proportions.png',
-    dpi=300,
-    bbox_inches='tight'
-)
-fig.savefig(
-    f'{working_dir}/figures/cell_type_proportions.svg',
-    dpi=300,
-    bbox_inches='tight'
-)
-
-#endregion
-
-#region local proportions merfish ##############################################
-
-dataset_name = 'merfish'
-d_max_scale = 20
-
-# get spatial stats per sample
-file = f'{working_dir}/output/{dataset_name}/spatial_stats_{cell_type_col}.pkl'
-if os.path.exists(file):
-    spatial_stats = pd.read_pickle(file)
-else:
-    results = []
-    for sample in adata_merfish.obs['sample'].unique():
-        sample_data = adata_merfish.obs[adata_merfish.obs['sample'] == sample]
-        stats = get_spatial_stats(
-            spatial_data=sample_data,
-            coords_cols=('x_affine', 'y_affine'),
-            cell_type_col=cell_type_col,
-            condition_col='condition',
-            sample_col='sample',
-            d_min_scale=0,
-            d_max_scale=d_max_scale
-        )
-        results.append(stats)
-    spatial_stats = pd.concat(results)
-    # spatial_stats.to_pickle(file)
-
-# minimum number of nonzero interactions required
-# in each sample for a cell type pair
-min_nonzero = 5
-pairs = spatial_stats[['cell_type_a', 'cell_type_b']].drop_duplicates()
-sample_stats = spatial_stats\
-    .groupby(['sample_id', 'cell_type_a', 'cell_type_b'])\
-    .agg(n_nonzero=('b_count', lambda x: (x > 0).sum()))
-filtered_pairs = sample_stats\
-    .groupby(['cell_type_a', 'cell_type_b'])\
-    .agg(min_nonzero_count=('n_nonzero', 'min'))\
-    .query('min_nonzero_count >= @min_nonzero')\
-    .reset_index()[['cell_type_a', 'cell_type_b']]
-
-pairs_tested = set(tuple(x) for x in filtered_pairs.values)
-print(f'testing {len(filtered_pairs)} pairs out of {len(pairs)} pairs')
-del pairs, sample_stats; gc.collect()
-
-selected_cell_types = [
-    'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN', 'Microglia NN',
-    'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN']
-
-pairs_to_process = filtered_pairs[
-    filtered_pairs['cell_type_b'].isin(selected_cell_types)].copy()
-print(f'testing {len(pairs_to_process)} pairs out of {len(filtered_pairs)} pairs')
-
-# pairs_to_process = filtered_pairs
-
-# get differential testing results
-file = f'{working_dir}/output/{dataset_name}/spatial_diff_{cell_type_col}.csv'
-if os.path.exists(file):
-    spatial_diff = pd.read_csv(file)
-else:
-    res = []
-    with tqdm(total=len(pairs_to_process), desc='Processing pairs') as pbar:
-        for _, row in pairs_to_process.iterrows():
-            pair_result = get_spatial_diff(
-                spatial_stats=spatial_stats,
-                cell_type_a=row['cell_type_a'],
-                cell_type_b=row['cell_type_b'])
-            if pair_result:
-                res.extend(pair_result)
-            pbar.update(1)
-    spatial_diff = pd.concat(res, ignore_index=True)
-    spatial_diff['adj.P.Val'] = fdrcorrection(spatial_diff['P.Value'])[1]
-    spatial_diff.to_csv(file, index=False)
-
-# plot heatmaps for both contrasts
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
-
-contrasts = list(spatial_diff['contrast'].unique())
-contrast1, contrast2 = contrasts[0], contrasts[1]
-contrast1_data = spatial_diff[spatial_diff['contrast'] == contrast1].copy()
-contrast2_data = spatial_diff[spatial_diff['contrast'] == contrast2].copy()
-
-all_data = pd.concat([contrast1_data, contrast2_data])
-max_abs_val = np.max(np.abs(all_data['logFC']))
-vmin, vmax = -max_abs_val, max_abs_val
-
-_, _, im1 = plot_spatial_diff_heatmap(
-    contrast1_data, pairs_tested, sig=0.10,
-    cell_types_a=None, cell_types_b=selected_cell_types,
-    recompute_fdr=True, ax=ax1, vmin=vmin, vmax=vmax)
-
-_, _, im2 = plot_spatial_diff_heatmap(
-    contrast2_data, pairs_tested, sig=0.10,
-    cell_types_a=None, cell_types_b=selected_cell_types,
-    recompute_fdr=True, ax=ax2, vmin=vmin, vmax=vmax)
-
-ax1.set_title('')
-ax2.set_title('')
-ax2.set_yticks([])
-ax2.set_yticklabels([])
-ax2.set_ylabel('')
-
-cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
-cbar = fig.colorbar(im1, cax=cbar_ax, orientation='horizontal')
-cbar.set_label('logFC')
-
-plt.tight_layout(rect=[0, 0.05, 0.91, 1])
-plt.savefig(
-    f'{working_dir}/figures/heatmap_{dataset_name}_{cell_type_col}.png',
-    dpi=300, bbox_inches='tight')
-plt.savefig(
-    f'{working_dir}/figures/heatmap_{dataset_name}_{cell_type_col}.svg',
-    dpi=300, bbox_inches='tight')
-plt.close(fig)
-
-#endregion
-
-#region cellchat curio #########################################################
-
-selected_cell_types = [
-    'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN', 'Microglia NN',
-    'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN']
-
-file_p_vs_c = f'{working_dir}/output/curio/' \
-    f'cellchat_diff_preg_vs_ctrl_{cell_type_col}.pkl'
-if os.path.exists(file_p_vs_c):
-    diff_p_vs_c = pd.read_pickle(file_p_vs_c)
-else:
-    diff_p_vs_c = get_cellchat_diff(
-        adata=adata_curio,
-        cell_type_col=cell_type_col, 
-        conditions=('CTRL', 'PREG'))
-    pd.to_pickle(diff_p_vs_c, file_p_vs_c)
-
-file_po_vs_p = f'{working_dir}/output/curio/' \
-    f'cellchat_diff_postpart_vs_preg_{cell_type_col}.pkl'
-if os.path.exists(file_po_vs_p):
-    diff_po_vs_p = pd.read_pickle(file_po_vs_p)
-else:
-    diff_po_vs_p = get_cellchat_diff(
-        adata=adata_curio,
-        cell_type_col=cell_type_col, 
-        conditions=('PREG', 'POSTPART'))
-    pd.to_pickle(diff_po_vs_p, file_po_vs_p)
-
-# Generate plots for 'count' measure
-diff_count_p_vs_c = diff_p_vs_c[diff_p_vs_c['measure'] == 'count']
-diff_count_po_vs_p = diff_po_vs_p[diff_po_vs_p['measure'] == 'count']
-
-all_data_count = pd.concat([diff_count_p_vs_c, diff_count_po_vs_p])
-vmax = all_data_count['logFC'].abs().max()
-
-swap_sender_receiver = False
-
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
-
-im = plot_cellchat_heatmap(
-    df=diff_count_p_vs_c, ax=ax1,
-    swap_sender_receiver=swap_sender_receiver,
-    senders_to_keep=selected_cell_types,
-    title='', vmin=-vmax, vmax=vmax)
-plot_cellchat_heatmap(
-    df=diff_count_po_vs_p, ax=ax2,
-    swap_sender_receiver=swap_sender_receiver,
-    senders_to_keep=selected_cell_types,
-    title='', vmin=-vmax, vmax=vmax)
-
-ax2.set_ylabel('')
-ax2.set_yticklabels([])
-ax2.set_yticks([])
-
-if im:
-    cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
-    cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
-    cbar.set_label('Difference in Count')
-    plt.tight_layout(rect=[0, 0.05, 0.91, 1])
-
-fig.savefig(
-    f'{working_dir}/figures/cellchat_diff_count_combined_' \
-    f'{swap_sender_receiver}.png',
-    dpi=300, bbox_inches='tight')
-fig.savefig(
-    f'{working_dir}/figures/cellchat_diff_count_combined_' \
-    f'{swap_sender_receiver}.svg',
-    dpi=300, bbox_inches='tight')
-plt.close(fig)
-
-# Generate plots for 'weight' measure
-diff_weight_p_vs_c = diff_p_vs_c[diff_p_vs_c['measure'] == 'weight']
-diff_weight_po_vs_p = diff_po_vs_p[diff_po_vs_p['measure'] == 'weight']
-    
-all_data_weight = pd.concat([diff_weight_p_vs_c, diff_weight_po_vs_p])
-vmax = all_data_weight['logFC'].abs().max()
-
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
-
-im = plot_cellchat_heatmap(
-    df=diff_weight_p_vs_c, ax=ax1,
-    swap_sender_receiver=swap_sender_receiver,
-    senders_to_keep=selected_cell_types,
-    title='', vmin=-vmax, vmax=vmax)
-plot_cellchat_heatmap(
-    df=diff_weight_po_vs_p, ax=ax2,
-    swap_sender_receiver=swap_sender_receiver,
-    senders_to_keep=selected_cell_types,
-    title='', vmin=-vmax, vmax=vmax)
-
-ax2.set_ylabel('')
-ax2.set_yticklabels([])
-ax2.set_yticks([])
-
-if im:
-    cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
-    cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
-    cbar.set_label('Difference in Strength (logFC)')
-    plt.tight_layout(rect=[0, 0.05, 0.91, 1])
-
-fig.savefig(
-    f'{working_dir}/figures/cellchat_diff_weight_combined_' \
-    f'{swap_sender_receiver}.png',
-    dpi=300, bbox_inches='tight')
-fig.savefig(
-    f'{working_dir}/figures/cellchat_diff_weight_combined_' \
-    f'{swap_sender_receiver}.svg',
-    dpi=300, bbox_inches='tight')
-plt.close(fig)
-
-#endregion
-
-#region integrate LR curio #####################################################
-
-lr_database = get_lr_database()
-print(lr_database.head())
-
-contrasts = {
-    'PREG_vs_CTRL': ('PREG', 'CTRL'),
-    'POSTPART_vs_PREG': ('POSTPART', 'PREG')}
-
-file = f'{working_dir}/output/curio/mast_de_{cell_type_col}.pkl'
-if os.path.exists(file):
-    mast_de_curio = pd.read_pickle(file)
-else:
-    mast_de_curio = get_mast_de(
-        adata_curio, 
-        cell_type_col=cell_type_col,
-        contrasts=contrasts,
-        min_cells_group=10, 
-        min_pct_gene=0.05)
-    # pd.to_pickle(mast_de_curio, file)
-
-file = f'{working_dir}/output/curio/' \
-    f'integrated_lr_proximity_{cell_type_col}.pkl'
-if os.path.exists(file):
-    integrated_results = pd.read_pickle(file)
-else:
-    integrated_results = integrate_lr_and_proximity(
-        mast_de_results=mast_de_curio,
-        spatial_diff_df=spatial_diff,
-        lr_database=lr_database,
-            contrasts_list=list(contrasts.keys())
-        )
-    # pd.to_pickle(integrated_results, file)
-
-lr_proximity_hits = get_significant_lr_prox_hits(
-    integrated_df=integrated_results,
-    y_axis_metric='prox_R_center_logFC',
-    l_pval_thresh=0.2, r_pval_thresh=0.2,
-    l_logfc_thresh=0.05, r_logfc_thresh=0.05,
-    prox_logfc_thresh=0.05)
-
-for contrast in integrated_results['contrast'].unique():
-    # plot with Receiver as spatial center, 
-    # color "hits" by the Sender's subclass
-    fig = plot_lr_proximity_scatter(
-        integrated_df=integrated_results,
-        significant_hits_df=lr_proximity_hits,
-        contrast_name=contrast,
-        color_map_dict=color_mappings.get('subclass', {}),
-        y_axis_metric='prox_R_center_logFC',
-        receiver_col_for_color='sender'
-    )
-    f_base = f'lr_prox_scatter_{contrast.replace(" ","_")}_{cell_type_col}'
-    fig.savefig(f'{working_dir}/figures/curio/{f_base}.png', dpi=350)
-    fig.savefig(f'{working_dir}/figures/curio/{f_base}.svg')
-    plt.close(fig)
-
-#endregion
-
-
-
-
-df = integrated_results
-l_pv, r_pv = 0.2, 0.2
-l_lfc, r_lfc, prox_lfc = 0, 0, 0.05
-
-s_ct, r_ct = 'Endo NN', 'MPO-ADP Lhx8 Gaba'
-flt = df[(df['sender']==s_ct)&(df['receiver']==r_ct)].copy()
-
-if not flt.empty:
-    up = ((flt['L_adj.P.Val'].fillna(1) < l_pv) &
-          (flt['R_adj.P.Val'].fillna(1) < r_pv) &
-          (flt['L_logFC'].fillna(0) > l_lfc) &
-          (flt['R_logFC'].fillna(0) > r_lfc) &
-          (flt['prox_S_center_logFC'].fillna(0) > prox_lfc))
-    dn = ((flt['L_adj.P.Val'].fillna(1) < l_pv) &
-          (flt['R_adj.P.Val'].fillna(1) < r_pv) &
-          (flt['L_logFC'].fillna(0) < -l_lfc) &
-          (flt['R_logFC'].fillna(0) < -r_lfc) &
-          (flt['prox_S_center_logFC'].fillna(0) < -prox_lfc))
-    
-    hits = flt[up | dn]
-    print(f"Concordant hits: {s_ct} -> {r_ct}")
-    if not hits.empty:
-        cols = ['contrast','ligand','receptor','L_logFC','R_logFC',
-                'prox_S_center_logFC','L_adj.P.Val','R_adj.P.Val',
-                'prox_S_center_adj.P.Val']
-        print(hits[cols])
-
-
-
-
-
-
-
-# plot spatial maps for both contrasts
-cell_type_pairs = [
-    ('CEA-AAA-BST Six3 Sp9 Gaba', 'Endo NN'),
-    ('Sst Chodl Gaba', 'Endo NN'),
-    ('BAM NN', 'Astro-NT NN')
-]
-plot_spatial_diff_maps(
-    adata_merfish,
-    spatial_stats,
-    spatial_diff,
-    cell_type_pairs=cell_type_pairs,
-    contrast='PREG_vs_CTRL',
-    resolution=250,
-    influence_radius=3.5,
-    vmax=0.4
-)
-plt.savefig(f'{working_dir}/figures/spatial_maps_preg_vs_ctrl.svg', 
-            bbox_inches='tight')
-
-cell_type_pairs = [
-    ('CEA-AAA-BST Six3 Sp9 Gaba', 'Endo NN'),
-    ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
-    ('Tanycyte NN', 'Oligo NN')
-]
-plot_spatial_diff_maps(
-    adata_merfish,
-    spatial_stats,
-    spatial_diff,
-    cell_type_pairs=cell_type_pairs,
-    contrast='POST_vs_PREG',
-    resolution=250,
-    influence_radius=3.5,
-    vmax=0.4
-)
-plt.savefig(f'{working_dir}/figures/spatial_maps_postpart_vs_preg.svg', 
-            bbox_inches='tight')
-
-# plot sample radii
-fig, axes = plot_sample_radii(
-    spatial_data=adata_merfish.obs,
-    coords_cols=('x_affine', 'y_affine'),
-    sample_col='sample',
-    d_max_scale=d_max_scale,
-    s=0.05)
-fig.savefig(
-    f'{working_dir}/figures/{dataset_name}/proximity_radii.png', 
-            dpi=300, bbox_inches='tight')
-plt.close(fig)
-
-#endregion
-
-#region scratch ################################################################
-
-# determining get_spatial_diff() thresholds based on rare cell types 
-ct_counts = spatial_stats.groupby('cell_type_a')['cell_id'].nunique()
-print("\nRarest cell types:")
-print(ct_counts.sort_values().head(10))
-
-pair_stats = spatial_stats.groupby(['cell_type_a','cell_type_b']).agg(
-   total_b_count=('b_count','sum'),
-   num_nonzero=('b_count',lambda x:(x>0).sum())
-).reset_index()
-
-pair_stats['a_abundance'] = pair_stats['cell_type_a'].map(ct_counts)
-pair_stats['b_abundance'] = pair_stats['cell_type_b'].map(ct_counts)
-
-print("\nInteraction count percentiles:")
-print(pair_stats['total_b_count'].describe(percentiles=[0.1,0.25,0.5,0.75,0.9]))
-
-rare_pairs = pair_stats[(pair_stats['a_abundance'] < ct_counts.median()/5) | 
-                      (pair_stats['b_abundance'] < ct_counts.median()/5)]
-
-for t in [100,250,500,1000]:
-   for nz in [10,25,50,100]:
-       n_pairs = len(pair_stats[
-           (pair_stats['total_b_count'] >= t) &
-           (pair_stats['num_nonzero'] >= nz)
-       ])
-       n_rare = len(rare_pairs[
-           (rare_pairs['total_b_count'] >= t) &
-           (rare_pairs['num_nonzero'] >= nz)
-       ])
-       print(f'total_b_count >= {t:4d}, nonzero >= {nz:3d}: '
-             f'{n_pairs:4d} total pairs, {n_rare:4d} rare pairs')
-
-'''
-Rare cell types have ~100-350 cells
-With total_b_count ≥250 and ≥25 nonzero cells captures 1,407 pairs (43 rare)
-
-cell_type_a
-MEA Slc17a7 Glut                104
-L6b/CT ENT Glut                 109
-MPN-MPO-LPO Lhx6 Zfhx3 Gaba     144
-BST-SI-AAA Six3 Slc22a3 Gaba    172
-CA2-FC-IG Glut                  197
-SI-MA-ACB Ebf1 Bnc2 Gaba        205
-IT AON-TT-DP Glut               265
-GPe-SI Sox6 Cyp26b1 Gaba        272
-BST Tac2 Gaba                   349
-COAa-PAA-MEA Barhl2 Glut        352
-
-count    6.241000e+03
-mean     2.760008e+03
-std      4.287628e+04
-min      0.000000e+00
-10%      0.000000e+00
-25%      0.000000e+00
-50%      1.200000e+01
-75%      1.860000e+02
-90%      1.625000e+03
-max      2.435302e+06
-
-total_b_count >=  100, nonzero >=  10: 1924 total pairs,   80 rare pairs
-total_b_count >=  100, nonzero >=  25: 1922 total pairs,   80 rare pairs
-total_b_count >=  100, nonzero >=  50: 1895 total pairs,   77 rare pairs
-total_b_count >=  100, nonzero >= 100: 1709 total pairs,   59 rare pairs
-total_b_count >=  250, nonzero >=  10: 1407 total pairs,   43 rare pairs
-total_b_count >=  250, nonzero >=  25: 1407 total pairs,   43 rare pairs
-total_b_count >=  250, nonzero >=  50: 1405 total pairs,   43 rare pairs
-total_b_count >=  250, nonzero >= 100: 1383 total pairs,   37 rare pairs
-total_b_count >=  500, nonzero >=  10: 1074 total pairs,   27 rare pairs
-total_b_count >=  500, nonzero >=  25: 1074 total pairs,   27 rare pairs
-total_b_count >=  500, nonzero >=  50: 1074 total pairs,   27 rare pairs
-total_b_count >=  500, nonzero >= 100: 1070 total pairs,   26 rare pairs
-total_b_count >= 1000, nonzero >=  10:  822 total pairs,   12 rare pairs
-total_b_count >= 1000, nonzero >=  25:  822 total pairs,   12 rare pairs
-total_b_count >= 1000, nonzero >=  50:  822 total pairs,   12 rare pairs
-total_b_count >= 1000, nonzero >= 100:  822 total pairs,   12 rare pairs
-'''
-
-from scipy.spatial.distance import pdist
-from scipy.cluster import hierarchy as hc
-clust_ids = sorted(list(adata.obs[cell_type_col].unique()))
-clust_avg = np.vstack([
-    adata[adata.obs[cell_type_col] == i].layers['volume_log1p'].mean(0)
-    for i in clust_ids
-])
-
-D = pdist(clust_avg, 'correlation')
-Z = hc.linkage(D, 'complete', optimal_ordering=False)
-n = len(clust_ids)
-
-merge_matrix = np.zeros((n-1, 2), dtype=int)
-for i in range(n-1):
-    for j in range(2):
-        val = Z[i,j]
-        merge_matrix[i,j] = -int(val + 1) if val < n else int(val) - n + 1
-
-hc_dict = {
-    'merge': merge_matrix,
-    'height': Z[:,2],
-    'order': np.array([x+1 for x in hc.leaves_list(Z)]),
-    'labels': np.array(clust_ids),
-    'method': 'complete',
-    'call': {},
-    'dist.method': 'correlation'
-}
-
-to_r(hc_dict, 'hc')
-
-r('''
-library(crumblr)
-library(patchwork)
-  
-hc = structure(hc, class = "hclust")
-hc$call = NULL
-
-res = treeTest(fit, cobj, hc, coef = "PREG_vs_CTRL", method = "FE") 
-png(file.path(working_dir, 'figures/merfish/tree_test_ctrl_vs_preg.png'),
-    width=10, height=12, units='in', res=300)
-plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
-    plot_layout(nrow = 1, widths = c(2, 1))
-dev.off()
-  
-res = treeTest(fit, cobj, hc, coef = "POST_vs_PREG", method = "FE") 
-png(file.path(working_dir, 'figures/merfish/tree_test_preg_vs_post.png'),
-    width=10, height=12, units='in', res=300)
-plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
-    plot_layout(nrow = 1, widths = c(2, 1))
-dev.off()
-''')
 
 # generate filtered heatmaps for each contrast
 for contrast in spatial_diff['contrast'].unique():
