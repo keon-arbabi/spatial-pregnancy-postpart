@@ -2,6 +2,7 @@ import os, gc
 import numpy as np
 import pandas as pd
 import scanpy as sc
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from scipy.sparse import coo_array
 from scipy.spatial import KDTree
@@ -13,6 +14,8 @@ from scipy.stats import pearsonr
 from statsmodels.stats.multitest import fdrcorrection
 from matplotlib.colors import LinearSegmentedColormap
 from single_cell import SingleCell
+from scipy.spatial.distance import pdist
+import pickle
 
 plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
@@ -335,7 +338,7 @@ def calculate_distance_scale(coords: np.ndarray) -> float:
     d_scale = np.median(tree.query(coords, k=2)[0][:, 1])
     return d_scale, tree
 
-def plot_sample_radii(
+def plot_spatial_diff_radii(
     spatial_data: pd.DataFrame, 
     coords_cols: Tuple[str, str],
     sample_col: str,
@@ -560,247 +563,388 @@ def plot_spatial_diff_heatmap(
         plt.tight_layout()    
     return fig, ax, im
 
-def plot_spatial_diff_maps(
-    adata, 
+def get_spatial_map_intermediate_data(
+    adata,
     spatial_stats,
-    spatial_diff,
-    cell_type_pairs,
+    cell_type_pair,
     contrast,
+    cache_dir,
+    cell_type_col,
+    coords_cols):
+
+    cell_type_a, cell_type_b = cell_type_pair
+    safe_cta = cell_type_a.replace(' ', '_').replace('/', '_')
+    safe_ctb = cell_type_b.replace(' ', '_').replace('/', '_')
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(
+        cache_dir, f'intermediate_{safe_cta}_{safe_ctb}_{contrast}.pkl'
+    )
+    
+    if os.path.exists(cache_file):
+        with open(cache_file, 'rb') as f:
+            return pickle.load(f)
+
+    base_sample = 'PREG1'
+    base_cells = adata[adata.obs['sample'] == base_sample]
+    
+    cond_B_name, cond_A_name = contrast.split('_vs_')
+    
+    cond_A_samples = adata.obs[
+        adata.obs['condition'] == cond_A_name]['sample'].unique()
+    cond_B_samples = adata.obs[
+        adata.obs['condition'] == cond_B_name]['sample'].unique()
+    
+    pair_stats = spatial_stats[
+        (spatial_stats['cell_type_a'] == cell_type_a) &
+        (spatial_stats['cell_type_b'] == cell_type_b)
+    ]
+
+    a_cells_all = adata[adata.obs[cell_type_col] == cell_type_a]
+
+    all_coords, all_b_counts, all_all_counts, all_conditions = \
+        [], [], [], []
+
+    for cond, samples in [
+        (cond_A_name, cond_A_samples), (cond_B_name, cond_B_samples)
+    ]:
+        for sample in samples:
+            a_cells = adata.obs[
+                (adata.obs['sample'] == sample) &
+                (adata.obs[cell_type_col] == cell_type_a)
+            ]
+            if len(a_cells) == 0:
+                continue
+
+            stats = pair_stats[
+                (pair_stats['sample_id'] == sample) &
+                (pair_stats['cell_id'].isin(a_cells.index))
+            ]
+            if len(stats) == 0:
+                continue
+
+            coords = a_cells[list(coords_cols)].values
+            b_counts = np.zeros(len(coords))
+            tot_counts = np.zeros(len(coords))
+
+            for i, idx in enumerate(a_cells.index):
+                stat = stats[stats['cell_id'] == idx]
+                if len(stat) > 0:
+                    b_counts[i] = stat['b_count'].values[0]
+                    tot_counts[i] = stat['all_count'].values[0]
+
+            valid = tot_counts > 0
+            if not any(valid):
+                continue
+
+            all_coords.append(coords[valid])
+            all_b_counts.append(b_counts[valid])
+            all_all_counts.append(tot_counts[valid])
+            all_conditions.extend([cond] * np.sum(valid))
+
+    if not all_coords:
+        return None
+
+    other_counts = np.concatenate(all_all_counts) - \
+        np.concatenate(all_b_counts)
+    clr_values = np.log(np.concatenate(all_b_counts) + 0.5) - 0.5 * (
+        np.log(np.concatenate(all_b_counts) + 0.5) + \
+        np.log(other_counts + 0.5)
+    )
+
+    map_data = {
+        'base_coords': base_cells.obs[list(coords_cols)].values,
+        'a_coords_all': a_cells_all.obs[list(coords_cols)].values,
+        'all_coords': np.vstack(all_coords),
+        'clr_values': clr_values,
+        'all_conditions': np.array(all_conditions),
+        'cond_A_name': cond_A_name,
+        'cond_B_name': cond_B_name
+    }
+    
+    with open(cache_file, 'wb') as f:
+        pickle.dump(map_data, f)
+        
+    return map_data
+
+def plot_spatial_diff_map(
+    adata,
+    spatial_stats,
+    cell_type_pair,
+    contrast,
+    cache_dir,
     coords_cols=('x_ffd', 'y_ffd'),
     cell_type_col='subclass',
     influence_radius=8,
-    resolution=350,
-    vmax=None):
-    
-    n_pairs = len(cell_type_pairs)
-    fig = plt.figure(figsize=(6, 5 * n_pairs))
-    
-    base_sample = 'PREG1'
-    base_cells = adata[adata.obs['sample'] == base_sample]
-    base_coords = base_cells.obs[list(coords_cols)].values
-    
+    resolution=400,
+    vmax=None,
+    ax=None):
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 5))
+    else:
+        fig = ax.get_figure()
+
+    map_data = get_spatial_map_intermediate_data(
+        adata, spatial_stats, cell_type_pair,
+        contrast, cache_dir, cell_type_col, coords_cols
+    )
+
+    if map_data is None:
+        return fig, ax, None
+
+    base_coords = map_data['base_coords']
+    a_coords_all = map_data['a_coords_all']
+    all_coords = map_data['all_coords']
+    clr_values = map_data['clr_values']
+    all_conditions = map_data['all_conditions']
+    cond_A_name = map_data['cond_A_name']
+    cond_B_name = map_data['cond_B_name']
+
+    base_coords_tree = KDTree(base_coords)
+    all_coords_tree = KDTree(all_coords)
+
     x_min, x_max = base_coords[:, 0].min(), base_coords[:, 0].max()
     y_min, y_max = base_coords[:, 1].min(), base_coords[:, 1].max()
-    
+
     padding = 0.15
-    x_pad, y_pad = (x_max - x_min) * padding, (y_max - y_min) * padding
+    x_pad = (x_max - x_min) * padding
+    y_pad = (y_max - y_min) * padding
     plot_x_min, plot_x_max = x_min - x_pad, x_max + x_pad
     plot_y_min, plot_y_max = y_min - y_pad, y_max + y_pad
-    
-    condition_map = {'POST': 'POSTPART', 'PREG': 'PREG', 'CTRL': 'CTRL'}
-    cond1, cond2 = contrast.split('_vs_')
-    mapped_cond1 = condition_map.get(cond1, cond1)
-    mapped_cond2 = condition_map.get(cond2, cond2)
-    
-    cond1_samples = adata.obs[adata.obs['condition'] == mapped_cond1]['sample']
-    cond1_samples = cond1_samples.unique()
-    cond2_samples = adata.obs[adata.obs['condition'] == mapped_cond2]['sample']
-    cond2_samples = cond2_samples.unique()
-    
-    max_abs_all = 0
-    plot_data = []
-    
-    for cell_type_a, cell_type_b in cell_type_pairs:
-        diff_data = spatial_diff[
-            (spatial_diff['cell_type_a'] == cell_type_a) &
-            (spatial_diff['cell_type_b'] == cell_type_b) &
-            (spatial_diff['contrast'] == contrast)
-        ]
+
+    pixel_res = resolution
+    x_grid = np.linspace(x_min, x_max, pixel_res)
+    y_grid = np.linspace(y_min, y_max, pixel_res)
+    X, Y = np.meshgrid(x_grid, y_grid)
+
+    tissue_mask = np.zeros((pixel_res, pixel_res))
+    for x, y in base_coords:
+        i = int((y - y_min) / (y_max - y_min) * (pixel_res - 1))
+        j = int((x - x_min) / (x_max - x_min) * (pixel_res - 1))
+        if 0 <= i < pixel_res and 0 <= j < pixel_res:
+            tissue_mask[i, j] = 1
+
+    a_mask = np.zeros_like(tissue_mask)
+    for x, y in a_coords_all:
+        i = int((y - y_min) / (y_max - y_min) * (pixel_res - 1))
+        j = int((x - x_min) / (x_max - x_min) * (pixel_res - 1))
+        if 0 <= i < pixel_res and 0 <= j < pixel_res:
+            a_mask[i, j] = 1
+
+    d_scale, _ = calculate_distance_scale(all_coords)
+    d_max = influence_radius * d_scale
+    grid_step = (x_max - x_min) / resolution
+
+    Z_diff = np.zeros_like(X)
+    Z_weight = np.zeros_like(X)
+    base_mask = np.zeros_like(X, dtype=bool)
+
+    grid_points = np.vstack([X.ravel(), Y.ravel()]).T
+
+    for idx, point in enumerate(grid_points):
+        row, col = np.unravel_index(idx, X.shape)
         
-        if len(diff_data) == 0:
-            plot_data.append(None)
+        dist, _ = base_coords_tree.query(point, k=1)
+        if dist >= grid_step * 3:
+            continue
+        base_mask[row, col] = True
+        
+        search_radius = d_max * 1.2
+        neighbors = all_coords_tree.query_ball_point(point, r=search_radius)
+        
+        if not neighbors:
             continue
             
-        pair_stats = spatial_stats[
-            (spatial_stats['cell_type_a'] == cell_type_a) &
-            (spatial_stats['cell_type_b'] == cell_type_b)
-        ]
+        nb_coords = all_coords[neighbors]
+        nb_conditions = all_conditions[neighbors]
+        nb_clr_values = clr_values[neighbors]
         
-        a_cells_all = adata[adata.obs[cell_type_col] == cell_type_a]
-        a_coords_all = a_cells_all.obs[list(coords_cols)].values
+        dists = np.sqrt(np.sum((nb_coords - point)**2, axis=1))
+        weights = np.exp(-0.7 * dists / d_max)
+
+        mask_A = nb_conditions == cond_A_name
+        mask_B = nb_conditions == cond_B_name
+
+        sum_wA = np.sum(weights[mask_A])
+        sum_wB = np.sum(weights[mask_B])
         
-        all_coords, all_b_counts, all_all_counts, all_conditions = [], [], [], []
-        
-        for cond, samples in [
-            (cond1, cond1_samples), 
-            (cond2, cond2_samples)
-        ]:
-            for sample in samples:
-                a_cells = adata.obs[
-                    (adata.obs['sample'] == sample) & 
-                    (adata.obs[cell_type_col] == cell_type_a)
-                ]
-                if len(a_cells) == 0:
-                    continue
-                    
-                stats = pair_stats[
-                    (pair_stats['sample_id'] == sample) & 
-                    (pair_stats['cell_id'].isin(a_cells.index))
-                ]
-                
-                if len(stats) == 0:
-                    continue
-                    
-                coords = a_cells[list(coords_cols)].values
-                b_counts = np.zeros(len(coords))
-                tot_counts = np.zeros(len(coords))
-                
-                for i, idx in enumerate(a_cells.index):
-                    stat = stats[stats['cell_id'] == idx]
-                    if len(stat) > 0:
-                        b_counts[i] = stat['b_count'].values[0]
-                        tot_counts[i] = stat['all_count'].values[0]
-                
-                valid = tot_counts > 0
-                if not any(valid):
-                    continue
-                    
-                all_coords.append(coords[valid])
-                all_b_counts.append(b_counts[valid])
-                all_all_counts.append(tot_counts[valid])
-                all_conditions.extend([cond] * np.sum(valid))
-        
-        if not all_coords:
-            plot_data.append(None)
-            continue
-            
-        all_coords = np.vstack(all_coords)
-        all_b_counts = np.concatenate(all_b_counts)
-        all_all_counts = np.concatenate(all_all_counts)
-        all_conditions = np.array(all_conditions)
-        
-        pixel_res = resolution
-        x_grid = np.linspace(x_min, x_max, pixel_res)
-        y_grid = np.linspace(y_min, y_max, pixel_res)
-        X, Y = np.meshgrid(x_grid, y_grid)
-        
-        tissue_mask = np.zeros((pixel_res, pixel_res))
-        for x, y in base_coords:
-            i = int((y - y_min) / (y_max - y_min) * (pixel_res - 1))
-            j = int((x - x_min) / (x_max - x_min) * (pixel_res - 1))
-            if 0 <= i < pixel_res and 0 <= j < pixel_res:
-                tissue_mask[i, j] = 1
-        
-        a_mask = np.zeros_like(tissue_mask)
-        for x, y in a_coords_all:
-            i = int((y - y_min) / (y_max - y_min) * (pixel_res - 1))
-            j = int((x - x_min) / (x_max - x_min) * (pixel_res - 1))
-            if 0 <= i < pixel_res and 0 <= j < pixel_res:
-                a_mask[i, j] = 1
-        
-        d_scale, _ = calculate_distance_scale(all_coords)
-        d_max = influence_radius * d_scale
-        grid_step = (x_max - x_min) / resolution
-        
-        Z_diff = np.zeros_like(X)
-        Z_weight = np.zeros_like(X)
-        
-        other_counts = all_all_counts - all_b_counts
-        clr_values = np.log(all_b_counts + 0.5) - 0.5 * (
-            np.log(all_b_counts + 0.5) + np.log(other_counts + 0.5))
-        
-        base_mask = np.zeros_like(X, dtype=bool)
-        for i in range(len(X)):
-            for j in range(len(X[0])):
-                point = np.array([X[i, j], Y[i, j]])
-                dists = np.sqrt(np.sum((base_coords - point)**2, axis=1))
-                base_mask[i, j] = np.min(dists) < grid_step * 3
-                
-                dists = np.sqrt(np.sum((all_coords - point)**2, axis=1))
-                weights = np.exp(-0.7 * dists/d_max) * (dists <= d_max * 1.2)
-                
-                if np.sum(weights) > 0:
-                    mask1 = all_conditions == cond1
-                    mask2 = all_conditions == cond2
-                    
-                    if np.sum(weights[mask1]) > 0 and np.sum(weights[mask2]) > 0:
-                        avg_clr1 = np.sum(weights[mask1] * clr_values[mask1])
-                        avg_clr1 /= np.sum(weights[mask1])
-                        avg_clr2 = np.sum(weights[mask2] * clr_values[mask2])
-                        avg_clr2 /= np.sum(weights[mask2])
-                        
-                        Z_diff[i, j] = avg_clr2 - avg_clr1
-                        Z_weight[i, j] = min(np.sum(weights[mask1]), 
-                                           np.sum(weights[mask2]))
-        
-        Z_diff = np.where((Z_weight > 0) & base_mask, Z_diff, np.nan)
-        
-        from scipy.ndimage import gaussian_filter
-        valid_mask = ~np.isnan(Z_diff)
-        Z_smooth = np.copy(Z_diff)
+        if sum_wA > 0 and sum_wB > 0:
+            avg_clr_A = np.sum(
+                weights[mask_A] * nb_clr_values[mask_A]) / sum_wA
+            avg_clr_B = np.sum(
+                weights[mask_B] * nb_clr_values[mask_B]) / sum_wB
+            Z_diff[row, col] = avg_clr_B - avg_clr_A
+            Z_weight[row, col] = min(sum_wA, sum_wB)
+
+    Z_diff = np.where((Z_weight > 0) & base_mask, Z_diff, np.nan)
+
+    from scipy.ndimage import gaussian_filter
+    valid_mask = ~np.isnan(Z_diff)
+    Z_smooth = np.copy(Z_diff)
+    if np.any(valid_mask):
         Z_smooth[valid_mask] = gaussian_filter(
             Z_diff[valid_mask], sigma=1.5, mode='constant')
-        Z_diff = Z_smooth
-        
-        max_abs = np.nanmax(np.abs(Z_diff))
-        max_abs_all = max(max_abs_all, max_abs)
-        
-        plot_data.append({
-            'X': X, 'Y': Y, 
-            'Z_diff': Z_diff, 
-            'tissue_mask': tissue_mask, 
-            'a_mask': a_mask,
-            'cell_type_a': cell_type_a,
-            'cell_type_b': cell_type_b
-        })
-    
-    if vmax is None:
-        vmax = max_abs_all
+    Z_diff = Z_smooth
+
+    if vmax is None and np.any(valid_mask):
+        vmax = np.nanmax(np.abs(Z_diff))
+    elif vmax is None:
+        vmax = 1.0
     vmin = -vmax
-    
+
     cmap = LinearSegmentedColormap.from_list(
         'custom_diverging',
         ['#4b0857', '#813e8f', '#ffffff', '#66b66b', '#156a2f'], N=100)
+        
+    cell_type_a, cell_type_b = cell_type_pair
+    title_str = f"{cell_type_a} (Center)\n{cell_type_b} (Surround)"
+    ax.set_title(title_str, loc='left', pad=5, fontsize=10)
     
-    im = None
-    for idx, data in enumerate(plot_data):
-        if data is None:
-            continue
-            
-        ax = fig.add_subplot(n_pairs, 1, idx + 1)
-        
-        title = f"{data['cell_type_a']} (Center)\n{data['cell_type_b']} (Surround)"
-        ax.set_title(title, loc='left', pad=5)
-        
-        ax.pcolormesh(data['X'], data['Y'], data['tissue_mask'], 
-                     cmap='Greys', alpha=0.4, rasterized=True)
-        
-        im = ax.pcolormesh(data['X'], data['Y'], data['Z_diff'], 
-                          cmap=cmap, vmin=vmin, vmax=vmax, alpha=0.9,
-                          shading='gouraud', rasterized=True)
-        
-        ax.pcolormesh(data['X'], data['Y'], data['a_mask'], 
-                     cmap='binary', alpha=0.5, vmin=0, vmax=1, rasterized=True)
-        
-        ax.set_aspect('equal')
-        ax.set_xlim(plot_x_min, plot_x_max)
-        ax.set_ylim(plot_y_min, plot_y_max)
-        
-        ax.set_xticks([])
-        ax.set_yticks([])
-        
-        for spine in ax.spines.values():
-            spine.set_visible(True)
-            spine.set_linewidth(1)
-            spine.set_color('black')
+    ax.pcolormesh(X, Y, tissue_mask,
+                 cmap='Greys', alpha=0.4, rasterized=True)
     
-    if im is not None:
-        cbar_ax = fig.add_axes([0.4, 0.06, 0.2, 0.01])
-        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
+    im = ax.pcolormesh(X, Y, Z_diff, cmap=cmap, vmin=vmin, vmax=vmax,
+                      alpha=0.9, shading='gouraud', rasterized=True)
+    
+    ax.pcolormesh(X, Y, a_mask, cmap='binary',
+                 alpha=0.5, vmin=0, vmax=1, rasterized=True)
+    
+    ax.set_aspect('equal')
+    ax.set_xlim(plot_x_min, plot_x_max)
+    ax.set_ylim(plot_y_min, plot_y_max)
+    
+    ax.set_xticks([])
+    ax.set_yticks([])
+    
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    
+    if fig.get_axes().__len__() == 1:
+        cbar = fig.colorbar(im, ax=ax, shrink=0.6)
         cbar.set_label('logFC')
-        cbar.set_ticks([-0.25, 0.0, 0.25])
-    
-    plt.subplots_adjust(hspace=0.05, bottom=0.08)
-    return fig
 
-def get_cellchat_diff(
+    return fig, ax, im
+
+def plot_spatial_maps_grid(
+    adata,
+    spatial_stats,
+    cell_type_pairs,
+    cache_dir,
+    resolution=350,
+    influence_radius=3.5,
+    vmax=0.4):
+
+    n_rows = len(cell_type_pairs)
+    n_cols = 2
+    contrasts = ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
+
+    fig, axs = plt.subplots(
+        n_rows, n_cols,
+        figsize=(n_cols * 5, n_rows * 4.5),
+        gridspec_kw={'wspace': 0.01, 'hspace': 0.01}
+    )
+    if n_rows == 1:
+        axs = np.array([axs])
+
+    images = []
+    for i, pair in enumerate(tqdm(cell_type_pairs, desc="Plotting maps")):
+        for j, contrast in enumerate(contrasts):
+            ax = axs[i, j]
+            _, _, im = plot_spatial_diff_map(
+                adata, spatial_stats,
+                cell_type_pair=pair,
+                contrast=contrast,
+                cache_dir=cache_dir,
+                resolution=resolution,
+                influence_radius=influence_radius,
+                vmax=vmax,
+                ax=ax
+            )
+            if im:
+                images.append(im)
+            ax.set_title("")
+
+    if not images:
+        plt.close(fig)
+        return
+
+    for im in images:
+        im.set_clim(-vmax, vmax)
+
+    fig.subplots_adjust(bottom=0.1)
+    cbar_ax = fig.add_axes([0.4, 0.05, 0.2, 0.015])
+    cbar = fig.colorbar(images[0], cax=cbar_ax, orientation='horizontal')
+    cbar.set_label('logFC', size=8)
+    cbar.ax.tick_params(labelsize=6)
+
+    return fig, axs
+
+def plot_cellchat_diff_radii(
+    spatial_data: pd.DataFrame,
+    coords_cols: tuple = ('x', 'y'),
+    sample_col: str = 'sample',
+    interaction_range: float = 250,
+    s: float = 0.2):
+
+    samples = sorted(spatial_data[sample_col].unique())
+    n_cols = 3
+    n_rows = int(np.ceil(len(samples) / n_cols))
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(15, 5 * n_rows), squeeze=False)
+    axes = axes.flatten()
+
+    for ax, sample in zip(axes, samples):
+        sample_data = spatial_data[spatial_data[sample_col] == sample].copy()
+        coords = sample_data[list(coords_cols)].values
+
+        ax.scatter(
+            coords[:, 0], coords[:, 1], s=s, alpha=0.8, c='gray', linewidth=0)
+
+        random_idx = np.random.randint(len(coords))
+        random_point = coords[random_idx]
+        circle = plt.Circle(
+            random_point, interaction_range, fill=False, color='red', 
+            linewidth=1.5, zorder=10)
+        ax.add_patch(circle)
+        ax.scatter(*random_point, c='red', s=s*10, zorder=10)
+
+        ax.set_title(f'Sample: {sample}')
+        ax.set_xlabel("X coordinate (microns)")
+        ax.set_ylabel("Y coordinate (microns)")
+        ax.set_aspect('equal', adjustable='box')
+
+    for i in range(len(samples), len(axes)):
+        axes[i].set_visible(False)
+
+    fig.suptitle("CellChat Interaction Radius (250 microns)", fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
+
+def prepare_cellchat_object(
     adata: sc.AnnData,
     cell_type_col: str,
-    conditions: Tuple[str, str]) -> pd.DataFrame:
+    conditions: Tuple[str, str],
+    output_path: str):
+    
+    if os.path.exists(output_path):
+        raise FileExistsError(f"Output file already exists: {output_path}")
 
     adata_cleaned = adata.copy()
-    adata_cleaned.obs = adata_cleaned.obs[
-        ['sample', 'condition', cell_type_col]]
+    
+    np.random.seed(0)
+    sample_indices = np.random.choice(adata_cleaned.n_obs, 1000, replace=False)
+    sample_obs = adata_cleaned.obs.iloc[sample_indices]
+    
+    coords_orig = sample_obs[['x', 'y']].values
+    coords_affine = sample_obs[['x_affine', 'y_affine']].values
+    
+    from scipy.spatial.distance import pdist
+    conversion_factor = np.median(
+        pdist(coords_orig)) / np.median(pdist(coords_affine))
+
+    spatial_cols = ['x_affine', 'y_affine']
+    obs_cols = ['sample', 'condition', cell_type_col, 'x', 'y'] + spatial_cols
+    adata_cleaned.obs = adata_cleaned.obs[obs_cols]
     adata_cleaned = adata_cleaned[
         :, adata_cleaned.var['protein_coding']]
     adata_cleaned = adata_cleaned[
@@ -811,9 +955,13 @@ def get_cellchat_diff(
         adata_cleaned.obsp, adata_cleaned.obsm = {}, {}, {}, {}
 
     SingleCell(adata_cleaned).to_seurat('sobj', v3=True)
+    spatial_locs = adata_cleaned.obs[spatial_cols]
+    to_r(spatial_locs, 'spatial_locs', format='data.frame')
     to_r(conditions[0], 'cond_1')
     to_r(conditions[1], 'cond_2')
     to_r(cell_type_col, 'cell_type_col')
+    to_r(conversion_factor, 'conversion_factor')
+    to_r(output_path, 'output_path')
 
     r_script = f'''
         suppressPackageStartupMessages({{
@@ -827,11 +975,26 @@ def get_cellchat_diff(
         
         sobj_1 <- subset(sobj, subset = condition == cond_1)
         sobj_2 <- subset(sobj, subset = condition == cond_2)
+        
+        spot.size = 15
 
+        spatial_locs_1 <- spatial_locs[colnames(sobj_1), ]
+        spatial_factors_1 <- data.frame(
+            ratio = conversion_factor,
+            tol = spot.size / 2)
         cobj_1 <- createCellChat(
-            object = sobj_1, group.by = cell_type_col, assay = "RNA")
+            object = sobj_1, group.by = cell_type_col, assay = "RNA",
+            datatype = "spatial", coordinates = spatial_locs_1,
+            spatial.factors = spatial_factors_1)
+        
+        spatial_locs_2 <- spatial_locs[colnames(sobj_2), ]
+        spatial_factors_2 <- data.frame(
+            ratio = conversion_factor,
+            tol = spot.size / 2)
         cobj_2 <- createCellChat(
-            object = sobj_2, group.by = cell_type_col, assay = "RNA")
+            object = sobj_2, group.by = cell_type_col, assay = "RNA",
+            datatype = "spatial", coordinates = spatial_locs_2,
+            spatial.factors = spatial_factors_2)
 
         cobj_1@DB <- CellChatDB.mouse
         cobj_2@DB <- CellChatDB.mouse
@@ -844,8 +1007,40 @@ def get_cellchat_diff(
         cobj_2 <- identifyOverExpressedGenes(cobj_2)
         cobj_2 <- identifyOverExpressedInteractions(cobj_2)
         
-        cobj_1 <- computeCommunProb(cobj_1, raw.use = TRUE, nboot = 20)
-        cobj_2 <- computeCommunProb(cobj_2, raw.use = TRUE, nboot = 20)
+        cobj_1 <- computeCommunProb(
+            cobj_1, type = "truncatedMean", trim = 0.1, 
+            distance.use = TRUE, interaction.range = 600, 
+            scale.distance = 1.8,
+            contact.range = 10)
+        cobj_2 <- computeCommunProb(
+            cobj_2, type = "truncatedMean", trim = 0.1, 
+            distance.use = TRUE, interaction.range = 600, 
+            scale.distance = 1.8,
+            contact.range = 10)
+
+        cobjs <- list(cobj_1, cobj_2)
+        saveRDS(cobjs, file = output_path)
+    '''
+    r(r_script)
+
+def get_cellchat_cell_type_diff(
+    cobj_rds_path: str,
+    conditions: Tuple[str, str]) -> pd.DataFrame:
+
+    to_r(cobj_rds_path, 'cobj_rds_path')
+    to_r(conditions[0], 'cond_1')
+    to_r(conditions[1], 'cond_2')
+
+    r_script = f'''
+        suppressPackageStartupMessages({{
+            library(tidyverse)
+            library(Seurat)
+            library(CellChat)
+        }})
+        
+        cobjs <- readRDS(cobj_rds_path)
+        cobj_1 <- cobjs[[1]]
+        cobj_2 <- cobjs[[2]]
 
         cobj_1 <- filterCommunication(cobj_1, min.cells = 10)
         cobj_2 <- filterCommunication(cobj_2, min.cells = 10)
@@ -901,7 +1096,94 @@ def get_cellchat_diff(
     diff_df = to_py('net_df', format='pandas')
     return diff_df
 
-def plot_cellchat_heatmap(
+def get_cellchat_pathway_pair_diff(
+    cobj_rds_path: str,
+    conditions: tuple,
+    contrast_name: str) -> pd.DataFrame:
+    
+    to_r(cobj_rds_path, 'cobj_rds_path')
+    to_r(conditions[0], 'cond_1')
+    to_r(conditions[1], 'cond_2')
+    to_r(contrast_name, 'contrast_name')
+
+    r_script = f'''
+        suppressPackageStartupMessages({{
+            library(tidyverse)
+            library(Seurat)
+            library(CellChat)
+            library(reshape2)
+        }})
+        
+        cobjs <- readRDS(cobj_rds_path)
+        cobj_1 <- cobjs[[1]]
+        cobj_2 <- cobjs[[2]]
+
+        cobj_1 <- filterCommunication(cobj_1, min.cells = 10)
+        cobj_2 <- filterCommunication(cobj_2, min.cells = 10)
+
+        cobj_1 <- computeCommunProbPathway(cobj_1)
+        cobj_2 <- computeCommunProbPathway(cobj_2)
+
+        prob1 <- cobj_1@netP$prob
+        prob2 <- cobj_2@netP$prob
+        
+        pathways1 <- if(!is.null(prob1)) dimnames(prob1)[[3]] else character(0)
+        pathways2 <- if(!is.null(prob2)) dimnames(prob2)[[3]] else character(0)
+        all_pathways <- unique(c(pathways1, pathways2))
+
+        pathway_pair_diff_df <- data.frame(
+            source=character(), target=character(), 
+            strength_diff=numeric(), pathway=character(), 
+            contrast=character())
+
+        if (length(all_pathways) > 0) {{
+            all_cell_types <- sort(unique(c(
+                levels(cobj_1@idents), levels(cobj_2@idents)
+            )))
+            
+            if (length(all_cell_types) > 0) {{
+                all_diffs <- list()
+                for (pathway in all_pathways) {{
+                    mat1 <- matrix(
+                        0, nrow = length(all_cell_types), 
+                        ncol = length(all_cell_types),
+                        dimnames = list(all_cell_types, all_cell_types))
+                    mat2 <- matrix(
+                        0, nrow = length(all_cell_types),
+                        ncol = length(all_cell_types),
+                        dimnames = list(all_cell_types, all_cell_types))
+
+                    if (pathway %in% pathways1) {{
+                        p1 <- prob1[,,pathway]
+                        if (!is.null(p1)) mat1[rownames(p1), colnames(p1)] <- p1
+                    }}
+                    if (pathway %in% pathways2) {{
+                        p2 <- prob2[,,pathway]
+                        if (!is.null(p2)) mat2[rownames(p2), colnames(p2)] <- p2
+                    }}
+
+                    diff_mat <- mat2 - mat1
+                    diff_df <- melt(diff_mat, value.name = "strength_diff")
+                    colnames(diff_df)[1:2] <- c("source", "target")
+                    diff_df$pathway <- pathway
+                    all_diffs[[pathway]] <- diff_df
+                }}
+
+                if (length(all_diffs) > 0) {{
+                    pathway_pair_diff_df <- do.call(rbind, all_diffs)
+                    pathway_pair_diff_df$contrast <- contrast_name
+                }}
+            }}
+        }}
+    '''
+    r(r_script)
+
+    pathway_pair_diff_df = to_py('pathway_pair_diff_df', format='pandas')
+    if pathway_pair_diff_df is None:
+        return pd.DataFrame()
+    return pathway_pair_diff_df
+
+def plot_cellchat_cell_type_heatmap(
     df: pd.DataFrame,
     ax: plt.Axes,
     tested_pairs: set = None,
@@ -1019,8 +1301,7 @@ def plot_cellchat_vs_proximity_scatter(
     color: str,
     value_col: str = 'logFC',
     cell_types_to_include: List[str] = None,
-    align_sender_to_center: bool = False
-):
+    align_sender_to_center: bool = False):
     contrast_map = {
         'PREG_vs_CTRL': 'Pregnancy vs Control',
         'POSTPART_vs_PREG': 'Postpartum vs Pregnancy'
@@ -1074,6 +1355,10 @@ def plot_cellchat_vs_proximity_scatter(
                 axis=1
             )
         ]
+        
+    merged_df = merged_df[
+        (merged_df['cellchat_value'] != 0) & (merged_df['proximity_logFC'] != 0)
+    ]
 
     if merged_df.empty:
         ax.text(0.5, 0.5, "No data to plot", ha='center', va='center')
@@ -1094,7 +1379,6 @@ def plot_cellchat_vs_proximity_scatter(
 
     display_contrast = contrast_map.get(contrast, contrast)
     legend_text = f"R={r_val:.2f}, p={p_val:.4f}"
-
     ax.text(
         0.95, 0.95, legend_text, transform=ax.transAxes, fontsize=9,
         verticalalignment='top', horizontalalignment='right',
@@ -1108,6 +1392,159 @@ def plot_cellchat_vs_proximity_scatter(
     ax.set_xlabel(f"Signaling Change ({value_col})", fontsize=9)
     ax.set_ylabel("Proximity Change (logFC)", fontsize=9)
     ax.tick_params(axis='both', which='major', labelsize=8)
+
+def plot_pathway_diff_dotplot(
+    pathway_pair_diff_df: pd.DataFrame,
+    cell_type_pairs: list,
+    contrasts: list,
+    top_n: int = 10,
+    z_score: bool = True):
+
+    pathway_pair_diff_df["canonical_pair"] = pathway_pair_diff_df.apply(
+        lambda row: frozenset([row["source"], row["target"]]), axis=1
+    )
+    pairs_df = pd.DataFrame(cell_type_pairs, columns=["c1", "c2"])
+    pairs_df["canonical_pair"] = pairs_df.apply(
+        lambda row: frozenset([row["c1"], row["c2"]]), axis=1
+    )
+    plot_data = pd.merge(
+        pathway_pair_diff_df, pairs_df[["canonical_pair"]], on="canonical_pair"
+    )
+    plot_data["pair_str"] = plot_data.apply(
+        lambda r: f"{list(r['canonical_pair'])[0]} <-> {list(r['canonical_pair'])[1]}",
+        axis=1,
+    )
+
+    if z_score:
+        plot_data["plot_value"] = (
+            plot_data.groupby(["contrast", "pair_str"])["strength_diff"]
+            .transform(lambda x: (x - x.mean()) / x.std())
+            .fillna(0)
+        )
+        cbar_label_base = "Signaling Change\n(Pair-wise Z-score"
+    else:
+        plot_data["plot_value"] = plot_data["strength_diff"]
+        cbar_label_base = "Change in Signaling Strength"
+
+    plot_data["abs_plot_value"] = plot_data["plot_value"].abs()
+    top_pathways = set()
+    for pair_key in plot_data["canonical_pair"].unique():
+        for contrast in contrasts:
+            subset = plot_data[
+                (plot_data["canonical_pair"] == pair_key)
+                & (plot_data["contrast"] == contrast)
+            ]
+            subset = subset.sort_values("abs_plot_value", ascending=False)
+            top_pathways.update(subset.head(top_n)["pathway"])
+
+    plot_data = plot_data[plot_data["pathway"].isin(top_pathways)].copy()
+
+    plot_data = plot_data.loc[
+        plot_data.groupby(["contrast", "canonical_pair", "pathway"])[
+            "abs_plot_value"
+        ].idxmax()
+    ]
+
+    lower_thresh = plot_data["plot_value"].quantile(0.05)
+    upper_thresh = plot_data["plot_value"].quantile(0.95)
+    plot_data["plot_value_winsorized"] = plot_data["plot_value"].clip(
+        lower_thresh, upper_thresh
+    )
+    plot_data["edge_color"] = np.where(
+        (plot_data["plot_value"] < lower_thresh)
+        | (plot_data["plot_value"] > upper_thresh),
+        "black",
+        "#BDBDBD",
+    )
+    cbar_label = f"{cbar_label_base}, Winsorized)"
+
+    n_contrasts = len(contrasts)
+    fig_height = max(5, len(top_pathways) * 0.35)
+    fig, axes = plt.subplots(
+        1,
+        n_contrasts,
+        figsize=(4 * n_contrasts + 2, fig_height),
+        sharey=True,
+    )
+    if n_contrasts == 1:
+        axes = [axes]
+
+    cmap = plt.get_cmap("seismic")
+    vmax = plot_data["plot_value_winsorized"].abs().max()
+    vmin = -vmax
+    if pd.isna(vmax) or vmax == 0:
+        vmax = 1.5
+    if pd.isna(vmin) or vmin == 0:
+        vmin = -1.5
+
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+
+    y_cats = sorted(list(top_pathways), reverse=True)
+    x_cats = sorted(list(plot_data["pair_str"].unique()))
+    y_map = {cat: j for j, cat in enumerate(y_cats)}
+    x_map = {cat: j for j, cat in enumerate(x_cats)}
+
+    for i, (ax, contrast) in enumerate(zip(axes, contrasts)):
+        contrast_data = plot_data[plot_data["contrast"] == contrast].copy()
+
+        grid_df = pd.DataFrame(
+            [(p, pair) for p in y_cats for pair in x_cats],
+            columns=["pathway", "pair_str"],
+        )
+        grid_df["y_coord"] = grid_df["pathway"].map(y_map)
+        grid_df["x_coord"] = grid_df["pair_str"].map(x_map)
+        ax.scatter(
+            x=grid_df["x_coord"],
+            y=grid_df["y_coord"],
+            s=100,
+            facecolors="none",
+            edgecolors="#eeeeee",
+        )
+
+        if not contrast_data.empty:
+            contrast_data["y_coord"] = contrast_data["pathway"].map(y_map)
+            contrast_data["x_coord"] = contrast_data["pair_str"].map(x_map)
+            ax.scatter(
+                x=contrast_data["x_coord"],
+                y=contrast_data["y_coord"],
+                c=contrast_data["plot_value_winsorized"],
+                s=120,
+                cmap=cmap,
+                norm=norm,
+                edgecolors=contrast_data["edge_color"],
+                linewidth=1,
+            )
+
+        ax.set_xticks(range(len(x_cats)))
+        ax.set_xticklabels(
+            x_cats,
+            rotation=45,
+            fontsize=9,
+            ha="right",
+            rotation_mode="anchor",
+        )
+        ax.set_title(contrast.replace("_", " vs "), fontsize=11)
+        ax.grid(False)
+
+        if i == 0:
+            ax.set_yticks(range(len(y_cats)))
+            ax.set_yticklabels(y_cats, fontsize=9)
+
+        ax.tick_params(axis="x", length=0)
+        ax.tick_params(axis="y", length=0)
+        ax.set_xlim(-0.5, len(x_cats) - 0.5)
+        ax.set_ylim(-0.5, len(y_cats) - 0.5)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+    fig.tight_layout(pad=1.0)
+    fig.subplots_adjust(right=0.85, bottom=0.25)
+    cbar_ax = fig.add_axes([0.88, 0.25, 0.02, 0.5])
+    cbar = fig.colorbar(mappable, cax=cbar_ax)
+    cbar.set_label(cbar_label, fontsize=10)
+
+    return fig
 
 #endregion 
 
@@ -1252,9 +1689,9 @@ print(f'testing {len(pairs_to_process)} pairs out of {len(filtered_pairs)} pairs
 # pairs_to_process = filtered_pairs
 
 # get differential testing results
-file = f'{working_dir}/output/{dataset_name}/spatial_diff_{cell_type_col}.csv'
+file = f'{working_dir}/output/{dataset_name}/spatial_diff_{cell_type_col}.pkl'
 if os.path.exists(file):
-    spatial_diff = pd.read_csv(file)
+    spatial_diff = pd.read_pickle(file)
 else:
     res = []
     with tqdm(total=len(pairs_to_process), desc='Processing pairs') as pbar:
@@ -1270,7 +1707,12 @@ else:
     spatial_diff['adj.P.Val'] = fdrcorrection(spatial_diff['P.Value'])[1]
     spatial_diff['contrast'] = spatial_diff['contrast']\
         .str.replace('POST_vs_PREG', 'POSTPART_vs_PREG')
-    spatial_diff.to_csv(file, index=False)
+    spatial_diff.to_pickle(file)
+
+spatial_diff.to_csv(
+    f'{working_dir}/output/{dataset_name}/spatial_diff_{cell_type_col}.csv',
+    index=False
+)
 
 # plot heatmaps for both contrasts
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
@@ -1313,6 +1755,65 @@ plt.savefig(
     dpi=300, bbox_inches='tight')
 plt.close(fig)
 
+# plot spatial maps for both contrasts
+all_cell_type_pairs = [
+    # MPO and Major Neurovascular Interactions
+    ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
+    ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
+    ('Sst Chodl Gaba', 'Endo NN'),
+    ('Astro-NT NN', 'Endo NN'),
+    ('L5 ET CTX Glut', 'Peri NN'),
+    ('LSX Nkx2-1 Gaba', 'Peri NN'),
+    # Myelination and Glial Plasticity
+    ('Microglia NN', 'OPC NN'),
+    ('STR Prox1 Lhx6 Gaba', 'OPC NN'),
+    ('MPO-ADP Lhx8 Gaba', 'Oligo NN'),
+    ('Pvalb Gaba', 'Oligo NN'),
+    # Other Neuron-Glia Interactions
+    ('OB-STR-CTX Inh IMN', 'Astro-NT NN'),
+]
+
+cache_dir = f'{working_dir}/output/merfish/spatial_maps'
+contrasts = ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
+for pair in tqdm(all_cell_type_pairs, desc="Preparing map data"):
+    for contrast in contrasts:
+        get_spatial_map_intermediate_data(
+            adata=adata_merfish,
+            spatial_stats=spatial_stats,
+            cell_type_pair=pair,
+            contrast=contrast,
+            cache_dir=cache_dir,
+            cell_type_col=cell_type_col,
+            coords_cols=('x_ffd', 'y_ffd')
+        )
+
+fig, _ = plot_spatial_maps_grid(
+    adata_merfish,
+    spatial_stats,
+    all_cell_type_pairs,
+    cache_dir=cache_dir,
+    resolution=100,
+    influence_radius=8,
+    vmax=0.4
+)
+fig.savefig(f'{working_dir}/figures/spatial_maps.png',
+            bbox_inches='tight', dpi=300)
+fig.savefig(f'{working_dir}/figures/spatial_maps.svg',
+            bbox_inches='tight', dpi=300)
+plt.close(fig)
+
+# plot sample radii
+fig, axes = plot_spatial_diff_radii(
+    spatial_data=adata_merfish.obs,
+    coords_cols=('x_affine', 'y_affine'),
+    sample_col='sample',
+    d_max_scale=d_max_scale,
+    s=0.05)
+fig.savefig(
+    f'{working_dir}/figures/{dataset_name}/proximity_radii.png', 
+            dpi=300, bbox_inches='tight')
+plt.close(fig)
+
 #endregion
 
 #region cellchat curio #########################################################
@@ -1321,34 +1822,41 @@ selected_cell_types = [
     'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN',
     'Microglia NN', 'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN'
 ]
+comparisons = [
+    ('PREG_vs_CTRL', ('CTRL', 'PREG')),
+    ('POSTPART_vs_PREG', ('PREG', 'POSTPART'))
+]
 
-file_p_vs_c = (
-    f'{working_dir}/output/curio/'
-    f'cellchat_diff_preg_vs_ctrl_{cell_type_col}.pkl'
-)
-if os.path.exists(file_p_vs_c):
-    diff_p_vs_c = pd.read_pickle(file_p_vs_c)
-else:
-    diff_p_vs_c = get_cellchat_diff(
-        adata=adata_curio,
-        cell_type_col=cell_type_col,
-        conditions=('CTRL', 'PREG')
-    )
-    pd.to_pickle(diff_p_vs_c, file_p_vs_c)
+for name, conditions in comparisons:
+    print(f"Loading CellChat object for {name}...")
+    cobj_rds_path = f'{working_dir}/output/curio/'\
+        f'cellchat_{name}_{cell_type_col}.rds'
+    if not os.path.exists(cobj_rds_path):
+        print(f"Preparing CellChat object for {name}...")
+        prepare_cellchat_object(
+            adata=adata_curio,
+            cell_type_col=cell_type_col,
+            conditions=conditions,
+            output_path=cobj_rds_path
+        )
 
-file_po_vs_p = (
-    f'{working_dir}/output/curio/'
-    f'cellchat_diff_postpart_vs_preg_{cell_type_col}.pkl'
-)
-if os.path.exists(file_po_vs_p):
-    diff_po_vs_p = pd.read_pickle(file_po_vs_p)
-else:
-    diff_po_vs_p = get_cellchat_diff(
-        adata=adata_curio,
-        cell_type_col=cell_type_col,
-        conditions=('PREG', 'POSTPART')
-    )
-    pd.to_pickle(diff_po_vs_p, file_po_vs_p)
+diffs = {}
+for name, conditions in comparisons:
+    print(f"Loading CellChat diff for {name}...")
+    file = f'{working_dir}/output/curio/' \
+        f'cellchat_cell_type_diff_{name}_{cell_type_col}_spatial.pkl'
+    if os.path.exists(file):
+        diffs[name] = pd.read_pickle(file)
+    else:
+        print(f"Running CellChat diff analysis for {name}...")
+        diffs[name] = get_cellchat_cell_type_diff(
+            cobj_rds_path=cobj_rds_path,
+            conditions=conditions
+        )
+        pd.to_pickle(diffs[name], file)
+
+diff_p_vs_c = diffs.get('PREG_vs_CTRL')
+diff_po_vs_p = diffs.get('POSTPART_vs_PREG')
 
 diff_count_p_vs_c = diff_p_vs_c[diff_p_vs_c['measure'] == 'count']
 diff_count_po_vs_p = diff_po_vs_p[diff_po_vs_p['measure'] == 'count']
@@ -1358,19 +1866,10 @@ diff_weight_p_vs_c = diff_p_vs_c[diff_p_vs_c['measure'] == 'weight']
 diff_weight_po_vs_p = diff_po_vs_p[diff_po_vs_p['measure'] == 'weight']
 cellchat_weight_df = pd.concat([diff_weight_p_vs_c, diff_weight_po_vs_p])
 
-# The `align_sender_to_center` parameter 
-# - False (default): Aligns CellChat sender with proximity surround and
-#   receiver with center. Tests if signaling correlates with senders being
-#   enriched around receivers.
-# - True: Aligns CellChat sender with proximity center and receiver with
-#   surround. Tests if signaling correlates with receivers being enriched
-#   around senders.
-
-contrasts = ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
 subplot_color = '#4361ee'
+contrasts = ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
 
 for align_sender_to_center_flag in [True, False]:
-    # Generate scatter plots for 'count' measure
     fig, axes = plt.subplots(
         len(contrasts), 1, figsize=(4.5, 4 * len(contrasts))
     )
@@ -1395,7 +1894,6 @@ for align_sender_to_center_flag in [True, False]:
     )
     plt.close(fig)
 
-    # Generate scatter plots for 'weight' measure
     fig, axes = plt.subplots(
         len(contrasts), 1, figsize=(4.5, 4 * len(contrasts))
     )
@@ -1415,44 +1913,33 @@ for align_sender_to_center_flag in [True, False]:
     fig.savefig(
         f'{working_dir}/figures/scatter_prox_vs_cellchat_weight'
         f'_sender_is_center_{align_sender_to_center_flag}.png',
-        dpi=300,
+        dpi=200,
         bbox_inches='tight'
     )
     fig.savefig(
         f'{working_dir}/figures/scatter_prox_vs_cellchat_weight'
         f'_sender_is_center_{align_sender_to_center_flag}.svg',
-        dpi=300,
         bbox_inches='tight'
     )
     plt.close(fig)
 
-# Generate heatmap plots
-vmax_count = cellchat_count_df['logFC'].abs().max()
-vmax_weight = cellchat_weight_df['logFC'].abs().max()
-
-# When True, the x-axis cell types are treated as Senders.
-# When False, the x-axis cell types are treated as Receivers.
 for x_axis_are_senders in [True, False]:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
-    im = plot_cellchat_heatmap(
+    im = plot_cellchat_cell_type_heatmap(
         df=diff_count_p_vs_c,
         ax=ax1,
         x_axis_is_sender=x_axis_are_senders,
         x_axis_cell_types=selected_cell_types,
         tested_pairs=pairs_tested,
-        title='',
-        vmin=-vmax_count,
-        vmax=vmax_count
+        title=''
     )
-    plot_cellchat_heatmap(
+    plot_cellchat_cell_type_heatmap(
         df=diff_count_po_vs_p,
         ax=ax2,
         x_axis_is_sender=x_axis_are_senders,
         x_axis_cell_types=selected_cell_types,
         tested_pairs=pairs_tested,
-        title='',
-        vmin=-vmax_count,
-        vmax=vmax_count
+        title=''
     )
     ax2.set_ylabel('')
     ax2.set_yticklabels([])
@@ -1477,25 +1964,21 @@ for x_axis_are_senders in [True, False]:
     plt.close(fig)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
-    im = plot_cellchat_heatmap(
+    im = plot_cellchat_cell_type_heatmap(
         df=diff_weight_p_vs_c,
         ax=ax1,
         x_axis_is_sender=x_axis_are_senders,
         x_axis_cell_types=selected_cell_types,
         tested_pairs=pairs_tested,
-        title='',
-        vmin=-vmax_weight,
-        vmax=vmax_weight
+        title=''
     )
-    plot_cellchat_heatmap(
+    plot_cellchat_cell_type_heatmap(
         df=diff_weight_po_vs_p,
         ax=ax2,
         x_axis_is_sender=x_axis_are_senders,
         x_axis_cell_types=selected_cell_types,
         tested_pairs=pairs_tested,
-        title='',
-        vmin=-vmax_weight,
-        vmax=vmax_weight
+        title=''
     )
     ax2.set_ylabel('')
     ax2.set_yticklabels([])
@@ -1519,729 +2002,64 @@ for x_axis_are_senders in [True, False]:
     )
     plt.close(fig)
 
-
-
-
-
-
-
-
-
-
-# plot spatial maps for both contrasts
-cell_type_pairs = [
-    ('CEA-AAA-BST Six3 Sp9 Gaba', 'Endo NN'),
-    ('Sst Chodl Gaba', 'Endo NN'),
-    ('BAM NN', 'Astro-NT NN')
+comparisons = [
+    ('PREG_vs_CTRL', ('CTRL', 'PREG')),
+    ('POSTPART_vs_PREG', ('PREG', 'POSTPART'))
 ]
-plot_spatial_diff_maps(
-    adata_merfish,
-    spatial_stats,
-    spatial_diff,
-    cell_type_pairs=cell_type_pairs,
-    contrast='PREG_vs_CTRL',
-    resolution=250,
-    influence_radius=3.5,
-    vmax=0.4
-)
-plt.savefig(f'{working_dir}/figures/spatial_maps_preg_vs_ctrl.svg', 
-            bbox_inches='tight')
 
-cell_type_pairs = [
-    ('CEA-AAA-BST Six3 Sp9 Gaba', 'Endo NN'),
+pathway_pair_diffs = {}
+for name, conditions in comparisons:
+    file = f'{working_dir}/output/curio/' \
+        f'cellchat_pathway_pair_diff_{name}_{cell_type_col}_spatial.pkl'
+    if os.path.exists(file):
+        print(f"Loading CellChat pathway pair diff for {name}...")
+        pathway_pair_diffs[name] = pd.read_pickle(file)
+    else:
+        print(f"Running CellChat pathway pair diff analysis for {name}...")
+        cobj_rds_path = f'{working_dir}/output/curio/'\
+            f'cellchat_{name}_{cell_type_col}.rds'
+        pathway_pair_diffs[name] = get_cellchat_pathway_pair_diff(
+            cobj_rds_path=cobj_rds_path,
+            conditions=conditions,
+            contrast_name=name
+        )
+        pd.to_pickle(pathway_pair_diffs[name], file)
+
+pathway_pair_diff_df = pd.concat(pathway_pair_diffs.values()).reset_index()
+pathway_pair_diff_df[abs(pathway_pair_diff_df['strength_diff']) > 0.01].to_csv(
+    f'{working_dir}/output/curio/cellchat_pathway_pair_diff.csv',
+    index=False)
+
+all_cell_type_pairs = [
     ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
-    ('Tanycyte NN', 'Oligo NN')
+    ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
+    ('Sst Chodl Gaba', 'Endo NN'),
+    ('Astro-NT NN', 'Endo NN'),
+    ('L5 ET CTX Glut', 'Peri NN'),
+    ('LSX Nkx2-1 Gaba', 'Peri NN'),
+    ('Microglia NN', 'OPC NN'),
+    ('STR Prox1 Lhx6 Gaba', 'OPC NN'),
+    ('MPO-ADP Lhx8 Gaba', 'Oligo NN'),
+    ('Pvalb Gaba', 'Oligo NN'),
+    ('OB-STR-CTX Inh IMN', 'Astro-NT NN'),
 ]
-plot_spatial_diff_maps(
-    adata_merfish,
-    spatial_stats,
-    spatial_diff,
-    cell_type_pairs=cell_type_pairs,
-    contrast='POSTPART_vs_PREG',
-    resolution=250,
-    influence_radius=3.5,
-    vmax=0.4
+
+fig = plot_pathway_diff_dotplot(
+    pathway_pair_diff_df=pathway_pair_diff_df,
+    cell_type_pairs=all_cell_type_pairs,
+    contrasts=['PREG_vs_CTRL', 'POSTPART_vs_PREG'],
+    top_n=10
 )
-plt.savefig(f'{working_dir}/figures/spatial_maps_postpart_vs_preg.svg', 
-            bbox_inches='tight')
-
-# plot sample radii
-fig, axes = plot_sample_radii(
-    spatial_data=adata_merfish.obs,
-    coords_cols=('x_affine', 'y_affine'),
-    sample_col='sample',
-    d_max_scale=d_max_scale,
-    s=0.05)
-fig.savefig(
-    f'{working_dir}/figures/{dataset_name}/proximity_radii.png', 
-            dpi=300, bbox_inches='tight')
-plt.close(fig)
+if fig:
+    fig.savefig(
+        f'{working_dir}/figures/cellchat_pathway_diff_dotplot.png',
+        dpi=300, bbox_inches='tight')
+    fig.savefig(
+        f'{working_dir}/figures/cellchat_pathway_diff_dotplot.svg',
+        dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
 #endregion
-
-#region scratch ################################################################
-
-# determining get_spatial_diff() thresholds based on rare cell types 
-ct_counts = spatial_stats.groupby('cell_type_a')['cell_id'].nunique()
-print("\nRarest cell types:")
-print(ct_counts.sort_values().head(10))
-
-pair_stats = spatial_stats.groupby(['cell_type_a','cell_type_b']).agg(
-   total_b_count=('b_count','sum'),
-   num_nonzero=('b_count',lambda x:(x>0).sum())
-).reset_index()
-
-pair_stats['a_abundance'] = pair_stats['cell_type_a'].map(ct_counts)
-pair_stats['b_abundance'] = pair_stats['cell_type_b'].map(ct_counts)
-
-print("\nInteraction count percentiles:")
-print(pair_stats['total_b_count'].describe(percentiles=[0.1,0.25,0.5,0.75,0.9]))
-
-rare_pairs = pair_stats[(pair_stats['a_abundance'] < ct_counts.median()/5) | 
-                      (pair_stats['b_abundance'] < ct_counts.median()/5)]
-
-for t in [100,250,500,1000]:
-   for nz in [10,25,50,100]:
-       n_pairs = len(pair_stats[
-           (pair_stats['total_b_count'] >= t) &
-           (pair_stats['num_nonzero'] >= nz)
-       ])
-       n_rare = len(rare_pairs[
-           (rare_pairs['total_b_count'] >= t) &
-           (rare_pairs['num_nonzero'] >= nz)
-       ])
-       print(f'total_b_count >= {t:4d}, nonzero >= {nz:3d}: '
-             f'{n_pairs:4d} total pairs, {n_rare:4d} rare pairs')
-
-'''
-Rare cell types have ~100-350 cells
-With total_b_count ≥250 and ≥25 nonzero cells captures 1,407 pairs (43 rare)
-
-cell_type_a
-MEA Slc17a7 Glut                104
-L6b/CT ENT Glut                 109
-MPN-MPO-LPO Lhx6 Zfhx3 Gaba     144
-BST-SI-AAA Six3 Slc22a3 Gaba    172
-CA2-FC-IG Glut                  197
-SI-MA-ACB Ebf1 Bnc2 Gaba        205
-IT AON-TT-DP Glut               265
-GPe-SI Sox6 Cyp26b1 Gaba        272
-BST Tac2 Gaba                   349
-COAa-PAA-MEA Barhl2 Glut        352
-
-count    6.241000e+03
-mean     2.760008e+03
-std      4.287628e+04
-min      0.000000e+00
-10%      0.000000e+00
-25%      0.000000e+00
-50%      1.200000e+01
-75%      1.860000e+02
-90%      1.625000e+03
-max      2.435302e+06
-
-total_b_count >=  100, nonzero >=  10: 1924 total pairs,   80 rare pairs
-total_b_count >=  100, nonzero >=  25: 1922 total pairs,   80 rare pairs
-total_b_count >=  100, nonzero >=  50: 1895 total pairs,   77 rare pairs
-total_b_count >=  100, nonzero >= 100: 1709 total pairs,   59 rare pairs
-total_b_count >=  250, nonzero >=  10: 1407 total pairs,   43 rare pairs
-total_b_count >=  250, nonzero >=  25: 1407 total pairs,   43 rare pairs
-total_b_count >=  250, nonzero >=  50: 1405 total pairs,   43 rare pairs
-total_b_count >=  250, nonzero >= 100: 1383 total pairs,   37 rare pairs
-total_b_count >=  500, nonzero >=  10: 1074 total pairs,   27 rare pairs
-total_b_count >=  500, nonzero >=  25: 1074 total pairs,   27 rare pairs
-total_b_count >=  500, nonzero >=  50: 1074 total pairs,   27 rare pairs
-total_b_count >=  500, nonzero >= 100: 1070 total pairs,   26 rare pairs
-total_b_count >= 1000, nonzero >=  10:  822 total pairs,   12 rare pairs
-total_b_count >= 1000, nonzero >=  25:  822 total pairs,   12 rare pairs
-total_b_count >= 1000, nonzero >=  50:  822 total pairs,   12 rare pairs
-total_b_count >= 1000, nonzero >= 100:  822 total pairs,   12 rare pairs
-'''
-
-from scipy.spatial.distance import pdist
-from scipy.cluster import hierarchy as hc
-clust_ids = sorted(list(adata.obs[cell_type_col].unique()))
-clust_avg = np.vstack([
-    adata[adata.obs[cell_type_col] == i].layers['volume_log1p'].mean(0)
-    for i in clust_ids
-])
-
-D = pdist(clust_avg, 'correlation')
-Z = hc.linkage(D, 'complete', optimal_ordering=False)
-n = len(clust_ids)
-
-merge_matrix = np.zeros((n-1, 2), dtype=int)
-for i in range(n-1):
-    for j in range(2):
-        val = Z[i,j]
-        merge_matrix[i,j] = -int(val + 1) if val < n else int(val) - n + 1
-
-hc_dict = {
-    'merge': merge_matrix,
-    'height': Z[:,2],
-    'order': np.array([x+1 for x in hc.leaves_list(Z)]),
-    'labels': np.array(clust_ids),
-    'method': 'complete',
-    'call': {},
-    'dist.method': 'correlation'
-}
-
-to_r(hc_dict, 'hc')
-
-r('''
-library(crumblr)
-library(patchwork)
-  
-hc = structure(hc, class = "hclust")
-hc$call = NULL
-
-res = treeTest(fit, cobj, hc, coef = "PREG_vs_CTRL", method = "FE") 
-png(file.path(working_dir, 'figures/merfish/tree_test_ctrl_vs_preg.png'),
-    width=10, height=12, units='in', res=300)
-plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
-    plot_layout(nrow = 1, widths = c(2, 1))
-dev.off()
-  
-res = treeTest(fit, cobj, hc, coef = "POSTPART_vs_PREG", method = "FE") 
-png(file.path(working_dir, 'figures/merfish/tree_test_preg_vs_post.png'),
-    width=10, height=12, units='in', res=300)
-plotTreeTestBeta(res) + plotForest(res, hide = TRUE) +
-    plot_layout(nrow = 1, widths = c(2, 1))
-dev.off()
-''')
-
-def get_mast_de(
-    adata: sc.AnnData,
-    cell_type_col: str,
-    contrasts: dict,
-    min_cells_group: int = 10,
-    min_pct_gene: float = 0.1) -> dict:
-
-    adata_cleaned = adata.copy()
-    adata_cleaned.obs = adata_cleaned.obs[[
-        'sample', 'condition', cell_type_col]]  
-    adata_cleaned = adata_cleaned[
-        :, adata_cleaned.var['protein_coding']]
-    adata_cleaned = adata_cleaned[
-        :, ~adata_cleaned.var['gene_symbol']
-        .str.lower().str.startswith('mt-', na=False)].copy()
-    adata_cleaned.var = adata_cleaned.var[[
-        'gene_symbol']]
-    adata_cleaned.uns, adata_cleaned.varm, \
-        adata_cleaned.obsp, adata_cleaned.obsm = {}, {}, {}, {}
-    
-    SingleCell(adata_cleaned).to_seurat('sobj', v3=True)
-    del adata_cleaned; gc.collect()
-
-    to_r(min_cells_group, 'min_c'); to_r(min_pct_gene, 'min_p')
-    r('suppressPackageStartupMessages({{library(Seurat); library(dplyr)}})')
-
-    results = {c: {} for c in contrasts.keys()}
-    unique_cts = adata.obs[cell_type_col].unique() 
-
-    for c_name, grps in tqdm(contrasts.items(), desc='Contrasts'):
-        to_r(grps[0], 'g1'); to_r(grps[1], 'g2')
-        
-        for ct_val in tqdm(unique_cts, desc='Cell types', leave=False):
-            to_r(ct_val, 'ct_v')
-            r_script = f'''
-                de_r <- NULL
-                tryCatch({{
-                    sobj_sub <- subset(sobj, 
-                        subset = {cell_type_col} == ct_v & 
-                            condition %in% c(g1, g2))
-                    cts <- table(sobj_sub@meta.data$condition)
-                    if (all(c(g1, g2) %in% names(cts)) && 
-                        all(cts[c(g1, g2)] >= min_c)) {{
-                        Idents(sobj_sub) <- "condition"
-                        df <- FindMarkers(
-                            sobj_sub, ident.1 = g1, ident.2 = g2,
-                            test.use = "MAST", min.pct = min_p, 
-                            logfc.threshold = 0.0)
-                        if (nrow(df) > 0) {{
-                            df$gene <- rownames(df) 
-                            de_r <- df
-                        }}
-                    }}
-                }}, error = function(e) {{ de_r <- NULL }})
-                if(exists("sobj_sub")) rm(sobj_sub)
-                if(exists("cts")) rm(cts)
-                gc()
-            '''
-            r(r_script)
-            
-            df_py = to_py('de_r', format='pandas')
-            if df_py is not None and not df_py.empty:
-                df_py.rename(columns={
-                    'avg_log2FC':'avg_logFC', 
-                    'p_val':'P.Value', 
-                    'p_val_adj':'adj.P.Val'}, inplace=True)
-                cols = ['gene', 'avg_logFC', 'pct.1', 'pct.2', 
-                'P.Value', 'adj.P.Val']
-                df_py = df_py[[c for c in cols if c in df_py.columns]]
-                results[c_name][ct_val] = df_py
-            r('if(exists("de_r")) rm(de_r); gc()')
-    
-    r('if(exists("sobj")) rm("sobj"); gc()')
-    return results
-
-def get_lr_database():
-    r(r'''
-    # devtools::install_github("sqjin/CellChat")
-    # devtools::install_github("Wei-BioMath/NeuronChat")
-    suppressPackageStartupMessages({
-        library(CellChat)
-        library(NeuronChat)
-        library(dplyr)
-        library(tidyr)
-        library(stringr)
-    })
-
-    data(list='interactionDB_mouse')
-    neuron_chat_db = eval(parse(text = 'interactionDB_mouse'))
-    neuron_chat_db = purrr::map_dfr(neuron_chat_db, ~expand.grid(
-        interaction_name = .x$interaction_name,
-        ligand = .x$lig_contributor,
-        receptor = .x$receptor_subunit)) %>%
-        mutate(DB = "neuronchat")
-
-    cell_chat_db = CellChatDB.mouse$interaction %>%
-        dplyr::select(interaction_name_2) %>%
-        rename(interaction_name = interaction_name_2) %>%
-        separate(interaction_name, into = c("ligand", "receptor"), 
-        sep = " - ", remove = FALSE) %>%
-        mutate(receptor = str_replace_all(receptor, "[()]", "")) %>%
-        separate_rows(receptor, sep = "\\+") %>%
-        mutate(DB = "cellchat")
-
-    LR_pairs = rbind(cell_chat_db, neuron_chat_db) %>%
-        distinct(ligand, receptor, .keep_all = TRUE) %>%
-        mutate(across(where(is.character), trimws)) 
-
-    rownames(LR_pairs) = NULL
-    print(LR_pairs[1:10, 1:4])
-    ''')
-    return to_py('LR_pairs', format='pandas')
-
-def integrate_lr_and_proximity(
-    mast_de_results: dict,
-    spatial_diff_df: pd.DataFrame,
-    lr_database: pd.DataFrame, 
-    contrasts_list: list) -> pd.DataFrame:
-
-    results_list = []
-    spatial_diff_idx = spatial_diff_df.set_index(
-        ['contrast', 'cell_type_a', 'cell_type_b']
-    )
-
-    for contrast_val in tqdm(contrasts_list, desc="Contrasts"):
-        de_data = mast_de_results[contrast_val]
-        for sender in tqdm(de_data.keys(), desc="Senders", leave=False):
-            de_s = de_data[sender]
-            if de_s is None or de_s.empty: continue
-            de_s_idx = de_s.set_index('gene')
-
-            for receiver in de_data.keys():
-                de_r = de_data[receiver]
-                de_r_idx = None
-                if de_r is not None and not de_r.empty:
-                    de_r_idx = de_r.set_index('gene')
-
-                for _, lr_pair in lr_database.iterrows():
-                    lig, rec = lr_pair['ligand'], lr_pair['receptor']
-                    l_fc, l_pv, r_fc, r_pv = np.nan,np.nan,np.nan,np.nan
-
-                    if lig in de_s_idx.index:
-                        l_fc = de_s_idx.at[lig, 'avg_logFC']
-                        l_pv = de_s_idx.at[lig, 'adj.P.Val']
-                    
-                    if de_r_idx is not None and rec in de_r_idx.index:
-                        r_fc = de_r_idx.at[rec, 'avg_logFC']
-                        r_pv = de_r_idx.at[rec, 'adj.P.Val']
-                    
-                    if np.isnan(l_fc) and np.isnan(r_fc): continue
-                        
-                    s_prox_fc, s_prox_pv = np.nan, np.nan
-                    r_prox_fc, r_prox_pv = np.nan, np.nan
-
-                    key_s = (contrast_val, sender, receiver)
-                    if key_s in spatial_diff_idx.index:
-                        row = spatial_diff_idx.loc[key_s]
-                        s_prox_fc = row['logFC'].item() \
-                            if isinstance(row['logFC'], pd.Series) \
-                            else row['logFC']
-                        s_prox_pv = row['adj.P.Val'].item() \
-                            if isinstance(row['adj.P.Val'], pd.Series) \
-                            else row['adj.P.Val']
-                    
-                    key_r = (contrast_val, receiver, sender)
-                    if key_r in spatial_diff_idx.index:
-                        row = spatial_diff_idx.loc[key_r]
-                        r_prox_fc = row['logFC'].item() \
-                            if isinstance(row['logFC'], pd.Series) \
-                            else row['logFC']
-                        r_prox_pv = row['adj.P.Val'].item() \
-                            if isinstance(row['adj.P.Val'], pd.Series) \
-                            else row['adj.P.Val']
-                    
-                    results_list.append({
-                        'contrast': contrast_val, 'sender': sender,
-                        'receiver': receiver, 'ligand': lig,
-                        'receptor': rec, 'L_logFC': l_fc,
-                        'L_adj.P.Val': l_pv, 'R_logFC': r_fc,
-                        'R_adj.P.Val': r_pv,
-                        'prox_S_center_logFC': s_prox_fc,
-                        'prox_S_center_adj.P.Val': s_prox_pv,
-                        'prox_R_center_logFC': r_prox_fc,
-                        'prox_R_center_adj.P.Val': r_prox_pv,
-                        'DB': lr_pair.get('DB')
-                    })
-    
-    cols = ['contrast','sender','receiver','ligand','receptor','L_logFC',
-            'L_adj.P.Val','R_logFC','R_adj.P.Val','prox_S_center_logFC',
-            'prox_S_center_adj.P.Val','prox_R_center_logFC',
-            'prox_R_center_adj.P.Val','DB']
-    return pd.DataFrame(results_list, columns=cols)
-
-def get_significant_lr_prox_hits(
-    integrated_df: pd.DataFrame,
-    y_axis_metric: str = 'prox_S_center_logFC',
-    l_pval_thresh: float = 0.1, r_pval_thresh: float = 0.1,
-    l_logfc_thresh: float = 0.1, r_logfc_thresh: float = 0.1,
-    prox_logfc_thresh: float = 0.05) -> pd.DataFrame:
-    
-    df = integrated_df.copy()
-    if df.empty: return pd.DataFrame()
-
-    if y_axis_metric not in df.columns:
-        df[y_axis_metric] = 0.0 
-        
-    up_cond = (
-        (df['L_adj.P.Val'].fillna(1) < l_pval_thresh) &
-        (df['R_adj.P.Val'].fillna(1) < r_pval_thresh) &
-        (df['L_logFC'].fillna(0) > l_logfc_thresh) &
-        (df['R_logFC'].fillna(0) > r_logfc_thresh) &
-        (df[y_axis_metric].fillna(0) > prox_logfc_thresh) 
-    )
-    down_cond = (
-        (df['L_adj.P.Val'].fillna(1) < l_pval_thresh) &
-        (df['R_adj.P.Val'].fillna(1) < r_pval_thresh) &
-        (df['L_logFC'].fillna(0) < -l_logfc_thresh) &
-        (df['R_logFC'].fillna(0) < -r_logfc_thresh) &
-        (df[y_axis_metric].fillna(0) < -prox_logfc_thresh)
-    )
-    significant_hits_df = df[up_cond | down_cond].copy()
-    if 'L_logFC' in significant_hits_df.columns and \
-       'R_logFC' in significant_hits_df.columns and \
-       'lr_sum_lfc' not in significant_hits_df.columns:
-        significant_hits_df['lr_sum_lfc'] = \
-            significant_hits_df['L_logFC'].fillna(0) + \
-            significant_hits_df['R_logFC'].fillna(0)
-    return significant_hits_df
-
-def plot_lr_proximity_scatter(
-    integrated_df: pd.DataFrame, 
-    significant_hits_df: pd.DataFrame, 
-    contrast_name: str,
-    color_map_dict: dict,
-    y_axis_metric: str = 'prox_S_center_logFC',
-    x_col: str = 'lr_sum_lfc',
-    receiver_col_for_color: str = 'receiver') -> plt.Figure:
-
-    df_contrast_all = integrated_df[
-        integrated_df['contrast'] == contrast_name
-    ].copy()
-    if df_contrast_all.empty: return plt.figure()
-
-    if x_col == 'lr_sum_lfc' and x_col not in df_contrast_all.columns:
-        df_contrast_all[x_col] = \
-            df_contrast_all['L_logFC'].fillna(0) + \
-            df_contrast_all['R_logFC'].fillna(0)
-    
-    df_plot_bg = df_contrast_all.dropna(subset=[x_col, y_axis_metric]).copy()
-    
-    df_hits_contrast = pd.DataFrame() 
-    if significant_hits_df is not None and not significant_hits_df.empty:
-        temp_hits = significant_hits_df[
-            significant_hits_df['contrast'] == contrast_name
-        ].copy()
-        if x_col == 'lr_sum_lfc' and x_col not in temp_hits.columns and \
-           'L_logFC' in temp_hits.columns and 'R_logFC' in temp_hits.columns:
-            temp_hits[x_col] = \
-                temp_hits['L_logFC'].fillna(0) + \
-                temp_hits['R_logFC'].fillna(0)
-        if x_col in temp_hits.columns and y_axis_metric in temp_hits.columns:
-             df_hits_contrast = temp_hits.dropna(
-                subset=[x_col, y_axis_metric]
-            ).copy()
-
-    if df_plot_bg.empty and df_hits_contrast.empty:
-        return plt.figure()
-
-    x_plot_values = pd.concat([
-        df_plot_bg[x_col], 
-        df_hits_contrast[x_col] 
-        if not df_hits_contrast.empty else pd.Series(dtype=float)
-    ]).dropna()
-
-    if x_plot_values.empty: x_lim_l, x_lim_h = -1, 1
-    else:
-        x_min_p,x_max_p = np.percentile(x_plot_values,[1,99])
-        x_buf = (x_max_p-x_min_p)*0.05 if (x_max_p-x_min_p)>0 else 0.1
-        x_lim_l=max(x_min_p-x_buf, x_plot_values.min())
-        x_lim_h=min(x_max_p+x_buf, x_plot_values.max())
-        if x_lim_l>=x_lim_h : x_lim_l,x_lim_h = x_lim_h-0.5,x_lim_l+0.5
-        if -0.5<x_lim_l<0 and 0<x_lim_h<0.5:
-             x_lim_l,x_lim_h = min(x_lim_l,-0.5),max(x_lim_h,0.5)
-
-    fig, ax = plt.subplots(figsize=(4.2, 3.8))
-    
-    ax.scatter(
-        df_plot_bg[x_col], df_plot_bg[y_axis_metric], s=8, alpha=0.08, 
-        c='darkgrey', rasterized=True, edgecolors='none'
-    )
-            
-    leg_h_hits = []
-    def_hit_col = 'coral' 
-    if not df_hits_contrast.empty:
-        for r_val in sorted(df_hits_contrast[receiver_col_for_color].unique()):
-            df_r_h = df_hits_contrast[
-                df_hits_contrast[receiver_col_for_color] == r_val
-            ]
-            col_val = color_map_dict.get(r_val, def_hit_col)
-            sc_h = ax.scatter(
-                df_r_h[x_col], df_r_h[y_axis_metric], 
-                s=30, alpha=0.85, c=col_val, rasterized=True, 
-                label=r_val, edgecolors='black', linewidths=0.4, zorder=10
-            )
-            leg_h_hits.append(sc_h)
-            
-    ax.axhline(0, ls='--', c='k', lw=0.7, alpha=0.7, zorder=0)
-    ax.axvline(0, ls='--', c='k', lw=0.7, alpha=0.7, zorder=0)
-    
-    y_lab_txt = "Proximity Change (logFC, "
-    if y_axis_metric=='prox_S_center_logFC': y_lab_txt += "S-center)"
-    elif y_axis_metric=='prox_R_center_logFC': y_lab_txt += "R-center)"
-    else: y_lab_txt += f"{y_axis_metric})"
-
-    ax.set_xlabel("L-R Expression Change (logFC Sum)", fontsize=9)
-    ax.set_ylabel(y_lab_txt, fontsize=9)
-    ax.tick_params(axis='both',which='major',labelsize=8)
-    ax.set_title(f"{contrast_name.replace('_',' ')}",fontsize=10,pad=10)
-    ax.set_xlim(x_lim_l, x_lim_h)
-    
-    if leg_h_hits:
-        leg_title = f"Hit {receiver_col_for_color.capitalize()} Subclass"
-        ax.legend(handles=leg_h_hits, title=leg_title,
-                  title_fontsize=7, fontsize=6, loc='upper left', 
-                  bbox_to_anchor=(1.01,1), borderaxespad=0., 
-                  frameon=False, markerscale=1.5, ncol=1)
-
-    plt.subplots_adjust(right=0.70,bottom=0.15,left=0.15,top=0.9)
-    return fig
-
-def plot_spatial_lr_expression_change(
-    adata_spots: sc.AnnData, # e.g., adata_curio
-    contrast_name: str, # e.g., "PREG_vs_CTRL"
-    ligand_gene: str,
-    receptor_gene: str,
-    metric_to_plot: str = 'product_change', # 'ligand_change', 'receptor_change'
-    adata_all_cells_for_overlay: sc.AnnData = None, # e.g., adata_merfish
-    overlay_expr_percentile: float = 90,
-    coords_col_spots: tuple = ('x_ffd', 'y_ffd'),
-    coords_col_overlay: tuple = ('x_affine', 'y_affine'),
-    condition_col: str = 'condition',
-    gene_symbol_col: str = 'gene_symbol',
-    layer_spots: str = None, # Layer in adata_spots for expression
-    layer_overlay: str = None, # Layer for adata_all_cells_for_overlay
-    resolution: int = 100,
-    influence_radius_factor: float = 3.5, # Multiplier for d_scale
-    vmax_abs: float = None,
-    base_sample_ref: str = None
-) -> plt.Figure:
-
-    cond2_str, cond1_str = contrast_name.split('_vs_')
-
-    spots_c1 = adata_spots[adata_spots.obs[condition_col] == cond1_str]
-    spots_c2 = adata_spots[adata_spots.obs[condition_col] == cond2_str]
-
-    if spots_c1.shape[0]==0 or spots_c2.shape[0]==0: return plt.figure()
-    
-    def get_expr(ad, gene, lyr):
-        if gene not in ad.var[gene_symbol_col].values: 
-            return np.zeros(ad.shape[0])
-        gene_idx = ad.var[ad.var[gene_symbol_col] == gene].index[0]
-        if lyr is None:
-            return ad.X[:,ad.var.index.get_loc(gene_idx)].toarray().flatten()
-        return ad.layers[lyr][:,ad.var.index.get_loc(gene_idx)].toarray().flatten()
-
-    l_expr_c1 = get_expr(spots_c1, ligand_gene, layer_spots)
-    r_expr_c1 = get_expr(spots_c1, receptor_gene, layer_spots)
-    l_expr_c2 = get_expr(spots_c2, ligand_gene, layer_spots)
-    r_expr_c2 = get_expr(spots_c2, receptor_gene, layer_spots)
-
-    if metric_to_plot == 'product_change':
-        metric_c1 = l_expr_c1 * r_expr_c1
-        metric_c2 = l_expr_c2 * r_expr_c2
-        plot_title = f"Change in {ligand_gene}*{receptor_gene} product"
-    elif metric_to_plot == 'ligand_change':
-        metric_c1, metric_c2 = l_expr_c1, l_expr_c2
-        plot_title = f"Change in {ligand_gene} expression"
-    elif metric_to_plot == 'receptor_change':
-        metric_c1, metric_c2 = r_expr_c1, r_expr_c2
-        plot_title = f"Change in {receptor_gene} expression"
-    else: 
-        raise ValueError("Invalid metric_to_plot")
-
-    coords_c1 = spots_c1.obs[list(coords_col_spots)].values
-    coords_c2 = spots_c2.obs[list(coords_col_spots)].values
-    
-    all_spot_coords = adata_spots.obs[list(coords_col_spots)].values
-    if base_sample_ref and base_sample_ref in adata_spots.obs['sample'].unique():
-        ref_coords = adata_spots[adata_spots.obs['sample'] == base_sample_ref]\
-                     .obs[list(coords_col_spots)].values
-    else: 
-        ref_coords = all_spot_coords
-    if ref_coords.shape[0] == 0: 
-        ref_coords = all_spot_coords
-    
-    x_min, x_max = ref_coords[:,0].min(), ref_coords[:,0].max()
-    y_min, y_max = ref_coords[:,1].min(), ref_coords[:,1].max()
-    pad = 0.05
-    xp = (x_max-x_min)*pad if x_max!=x_min else 0.1
-    yp = (y_max-y_min)*pad if y_max!=y_min else 0.1
-    p_xmin,p_xmax = x_min-xp, x_max+xp
-    p_ymin,p_ymax = y_min-yp, y_max+yp
-    
-    x_grid = np.linspace(x_min, x_max, resolution)
-    y_grid = np.linspace(y_min, y_max, resolution)
-    X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
-    grid_points = np.vstack([X_mesh.ravel(), Y_mesh.ravel()]).T
-
-    d_scale_c1 = np.median(KDTree(coords_c1).query(coords_c1,k=2)[0][:,1]) \
-                 if len(coords_c1)>1 else 1
-    d_scale_c2 = np.median(KDTree(coords_c2).query(coords_c2,k=2)[0][:,1]) \
-                 if len(coords_c2)>1 else 1
-    d_max_infl = influence_radius_factor * max(d_scale_c1, d_scale_c2)
-    if d_max_infl == 0: 
-        d_max_infl = 1 # Avoid division by zero
-
-    Z_diff = np.full(X_mesh.shape, np.nan)
-
-    tree_c1 = KDTree(coords_c1)
-    tree_c2 = KDTree(coords_c2)
-    
-    for i, point in enumerate(grid_points):
-        idx_c1 = tree_c1.query_ball_point(point, d_max_infl)
-        idx_c2 = tree_c2.query_ball_point(point, d_max_infl)
-
-        if not idx_c1 or not idx_c2: 
-            continue
-
-        w_c1 = np.exp(-0.7*np.linalg.norm(coords_c1[idx_c1]-point,axis=1)/d_max_infl)
-        w_c2 = np.exp(-0.7*np.linalg.norm(coords_c2[idx_c2]-point,axis=1)/d_max_infl)
-        
-        avg_m_c1 = np.sum(w_c1 * metric_c1[idx_c1]) / np.sum(w_c1)
-        avg_m_c2 = np.sum(w_c2 * metric_c2[idx_c2]) / np.sum(w_c2)
-        Z_diff.flat[i] = avg_m_c2 - avg_m_c1
-        
-    if np.all(np.isnan(Z_diff)): # If no valid grid points, fill with 0
-        Z_diff_smooth = np.zeros_like(Z_diff)
-    else:
-        Z_diff_smooth = gaussian_filter(np.nan_to_num(Z_diff), sigma=1.2)
-        Z_diff_smooth[np.isnan(Z_diff)] = np.nan # Restore NaNs
-
-    fig, ax = plt.subplots(figsize=(4.5, 3.8))
-    ax.scatter(all_spot_coords[:,0], all_spot_coords[:,1], s=0.5, 
-              c='lightgrey', alpha=0.3, rasterized=True)
-
-    v_max_val = vmax_abs if vmax_abs is not None \
-                else np.nanpercentile(np.abs(Z_diff_smooth), 98)
-    if v_max_val == 0: 
-        v_max_val = 1.0 # Avoid all white plot
-    v_min_val = -v_max_val
-    
-    cmap = LinearSegmentedColormap.from_list('custom_div',
-        ["#4b0857", "#813e8f", "white", "#66b66b", "#156a2f"], N=100)
-
-    im = ax.pcolormesh(X_mesh, Y_mesh, Z_diff_smooth, cmap=cmap, 
-                      vmin=v_min_val, vmax=v_max_val, shading='gouraud', 
-                      alpha=0.8, rasterized=True)
-
-    if adata_all_cells_for_overlay is not None:
-        l_expr_all = get_expr(
-            adata_all_cells_for_overlay, ligand_gene, layer_overlay)
-        r_expr_all = get_expr(
-            adata_all_cells_for_overlay, receptor_gene, layer_overlay)
-        l_thresh = np.percentile(
-            l_expr_all[l_expr_all>0], overlay_expr_percentile) \
-            if np.any(l_expr_all>0) else 0
-        r_thresh = np.percentile(
-            r_expr_all[r_expr_all>0], overlay_expr_percentile) \
-            if np.any(r_expr_all>0) else 0
-        
-        overlay_coords = adata_all_cells_for_overlay.obs[
-            list(coords_col_overlay)].values
-        ax.scatter(overlay_coords[l_expr_all > l_thresh, 0], 
-                  overlay_coords[l_expr_all > l_thresh, 1], 
-                  s=1, c='cyan', alpha=0.6, 
-                  label=f'{ligand_gene} High', marker='.')
-        ax.scatter(overlay_coords[r_expr_all > r_thresh, 0], 
-                  overlay_coords[r_expr_all > r_thresh, 1], 
-                  s=1, c='magenta', alpha=0.6, 
-                  label=f'{receptor_gene} High', marker='.')
-
-    ax.set_aspect('equal')
-    ax.set_xlim(p_xmin,p_xmax)
-    ax.set_ylim(p_ymin,p_ymax)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_title(f"{plot_title}\n{contrast_name.replace('_',' ')}", fontsize=9)
-    
-    cbar = fig.colorbar(im, ax=ax, shrink=0.7, aspect=10, pad=0.02)
-    cbar.set_label(f"Change in Metric ({cond2_str} - {cond1_str})", fontsize=8)
-    cbar.ax.tick_params(labelsize=7)
-    if adata_all_cells_for_overlay is not None and \
-       (np.any(l_expr_all > l_thresh) or np.any(r_expr_all > r_thresh)):
-        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), 
-                 fontsize=7, markerscale=3)
-    plt.subplots_adjust(right=0.80 if adata_all_cells_for_overlay else 0.85, 
-                       bottom=0.05, top=0.9, left=0.05)
-    return fig
-
-# generate filtered heatmaps for each contrast
-for contrast in spatial_diff['contrast'].unique():
-    contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
-    if not contrast_data.empty:
-        fig, ax = plot_spatial_diff_heatmap(
-            contrast_data, pairs_tested, contrast, sig=0.10,
-            cell_types_a=None, 
-            cell_types_b=selected_cell_types, 
-            recompute_fdr=True, figsize=(25, 15))
-        plt.savefig(
-            f'{working_dir}/figures/'
-            f'heatmap_{dataset_name}_{cell_type_col}_{contrast}.png',
-            dpi=300, bbox_inches='tight')
-        plt.close()
-
-# heatmaps for each contrast
-for contrast in spatial_diff['contrast'].unique():
-    contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
-    if not contrast_data.empty:
-        fig, ax = plot_spatial_diff_heatmap(
-            contrast_data, 
-            pairs_tested, 
-            contrast, 
-            sig=0.10,
-            figsize=(16, 22) if cell_type_col == 'subclass' else (10, 12))
-        plt.savefig(
-            f'{working_dir}/figures/merfish/'
-            f'heatmap_{cell_type_col}_{contrast}.png',
-            dpi=300, bbox_inches='tight')
-        plt.close()
-
-#endregion
-
 
 
 
