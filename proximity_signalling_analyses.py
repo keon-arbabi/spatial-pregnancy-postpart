@@ -1,4 +1,4 @@
-import os, gc
+import os, gc, pickle, warnings
 import numpy as np
 import pandas as pd
 import scanpy as sc
@@ -15,10 +15,15 @@ from statsmodels.stats.multitest import fdrcorrection
 from matplotlib.colors import LinearSegmentedColormap
 from single_cell import SingleCell
 from scipy.spatial.distance import pdist
-import pickle
+from gprofiler import GProfiler
+from typing import List, Optional
+from scipy.cluster.hierarchy import linkage, leaves_list
+
+warnings.filterwarnings('ignore')
 
 plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
+plt.rcParams['figure.dpi'] = 400
 
 #region functions #############################################################
 
@@ -706,7 +711,7 @@ def plot_spatial_diff_map(
     x_min, x_max = base_coords[:, 0].min(), base_coords[:, 0].max()
     y_min, y_max = base_coords[:, 1].min(), base_coords[:, 1].max()
 
-    padding = 0.15
+    padding = 0.05
     x_pad = (x_max - x_min) * padding
     y_pad = (y_max - y_min) * padding
     plot_x_min, plot_x_max = x_min - x_pad, x_max + x_pad
@@ -795,10 +800,6 @@ def plot_spatial_diff_map(
     cmap = LinearSegmentedColormap.from_list(
         'custom_diverging',
         ['#4b0857', '#813e8f', '#ffffff', '#66b66b', '#156a2f'], N=100)
-        
-    cell_type_a, cell_type_b = cell_type_pair
-    title_str = f"{cell_type_a} (Center)\n{cell_type_b} (Surround)"
-    ax.set_title(title_str, loc='left', pad=5, fontsize=10)
     
     ax.pcolormesh(X, Y, tissue_mask,
                  cmap='Greys', alpha=0.4, rasterized=True)
@@ -840,11 +841,12 @@ def plot_spatial_maps_grid(
 
     fig, axs = plt.subplots(
         n_rows, n_cols,
-        figsize=(n_cols * 5, n_rows * 4.5),
-        gridspec_kw={'wspace': 0.01, 'hspace': 0.01}
+        figsize=(n_cols * 2.8, n_rows * 2.2)
     )
     if n_rows == 1:
         axs = np.array([axs])
+    if n_cols == 1:
+        axs = axs.reshape(-1, 1)
 
     images = []
     for i, pair in enumerate(tqdm(cell_type_pairs, desc="Plotting maps")):
@@ -862,21 +864,23 @@ def plot_spatial_maps_grid(
             )
             if im:
                 images.append(im)
-            ax.set_title("")
+            if i == 0:
+                title = "Pregnancy vs Control" if contrast == 'PREG_vs_CTRL' \
+                    else "Postpartum vs Pregnancy"
+                ax.set_title(title, fontsize=10)
+            if j == 0:
+                ylabel_str = f"{pair[0]} (Center)\n{pair[1]} (Surround)"
+                ax.set_ylabel(
+                    ylabel_str, fontsize=7, 
+                    rotation='vertical', va='center', labelpad=15)
 
     if not images:
         plt.close(fig)
         return
-
     for im in images:
         im.set_clim(-vmax, vmax)
 
-    fig.subplots_adjust(bottom=0.1)
-    cbar_ax = fig.add_axes([0.4, 0.05, 0.2, 0.015])
-    cbar = fig.colorbar(images[0], cax=cbar_ax, orientation='horizontal')
-    cbar.set_label('logFC', size=8)
-    cbar.ax.tick_params(labelsize=6)
-
+    fig.subplots_adjust(wspace=0, hspace=0)
     return fig, axs
 
 def plot_cellchat_diff_radii(
@@ -920,33 +924,165 @@ def plot_cellchat_diff_radii(
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
 
+def update_cellchat_db(
+    cellphonedb_path: str,
+    cache_path: str,
+    updated_db_name: str = 'CellChatDB_mouse_extended') -> str:
+
+    if os.path.exists(cache_path):
+        with open(cache_path, 'rb') as f:
+            data_for_r = pickle.load(f)
+        interaction_input = data_for_r['interaction_input']
+        complex_input = data_for_r['complex_input']
+        cpdb_gene_info_mouse = data_for_r['cpdb_gene_info_mouse']
+    else:
+        interaction_input = pd.read_csv(
+            os.path.join(cellphonedb_path, 'interaction_input.csv'))
+        complex_input = pd.read_csv(
+            os.path.join(cellphonedb_path, 'complex_input.csv'))
+        gene_input = pd.read_csv(
+            os.path.join(cellphonedb_path, 'gene_input.csv'))
+
+        gp = GProfiler(user_agent='cellchat_update_tool',
+                       return_dataframe=True)
+        human_genes = gene_input['hgnc_symbol'].dropna().unique().tolist()
+        
+        ortholog_results = gp.orth(
+            organism='hsapiens',
+            target='mmusculus',
+            query=human_genes
+        )
+
+        mapping_df = ortholog_results.drop_duplicates(subset=['incoming'])        
+        mapping = mapping_df.set_index('incoming')['name']
+        gene_input['Symbol'] = gene_input['hgnc_symbol'].map(mapping)
+
+        cpdb_gene_info_mouse = gene_input[
+            ['uniprot', 'Symbol']].dropna().drop_duplicates()
+
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, 'wb') as f:
+            pickle.dump({
+                'interaction_input': interaction_input,
+                'complex_input': complex_input,
+                'cpdb_gene_info_mouse': cpdb_gene_info_mouse
+            }, f)
+
+    to_r(interaction_input, 'cpdb_interaction_input')
+    to_r(complex_input, 'cpdb_complex_input')
+    to_r(cpdb_gene_info_mouse.reset_index(drop=True), 'cpdb_gene_info_mouse')
+    to_r(updated_db_name, 'updated_db_name')
+
+    r_script = """
+    suppressPackageStartupMessages({
+        library(CellChat)
+        library(NeuronChat)
+        library(dplyr)
+        library(purrr)
+    })
+
+    base_interaction <- CellChatDB.mouse$interaction
+    base_complex <- CellChatDB.mouse$complex
+    base_geneInfo <- CellChatDB.mouse$geneInfo
+    geneInfo_cpdb <- cpdb_gene_info_mouse
+
+    cpdb_interactions_filtered <- cpdb_interaction_input %>%
+        filter(partner_a %in% geneInfo_cpdb$uniprot & 
+               partner_b %in% geneInfo_cpdb$uniprot)
+    
+    idx_partnerA <- match(
+        cpdb_interactions_filtered$partner_a, geneInfo_cpdb$uniprot)
+    cpdb_interactions_filtered$ligand <- geneInfo_cpdb$Symbol[idx_partnerA]
+    idx_partnerB <- match(
+        cpdb_interactions_filtered$partner_b, geneInfo_cpdb$uniprot)
+    cpdb_interactions_filtered$receptor <- geneInfo_cpdb$Symbol[idx_partnerB]
+
+    cpdb_formatted <- cpdb_interactions_filtered %>%
+        rename(interaction_name = interactors, 
+               pathway_name = classification) %>%
+        mutate(
+            annotation = case_when(
+                directionality == "secreted" ~ "Secreted Signaling",
+                directionality == "transmembrane" ~ "Cell-Cell Contact",
+                TRUE ~ "Cell-Cell Contact"
+            ),
+            interaction_name_2 = interaction_name
+        )
+    
+    data(list='interactionDB_mouse')
+    neuron_chat_db_list <- eval(parse(text = 'interactionDB_mouse'))
+    neuron_chat_formatted <- purrr::map_dfr(
+        neuron_chat_db_list,
+        ~ expand.grid(
+            interaction_name = .x$interaction_name,
+            ligand = .x$lig_contributor,
+            receptor = .x$receptor_subunit,
+            stringsAsFactors = FALSE
+        )
+    ) %>%
+    mutate(pathway_name = ligand, annotation = "Secreted Signaling")
+
+    required_cols <- colnames(base_interaction)
+    for (col in required_cols) {
+        if (!col %in% names(cpdb_formatted)) {
+            cpdb_formatted[[col]] <- ""
+        }
+        if (!col %in% names(neuron_chat_formatted)) {
+            neuron_chat_formatted[[col]] <- ""
+        }
+    }
+    cpdb_final <- cpdb_formatted[, required_cols]
+    neuron_chat_final <- neuron_chat_formatted[, required_cols]
+
+    final_interactions <- bind_rows(
+        base_interaction, cpdb_final, neuron_chat_final) %>%
+        mutate(ligand_upper = toupper(ligand), 
+               receptor_upper = toupper(receptor)) %>%
+        distinct(ligand_upper, receptor_upper, .keep_all = TRUE) %>%
+        select(-ligand_upper, -receptor_upper)
+
+    final_geneInfo <- bind_rows(base_geneInfo, geneInfo_cpdb) %>%
+        distinct(Symbol, .keep_all = TRUE)
+
+    db_extended <- list(
+        interaction = final_interactions,
+        complex = base_complex,
+        cofactor = CellChatDB.mouse$cofactor,
+        geneInfo = final_geneInfo
+    )
+    
+    assign(updated_db_name, db_extended, envir = .GlobalEnv)
+    """
+    r(r_script)
+    return updated_db_name
+
 def prepare_cellchat_object(
     adata: sc.AnnData,
     cell_type_col: str,
     conditions: Tuple[str, str],
-    output_path: str):
+    output_path: str,
+    db_name: str):
     
     if os.path.exists(output_path):
-        raise FileExistsError(f"Output file already exists: {output_path}")
+        return
 
     adata_cleaned = adata.copy()
     
     np.random.seed(0)
-    sample_indices = np.random.choice(adata_cleaned.n_obs, 1000, replace=False)
+    sample_indices = np.random.choice(adata_cleaned.n_obs, 1000, 
+                                      replace=False)
     sample_obs = adata_cleaned.obs.iloc[sample_indices]
     
     coords_orig = sample_obs[['x', 'y']].values
     coords_affine = sample_obs[['x_affine', 'y_affine']].values
     
-    from scipy.spatial.distance import pdist
-    conversion_factor = np.median(
-        pdist(coords_orig)) / np.median(pdist(coords_affine))
+    conversion_factor = np.median(pdist(coords_orig)) / \
+                        np.median(pdist(coords_affine))
 
     spatial_cols = ['x_affine', 'y_affine']
     obs_cols = ['sample', 'condition', cell_type_col, 'x', 'y'] + spatial_cols
     adata_cleaned.obs = adata_cleaned.obs[obs_cols]
-    adata_cleaned = adata_cleaned[
-        :, adata_cleaned.var['protein_coding']]
+    adata_cleaned = adata_cleaned[:, adata_cleaned.var['protein_coding']]
     adata_cleaned = adata_cleaned[
         :, ~adata_cleaned.var['gene_symbol']
         .str.lower().str.startswith('mt-', na=False)].copy()
@@ -962,6 +1098,7 @@ def prepare_cellchat_object(
     to_r(cell_type_col, 'cell_type_col')
     to_r(conversion_factor, 'conversion_factor')
     to_r(output_path, 'output_path')
+    to_r(db_name, 'db_name')
 
     r_script = f'''
         suppressPackageStartupMessages({{
@@ -969,6 +1106,8 @@ def prepare_cellchat_object(
             library(Seurat)
             library(CellChat)
         }})
+
+        cellchat_db <- get(db_name)
 
         sobj$samples <- sobj$sample
         sobj <- NormalizeData(sobj)
@@ -996,8 +1135,8 @@ def prepare_cellchat_object(
             datatype = "spatial", coordinates = spatial_locs_2,
             spatial.factors = spatial_factors_2)
 
-        cobj_1@DB <- CellChatDB.mouse
-        cobj_2@DB <- CellChatDB.mouse
+        cobj_1@DB <- cellchat_db
+        cobj_2@DB <- cellchat_db
         
         cobj_1 <- subsetData(cobj_1)
         cobj_2 <- subsetData(cobj_2)
@@ -1010,20 +1149,18 @@ def prepare_cellchat_object(
         cobj_1 <- computeCommunProb(
             cobj_1, type = "truncatedMean", trim = 0.1, 
             distance.use = TRUE, interaction.range = 600, 
-            scale.distance = 1.8,
-            contact.range = 10)
+            scale.distance = 1.8, contact.range = 10)
         cobj_2 <- computeCommunProb(
             cobj_2, type = "truncatedMean", trim = 0.1, 
             distance.use = TRUE, interaction.range = 600, 
-            scale.distance = 1.8,
-            contact.range = 10)
+            scale.distance = 1.8, contact.range = 10)
 
         cobjs <- list(cobj_1, cobj_2)
         saveRDS(cobjs, file = output_path)
     '''
     r(r_script)
 
-def get_cellchat_cell_type_diff(
+def get_cellchat_cell_type_pair_diff(
     cobj_rds_path: str,
     conditions: Tuple[str, str]) -> pd.DataFrame:
 
@@ -1398,7 +1535,10 @@ def plot_pathway_diff_dotplot(
     cell_type_pairs: list,
     contrasts: list,
     top_n: int = 10,
-    z_score: bool = True):
+    z_score: bool = True,
+    pathways_to_exclude: Optional[List[str]] = None,
+    pathways_to_include: Optional[List[str]] = None,
+    cluster_rows: bool = True):
 
     pathway_pair_diff_df["canonical_pair"] = pathway_pair_diff_df.apply(
         lambda row: frozenset([row["source"], row["target"]]), axis=1
@@ -1410,25 +1550,30 @@ def plot_pathway_diff_dotplot(
     plot_data = pd.merge(
         pathway_pair_diff_df, pairs_df[["canonical_pair"]], on="canonical_pair"
     )
-    plot_data["pair_str"] = plot_data.apply(
-        lambda r: f"{list(r['canonical_pair'])[0]} <-> {list(r['canonical_pair'])[1]}",
-        axis=1,
-    )
+    
+    pair_str_map = {
+        frozenset(p): f"{p[0]} ↔ {p[1]}" for p in cell_type_pairs
+    }
+    plot_data['pair_str'] = plot_data['canonical_pair'].map(pair_str_map)
+
+    if plot_data.empty:
+        print("No matching data found for the provided cell type pairs.")
+        return None
 
     if z_score:
-        plot_data["plot_value"] = (
-            plot_data.groupby(["contrast", "pair_str"])["strength_diff"]
-            .transform(lambda x: (x - x.mean()) / x.std())
-            .fillna(0)
-        )
+        grouped = plot_data.groupby(["contrast", "pair_str"])["strength_diff"]
+        transform_func = lambda x: (x - x.mean()) / x.std()
+        plot_data["plot_value"] = grouped.transform(transform_func).fillna(0)
         cbar_label_base = "Signaling Change\n(Pair-wise Z-score"
     else:
         plot_data["plot_value"] = plot_data["strength_diff"]
         cbar_label_base = "Change in Signaling Strength"
 
     plot_data["abs_plot_value"] = plot_data["plot_value"].abs()
+
     top_pathways = set()
-    for pair_key in plot_data["canonical_pair"].unique():
+    unique_pairs = plot_data["canonical_pair"].unique()
+    for pair_key in unique_pairs:
         for contrast in contrasts:
             subset = plot_data[
                 (plot_data["canonical_pair"] == pair_key)
@@ -1437,51 +1582,75 @@ def plot_pathway_diff_dotplot(
             subset = subset.sort_values("abs_plot_value", ascending=False)
             top_pathways.update(subset.head(top_n)["pathway"])
 
+    if pathways_to_exclude is not None:
+        top_pathways.difference_update(set(pathways_to_exclude))
+
+    if pathways_to_include is not None:
+        top_pathways.update(set(pathways_to_include))
+
     plot_data = plot_data[plot_data["pathway"].isin(top_pathways)].copy()
+    
+    if plot_data.empty:
+        print("No data to plot for the selected pathways.")
+        return None
 
-    plot_data = plot_data.loc[
-        plot_data.groupby(["contrast", "canonical_pair", "pathway"])[
-            "abs_plot_value"
-        ].idxmax()
-    ]
+    idx_max = plot_data.groupby(
+        ["contrast", "canonical_pair", "pathway"]
+    )["abs_plot_value"].idxmax()
+    plot_data = plot_data.loc[idx_max]
 
-    lower_thresh = plot_data["plot_value"].quantile(0.05)
-    upper_thresh = plot_data["plot_value"].quantile(0.95)
+    lower_thresh = plot_data["plot_value"].quantile(0.01)
+    upper_thresh = plot_data["plot_value"].quantile(0.99)
     plot_data["plot_value_winsorized"] = plot_data["plot_value"].clip(
         lower_thresh, upper_thresh
-    )
-    plot_data["edge_color"] = np.where(
-        (plot_data["plot_value"] < lower_thresh)
-        | (plot_data["plot_value"] > upper_thresh),
-        "black",
-        "#BDBDBD",
     )
     cbar_label = f"{cbar_label_base}, Winsorized)"
 
     n_contrasts = len(contrasts)
-    fig_height = max(5, len(top_pathways) * 0.35)
+    fig_height = len(top_pathways) * 0.5
+    fig_width = 2.4 * n_contrasts 
     fig, axes = plt.subplots(
-        1,
-        n_contrasts,
-        figsize=(4 * n_contrasts + 2, fig_height),
-        sharey=True,
+        1, n_contrasts, figsize=(fig_width, fig_height), sharey=True
     )
     if n_contrasts == 1:
         axes = [axes]
 
     cmap = plt.get_cmap("seismic")
     vmax = plot_data["plot_value_winsorized"].abs().max()
-    vmin = -vmax
     if pd.isna(vmax) or vmax == 0:
         vmax = 1.5
-    if pd.isna(vmin) or vmin == 0:
-        vmin = -1.5
+    
+    vmin = -vmax
 
     norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
     mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
 
-    y_cats = sorted(list(top_pathways), reverse=True)
-    x_cats = sorted(list(plot_data["pair_str"].unique()))
+    ordered_pair_strs = [f"{p[0]} ↔ {p[1]}" for p in cell_type_pairs]
+    plotted_pairs = plot_data["pair_str"].unique()
+    x_cats = [p for p in ordered_pair_strs if p in plotted_pairs]
+    
+    if cluster_rows:
+        pivot_df = plot_data.pivot_table(
+            index='pathway',
+            columns=['pair_str', 'contrast'],
+            values='plot_value_winsorized'
+        ).fillna(0)
+        
+        pivot_df = pivot_df.reindex(columns=pd.MultiIndex.from_product(
+            [x_cats, contrasts], names=['pair_str', 'contrast']), fill_value=0
+        )
+
+        if len(pivot_df) > 1:
+            row_linkage = linkage(
+                pdist(pivot_df.values, metric='euclidean'), method='average'
+            )
+            ordered_indices = leaves_list(row_linkage)
+            y_cats = pivot_df.index[ordered_indices].tolist()
+        else:
+            y_cats = pivot_df.index.tolist()
+    else:
+        y_cats = sorted(list(top_pathways), reverse=True)
+    
     y_map = {cat: j for j, cat in enumerate(y_cats)}
     x_map = {cat: j for j, cat in enumerate(x_cats)}
 
@@ -1500,32 +1669,34 @@ def plot_pathway_diff_dotplot(
             s=100,
             facecolors="none",
             edgecolors="#eeeeee",
+            zorder=1,
         )
 
         if not contrast_data.empty:
             contrast_data["y_coord"] = contrast_data["pathway"].map(y_map)
             contrast_data["x_coord"] = contrast_data["pair_str"].map(x_map)
+            scatter_colors = contrast_data["plot_value_winsorized"]
             ax.scatter(
                 x=contrast_data["x_coord"],
                 y=contrast_data["y_coord"],
-                c=contrast_data["plot_value_winsorized"],
+                c=scatter_colors,
                 s=120,
                 cmap=cmap,
                 norm=norm,
-                edgecolors=contrast_data["edge_color"],
                 linewidth=1,
+                zorder=2,
             )
 
         ax.set_xticks(range(len(x_cats)))
         ax.set_xticklabels(
             x_cats,
-            rotation=45,
+            rotation=90,
             fontsize=9,
             ha="right",
             rotation_mode="anchor",
         )
         ax.set_title(contrast.replace("_", " vs "), fontsize=11)
-        ax.grid(False)
+        ax.grid(True, color="lightgray", linestyle="-", linewidth=0.5, zorder=0)
 
         if i == 0:
             ax.set_yticks(range(len(y_cats)))
@@ -1546,13 +1717,440 @@ def plot_pathway_diff_dotplot(
 
     return fig
 
+def get_cellchat_interaction_df(
+    cellphonedb_path: str,
+    cache_path: str,
+    updated_db_name: str = 'CellChatDB_mouse_extended') -> pd.DataFrame:
+
+    if os.path.exists(cache_path):
+        with open(cache_path, 'rb') as f:
+            data_for_r = pickle.load(f)
+        interaction_input = data_for_r['interaction_input']
+        complex_input = data_for_r['complex_input']
+        cpdb_gene_info_mouse = data_for_r['cpdb_gene_info_mouse']
+    else:
+        interaction_input = pd.read_csv(
+            os.path.join(cellphonedb_path, 'interaction_input.csv'))
+        complex_input = pd.read_csv(
+            os.path.join(cellphonedb_path, 'complex_input.csv'))
+        gene_input = pd.read_csv(
+            os.path.join(cellphonedb_path, 'gene_input.csv'))
+
+        gp = GProfiler(user_agent='cellchat_update_tool',
+                       return_dataframe=True)
+        human_genes = gene_input['hgnc_symbol'].dropna().unique().tolist()
+        
+        ortholog_results = gp.orth(
+            organism='hsapiens', target='mmusculus', query=human_genes)
+
+        mapping_df = ortholog_results.drop_duplicates(subset=['incoming'])        
+        mapping = mapping_df.set_index('incoming')['name']
+        gene_input['Symbol'] = gene_input['hgnc_symbol'].map(mapping)
+
+        cpdb_gene_info_mouse = gene_input[
+            ['uniprot', 'Symbol']].dropna().drop_duplicates()
+
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, 'wb') as f:
+            pickle.dump({
+                'interaction_input': interaction_input,
+                'complex_input': complex_input,
+                'cpdb_gene_info_mouse': cpdb_gene_info_mouse
+            }, f)
+
+    to_r(interaction_input, 'cpdb_interaction_input')
+    to_r(complex_input, 'cpdb_complex_input')
+    to_r(cpdb_gene_info_mouse.reset_index(drop=True), 'cpdb_gene_info_mouse')
+    to_r(updated_db_name, 'updated_db_name')
+
+    r('''
+    suppressPackageStartupMessages({
+        library(CellChat)
+        library(NeuronChat)
+        library(dplyr)
+        library(purrr)
+    })
+    base_interaction <- CellChatDB.mouse$interaction
+    base_complex <- CellChatDB.mouse$complex
+    base_geneInfo <- CellChatDB.mouse$geneInfo
+    geneInfo_cpdb <- cpdb_gene_info_mouse
+    cpdb_interactions_filtered <- cpdb_interaction_input %>%
+        filter(partner_a %in% geneInfo_cpdb$uniprot & 
+               partner_b %in% geneInfo_cpdb$uniprot)
+    idx_partnerA <- match(
+        cpdb_interactions_filtered$partner_a, geneInfo_cpdb$uniprot)
+    cpdb_interactions_filtered$ligand <- geneInfo_cpdb$Symbol[idx_partnerA]
+    idx_partnerB <- match(
+        cpdb_interactions_filtered$partner_b, geneInfo_cpdb$uniprot)
+    cpdb_interactions_filtered$receptor <- geneInfo_cpdb$Symbol[idx_partnerB]
+    cpdb_formatted <- cpdb_interactions_filtered %>%
+        rename(interaction_name = interactors, 
+               pathway_name = classification) %>%
+        mutate(
+            annotation = case_when(
+                directionality == "secreted" ~ "Secreted Signaling",
+                directionality == "transmembrane" ~ "Cell-Cell Contact",
+                TRUE ~ "Cell-Cell Contact"
+            ),
+            interaction_name_2 = interaction_name
+        )
+    data(list='interactionDB_mouse')
+    neuron_chat_db_list <- eval(parse(text = 'interactionDB_mouse'))
+    neuron_chat_formatted <- purrr::map_dfr(
+        neuron_chat_db_list,
+        ~ expand.grid(
+            interaction_name = .x$interaction_name,
+            ligand = .x$lig_contributor,
+            receptor = .x$receptor_subunit,
+            stringsAsFactors = FALSE
+        )
+    ) %>%
+    mutate(pathway_name = ligand, annotation = "Secreted Signaling")
+    required_cols <- colnames(base_interaction)
+    for (col in required_cols) {
+        if (!col %in% names(cpdb_formatted)) {
+            cpdb_formatted[[col]] <- ""
+        }
+        if (!col %in% names(neuron_chat_formatted)) {
+            neuron_chat_formatted[[col]] <- ""
+        }
+    }
+    cpdb_final <- cpdb_formatted[, required_cols]
+    neuron_chat_final <- neuron_chat_formatted[, required_cols]
+    final_interactions <- bind_rows(
+        base_interaction, cpdb_final, neuron_chat_final) %>%
+        mutate(ligand_upper = toupper(ligand), 
+               receptor_upper = toupper(receptor)) %>%
+        distinct(ligand_upper, receptor_upper, .keep_all = TRUE) %>%
+        select(-ligand_upper, -receptor_upper)
+    final_geneInfo <- bind_rows(base_geneInfo, geneInfo_cpdb) %>%
+        distinct(Symbol, .keep_all = TRUE)
+    db_extended <- list(
+        interaction = final_interactions,
+        complex = base_complex,
+        cofactor = CellChatDB.mouse$cofactor,
+        geneInfo = final_geneInfo
+    )
+    assign(updated_db_name, db_extended, envir = .GlobalEnv)
+    interaction_df_r <- db_extended$interaction
+    ''')
+    
+    interaction_df = to_py('interaction_df_r', format='pandas')
+    return interaction_df
+
+def get_pathway_genes(
+    pathway_name: str,
+    interaction_df: pd.DataFrame) -> List[str]:
+
+    pathway_interactions = interaction_df[
+        interaction_df['pathway_name'] == pathway_name
+    ]
+    
+    if pathway_interactions.empty:
+        return []
+
+    ligands = pathway_interactions['ligand.symbol'].dropna().unique()
+    receptors = pathway_interactions['receptor.symbol'].dropna().unique()
+    
+    all_genes = set()
+    for gene_group in np.concatenate([ligands, receptors]):
+        all_genes.update(
+            g for g in str(gene_group).replace('_', ',').replace(' ', '').split(',') if g
+        )
+    
+    return sorted(list(all_genes))
+
+def get_pathway_interface_intermediate_data(
+    adata: sc.AnnData,
+    pathway_name: str,
+    cell_type_a: str,
+    cell_type_b: str,
+    contrast: str,
+    interaction_df: pd.DataFrame,
+    cache_dir: str,
+    coords_cols: Tuple[str, str] = ('x_ffd', 'y_ffd'),
+    cell_type_col: str = 'subclass') -> Optional[dict]:
+
+    safe_p = pathway_name.replace(' ', '_').replace('/', '_')
+    safe_a = cell_type_a.replace(' ', '_').replace('/', '_')
+    safe_b = cell_type_b.replace(' ', '_').replace('/', '_')
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(
+        cache_dir, f'interface_{safe_p}_{safe_a}_{safe_b}_{contrast}.pkl')
+
+    if os.path.exists(cache_file):
+        with open(cache_file, 'rb') as f: return pickle.load(f)
+
+    pathway_genes = get_pathway_genes(pathway_name, interaction_df)
+    available_genes = [
+        g for g in pathway_genes 
+        if g.upper() in adata.var['gene_symbol'].str.upper().values
+    ]
+    if not available_genes: return None
+
+    upper_to_symbol = pd.Series(
+        adata.var['gene_symbol'].values,
+        index=adata.var['gene_symbol'].str.upper())
+    genes_to_use = upper_to_symbol[
+        upper_to_symbol.index.isin([g.upper() for g in available_genes])
+    ].unique().tolist()
+    
+    pathway_expr = np.array(adata[:, genes_to_use].X.mean(axis=1)).flatten()
+
+    is_a = adata.obs[cell_type_col] == cell_type_a
+    is_b = adata.obs[cell_type_col] == cell_type_b
+    
+    cells_a = adata.obs[is_a]
+    cells_b = adata.obs[is_b]
+
+    if cells_a.empty or cells_b.empty: return None
+        
+    cond_B_name, cond_A_name = contrast.split('_vs_')
+
+    map_data = {
+        'base_coords': adata.obs[list(coords_cols)].values,
+        'coords_a': cells_a[list(coords_cols)].values,
+        'expr_a': pathway_expr[is_a],
+        'conditions_a': cells_a['condition'].values,
+        'coords_b': cells_b[list(coords_cols)].values,
+        'expr_b': pathway_expr[is_b],
+        'conditions_b': cells_b['condition'].values,
+        'cond_A_name': cond_A_name, 'cond_B_name': cond_B_name,
+    }
+
+    with open(cache_file, 'wb') as f: pickle.dump(map_data, f)
+    return map_data
+
+def plot_pathway_interface_diff_map(
+    adata: sc.AnnData,
+    pathway_name: str,
+    cell_type_a: str,
+    cell_type_b: str,
+    contrast: str,
+    interaction_df: pd.DataFrame,
+    cache_dir: str,
+    coords_cols: Tuple[str, str] = ('x_ffd', 'y_ffd'),
+    cell_type_col: str = 'subclass',
+    influence_radius: float = 8.0,
+    resolution: int = 400,
+    vmax: Optional[float] = None,
+    ax: Optional[plt.Axes] = None) -> Tuple[
+        plt.Figure, plt.Axes, Optional[plt.cm.ScalarMappable]]:
+    
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 5))
+    else:
+        fig = ax.get_figure()
+
+    map_data = get_pathway_interface_intermediate_data(
+        adata, pathway_name, cell_type_a, cell_type_b, contrast,
+        interaction_df, cache_dir, coords_cols, cell_type_col)
+
+    if map_data is None:
+        ax.text(0.5, 0.5, "No data", ha='center', va='center')
+        return fig, ax, None
+
+    base_tree = KDTree(map_data['base_coords'])
+    tree_a = KDTree(map_data['coords_a'])
+    tree_b = KDTree(map_data['coords_b'])
+
+    x_min, x_max = map_data['base_coords'][:, 0].min(), \
+                   map_data['base_coords'][:, 0].max()
+    y_min, y_max = map_data['base_coords'][:, 1].min(), \
+                   map_data['base_coords'][:, 1].max()
+    
+    padding = 0.05
+    x_pad = (x_max - x_min) * padding
+    y_pad = (y_max - y_min) * padding
+    plot_x_min, plot_x_max = x_min - x_pad, x_max + x_pad
+    plot_y_min, plot_y_max = y_min - y_pad, y_max + y_pad
+
+    x_grid = np.linspace(x_min, x_max, resolution)
+    y_grid = np.linspace(y_min, y_max, resolution)
+    X, Y = np.meshgrid(x_grid, y_grid)
+    grid_points = np.vstack([X.ravel(), Y.ravel()]).T
+
+    d_scale, _ = calculate_distance_scale(map_data['base_coords'])
+    d_max = influence_radius * d_scale
+    grid_step = (x_max - x_min) / resolution
+
+    Z_diff = np.zeros_like(X)
+    Z_weight = np.zeros_like(X)
+    base_mask = np.zeros_like(X, dtype=bool)
+
+    for idx, point in enumerate(grid_points):
+        row, col = np.unravel_index(idx, X.shape)
+        if base_tree.query(point, k=1)[0] >= grid_step * 3: continue
+        base_mask[row, col] = True
+        
+        neighbors_a = tree_a.query_ball_point(point, d_max)
+        neighbors_b = tree_b.query_ball_point(point, d_max)
+        if not neighbors_a or not neighbors_b: continue
+
+        total_diff = 0
+        min_weight = float('inf')
+
+        for n_indices, coords, exprs, conds in [
+            (neighbors_a, map_data['coords_a'], map_data['expr_a'], 
+             map_data['conditions_a']),
+            (neighbors_b, map_data['coords_b'], map_data['expr_b'],
+             map_data['conditions_b'])
+        ]:
+            dists = np.sqrt(np.sum((coords[n_indices] - point)**2, axis=1))
+            weights = np.exp(-0.7 * dists / d_max)
+            
+            is_A = conds[n_indices] == map_data['cond_A_name']
+            is_B = conds[n_indices] == map_data['cond_B_name']
+            
+            w_A, w_B = weights[is_A], weights[is_B]
+            sum_w_A, sum_w_B = np.sum(w_A), np.sum(w_B)
+
+            if sum_w_A > 0 and sum_w_B > 0:
+                avg_A = np.sum(w_A * exprs[n_indices][is_A]) / sum_w_A
+                avg_B = np.sum(w_B * exprs[n_indices][is_B]) / sum_w_B
+                total_diff += (avg_B - avg_A)
+                min_weight = min(min_weight, sum_w_A, sum_w_B)
+            else:
+                min_weight = 0; break
+        
+        if min_weight > 0:
+            Z_diff[row, col] = total_diff
+            Z_weight[row, col] = min_weight
+
+    Z_diff = np.where((Z_weight > 0) & base_mask, Z_diff, np.nan)
+    
+    from scipy.ndimage import gaussian_filter
+    valid_mask = ~np.isnan(Z_diff)
+    if np.any(valid_mask):
+        Z_smooth = np.copy(Z_diff)
+        Z_smooth[valid_mask] = gaussian_filter(
+            Z_diff[valid_mask], sigma=1.5, mode='constant')
+        Z_diff = Z_smooth
+
+    if vmax is None:
+        vmax = np.nanpercentile(
+            np.abs(Z_diff), 98) if ~np.all(np.isnan(Z_diff)) else 1.0
+    vmin = -vmax
+    
+    cmap = plt.get_cmap('seismic')
+    
+    ax.pcolormesh(X, Y, base_mask, cmap='Greys', 
+                  vmin=0, vmax=2.0, alpha=0.2, rasterized=True)
+
+    im = ax.pcolormesh(X, Y, Z_diff, cmap=cmap, vmin=vmin, vmax=vmax,
+                      shading='gouraud', rasterized=True)
+    
+    ax.set_aspect('equal')
+    ax.set_xlim(plot_x_min, plot_x_max)
+    ax.set_ylim(plot_y_min, plot_y_max)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values(): spine.set_visible(False)
+    
+    return fig, ax, im
+
+def plot_pathway_expression_maps_grid(
+    adata: sc.AnnData,
+    interaction_triplets: List[Tuple[str, str, str]],
+    contrasts: List[str],
+    interaction_df: pd.DataFrame,
+    cache_dir: str,
+    coords_cols: Tuple[str, str] = ('x_ffd', 'y_ffd'),
+    cell_type_col: str = 'subclass',
+    influence_radius: float = 8.0,
+    resolution: int = 300,
+    vmax: Optional[float] = None):
+
+    n_triplets = len(interaction_triplets)
+    n_rows = n_triplets
+    n_cols = len(contrasts)
+    
+    fig, axs = plt.subplots(
+        n_rows, n_cols,
+        figsize=(n_cols * 2.8, n_rows * 2.2)
+    )
+    if n_rows == 1: axs = np.array([axs])
+    if n_cols == 1: axs = axs.reshape(-1, 1)
+
+    images = []
+    
+    pbar_desc="Plotting maps"
+    with tqdm(total=n_rows * n_cols, desc=pbar_desc) as pbar:
+        for i, (p_name, ct_a, ct_b) in enumerate(interaction_triplets):
+            for j, contrast in enumerate(contrasts):
+                ax = axs[i, j]
+                _, _, im = plot_pathway_interface_diff_map(
+                    adata, p_name, ct_a, ct_b, contrast, interaction_df,
+                    cache_dir, coords_cols, cell_type_col,
+                    influence_radius, resolution, vmax, ax)
+                
+                if im: images.append(im)
+                
+                if i == 0:
+                    if contrast == 'PREG_vs_CTRL':
+                        title = "Pregnancy vs Control"
+                    else:
+                        title = "Postpartum vs Pregnancy"
+                    ax.set_title(title, fontsize=10)
+
+                if j == 0:
+                    ylabel_str = f"{p_name.upper()}\n{ct_a} ↔ {ct_b}"
+                    ax.set_ylabel(
+                        ylabel_str, fontsize=7, 
+                        rotation='vertical', va='center', labelpad=15)
+                pbar.update(1)
+
+    if images:
+        vmax_used = images[0].get_clim()[1] if vmax is None else vmax
+        for im in images: im.set_clim(-vmax_used, vmax_used)
+        
+        fig.subplots_adjust(wspace=0, hspace=0)
+
+    return fig, axs
+
 #endregion 
 
-#region load data ##############################################################
+#region analysis configuration #################################################
 
 working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 
 cell_type_col = 'subclass'
+
+selected_cell_types = [
+    'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN', 'Microglia NN',
+    'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN'
+]
+
+contrasts = ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
+comparisons = [
+    ('PREG_vs_CTRL', ('CTRL', 'PREG')),
+    ('POSTPART_vs_PREG', ('PREG', 'POSTPART'))
+]
+
+all_cell_type_pairs = [
+    ('Pvalb Gaba', 'Oligo NN'),
+    ('Astro-NT NN', 'OPC NN'),
+    ('STR D1 Gaba', 'OPC NN'),
+    ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
+    ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
+]
+
+interaction_triplets_to_plot = [
+    # 1. Interneuron Trophic Support to Oligodendrocytes
+    ('FGF', 'Pvalb Gaba', 'Oligo NN'),
+    # 2. Astrocyte-Driven Regulation of Glial Precursors
+    ('PTN', 'Astro-NT NN', 'OPC NN'),
+    # 3. Neuron-Glia Synaptic Adhesion in the Striatum
+    ('NRXN', 'STR D1 Gaba', 'OPC NN'),
+    # 4. Hypothalamic Neuro-Vascular Remodeling
+    ('VEGF', 'MPO-ADP Lhx8 Gaba', 'Endo NN'),
+    # 5. Neurotransmitter-Based Neuro-Vascular Modulation
+    ('GABA-A', 'SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
+]
+
+#endregion
+
+#region load data ##############################################################
 
 cells_joined = pd.read_csv(
     'projects/rrg-wainberg/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/'
@@ -1640,10 +2238,11 @@ fig.savefig(
 dataset_name = 'merfish'
 d_max_scale = 20
 
-# get spatial stats per sample
-file = f'{working_dir}/output/{dataset_name}/spatial_stats_{cell_type_col}.pkl'
-if os.path.exists(file):
-    spatial_stats = pd.read_pickle(file)
+file_path = (
+    f'{working_dir}/output/{dataset_name}/spatial_stats_{cell_type_col}.pkl'
+)
+if os.path.exists(file_path):
+    spatial_stats = pd.read_pickle(file_path)
 else:
     results = []
     for sample in adata_merfish.obs['sample'].unique():
@@ -1659,21 +2258,20 @@ else:
         )
         results.append(stats)
     spatial_stats = pd.concat(results)
-    # spatial_stats.to_pickle(file)
+    # spatial_stats.to_pickle(file_path)
 
-# minimum number of nonzero interactions required
-# in each sample for a cell type pair
 min_nonzero = 5
 pairs = spatial_stats[['cell_type_a', 'cell_type_b']].drop_duplicates()
-sample_stats = spatial_stats\
-    .groupby(['sample_id', 'cell_type_a', 'cell_type_b'])\
+sample_stats = (
+    spatial_stats.groupby(['sample_id', 'cell_type_a', 'cell_type_b'])
     .agg(n_nonzero=('b_count', lambda x: (x > 0).sum()))
-filtered_pairs = sample_stats\
-    .groupby(['cell_type_a', 'cell_type_b'])\
-    .agg(min_nonzero_count=('n_nonzero', 'min'))\
-    .query('min_nonzero_count >= @min_nonzero')\
+)
+filtered_pairs = (
+    sample_stats.groupby(['cell_type_a', 'cell_type_b'])
+    .agg(min_nonzero_count=('n_nonzero', 'min'))
+    .query('min_nonzero_count >= @min_nonzero')
     .reset_index()[['cell_type_a', 'cell_type_b']]
-
+)
 pairs_tested = set(tuple(x) for x in filtered_pairs.values)
 print(f'testing {len(filtered_pairs)} pairs out of {len(pairs)} pairs')
 del pairs, sample_stats; gc.collect()
@@ -1684,97 +2282,76 @@ selected_cell_types = [
 
 pairs_to_process = filtered_pairs[
     filtered_pairs['cell_type_b'].isin(selected_cell_types)].copy()
-print(f'testing {len(pairs_to_process)} pairs out of {len(filtered_pairs)} pairs')
+print(
+    f'testing {len(pairs_to_process)} pairs out of {len(filtered_pairs)} pairs'
+)
 
-# pairs_to_process = filtered_pairs
-
-# get differential testing results
-file = f'{working_dir}/output/{dataset_name}/spatial_diff_{cell_type_col}.pkl'
-if os.path.exists(file):
-    spatial_diff = pd.read_pickle(file)
+file_path = (
+    f'{working_dir}/output/{dataset_name}/spatial_diff_{cell_type_col}.pkl'
+)
+if os.path.exists(file_path):
+    spatial_diff = pd.read_pickle(file_path)
 else:
     res = []
-    with tqdm(total=len(pairs_to_process), desc='Processing pairs') as pbar:
+    pbar_desc = 'Processing pairs'
+    with tqdm(total=len(pairs_to_process), desc=pbar_desc) as pbar:
         for _, row in pairs_to_process.iterrows():
             pair_result = get_spatial_diff(
                 spatial_stats=spatial_stats,
                 cell_type_a=row['cell_type_a'],
-                cell_type_b=row['cell_type_b'])
+                cell_type_b=row['cell_type_b']
+            )
             if pair_result:
                 res.extend(pair_result)
             pbar.update(1)
     spatial_diff = pd.concat(res, ignore_index=True)
     spatial_diff['adj.P.Val'] = fdrcorrection(spatial_diff['P.Value'])[1]
-    spatial_diff['contrast'] = spatial_diff['contrast']\
+    spatial_diff['contrast'] = (
+        spatial_diff['contrast']
         .str.replace('POST_vs_PREG', 'POSTPART_vs_PREG')
-    spatial_diff.to_pickle(file)
+    )
+    # spatial_diff.to_pickle(file_path)
 
 spatial_diff.to_csv(
     f'{working_dir}/output/{dataset_name}/spatial_diff_{cell_type_col}.csv',
     index=False
 )
 
-# plot heatmaps for both contrasts
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
+fig, axes = plt.subplots(1, 2, figsize=(7, 9))
+all_logFC = spatial_diff[
+    spatial_diff['contrast'].isin(contrasts)
+]['logFC']
+vmax = all_logFC.abs().max()
+vmin = -vmax
 
-contrasts = list(spatial_diff['contrast'].unique())
-contrast1, contrast2 = 'PREG_vs_CTRL', 'POSTPART_vs_PREG'
-contrast1_data = spatial_diff[spatial_diff['contrast'] == contrast1].copy()
-contrast2_data = spatial_diff[spatial_diff['contrast'] == contrast2].copy()
+for ax, contrast in zip(axes, contrasts):
+    contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
+    _, _, im = plot_spatial_diff_heatmap(
+        contrast_data, pairs_tested, sig=0.10,
+        cell_types_b=selected_cell_types,
+        recompute_fdr=True, ax=ax, vmin=vmin, vmax=vmax
+    )
+    ax.set_title('')
 
-all_data = pd.concat([contrast1_data, contrast2_data])
-max_abs_val = np.max(np.abs(all_data['logFC']))
-vmin, vmax = -max_abs_val, max_abs_val
-
-_, _, im1 = plot_spatial_diff_heatmap(
-    contrast1_data, pairs_tested, sig=0.10,
-    cell_types_a=None, cell_types_b=selected_cell_types,
-    recompute_fdr=True, ax=ax1, vmin=vmin, vmax=vmax)
-
-_, _, im2 = plot_spatial_diff_heatmap(
-    contrast2_data, pairs_tested, sig=0.10,
-    cell_types_a=None, cell_types_b=selected_cell_types,
-    recompute_fdr=True, ax=ax2, vmin=vmin, vmax=vmax)
-
-ax1.set_title('')
-ax2.set_title('')
-ax2.set_yticks([])
-ax2.set_yticklabels([])
-ax2.set_ylabel('')
+axes[1].set_yticks([])
+axes[1].set_yticklabels([])
+axes[1].set_ylabel('')
 
 cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
-cbar = fig.colorbar(im1, cax=cbar_ax, orientation='horizontal')
-cbar.set_label('logFC')
+fig.colorbar(im, cax=cbar_ax, orientation='horizontal', label='logFC')
 
 plt.tight_layout(rect=[0, 0.05, 0.91, 1])
 plt.savefig(
     f'{working_dir}/figures/heatmap_{dataset_name}_{cell_type_col}.png',
-    dpi=300, bbox_inches='tight')
+    dpi=300, bbox_inches='tight'
+)
 plt.savefig(
     f'{working_dir}/figures/heatmap_{dataset_name}_{cell_type_col}.svg',
-    dpi=300, bbox_inches='tight')
+    dpi=300, bbox_inches='tight'
+)
 plt.close(fig)
 
-# plot spatial maps for both contrasts
-all_cell_type_pairs = [
-    # MPO and Major Neurovascular Interactions
-    ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
-    ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
-    ('Sst Chodl Gaba', 'Endo NN'),
-    ('Astro-NT NN', 'Endo NN'),
-    ('L5 ET CTX Glut', 'Peri NN'),
-    ('LSX Nkx2-1 Gaba', 'Peri NN'),
-    # Myelination and Glial Plasticity
-    ('Microglia NN', 'OPC NN'),
-    ('STR Prox1 Lhx6 Gaba', 'OPC NN'),
-    ('MPO-ADP Lhx8 Gaba', 'Oligo NN'),
-    ('Pvalb Gaba', 'Oligo NN'),
-    # Other Neuron-Glia Interactions
-    ('OB-STR-CTX Inh IMN', 'Astro-NT NN'),
-]
-
 cache_dir = f'{working_dir}/output/merfish/spatial_maps'
-contrasts = ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
 for pair in tqdm(all_cell_type_pairs, desc="Preparing map data"):
     for contrast in contrasts:
         get_spatial_map_intermediate_data(
@@ -1792,277 +2369,318 @@ fig, _ = plot_spatial_maps_grid(
     spatial_stats,
     all_cell_type_pairs,
     cache_dir=cache_dir,
-    resolution=100,
+    resolution=250,
     influence_radius=8,
-    vmax=0.4
+    vmax=0.5
 )
 fig.savefig(f'{working_dir}/figures/spatial_maps.png',
             bbox_inches='tight', dpi=300)
 fig.savefig(f'{working_dir}/figures/spatial_maps.svg',
-            bbox_inches='tight', dpi=300)
+            bbox_inches='tight')
 plt.close(fig)
 
-# plot sample radii
 fig, axes = plot_spatial_diff_radii(
     spatial_data=adata_merfish.obs,
     coords_cols=('x_affine', 'y_affine'),
     sample_col='sample',
     d_max_scale=d_max_scale,
-    s=0.05)
+    s=0.05
+)
 fig.savefig(
     f'{working_dir}/figures/{dataset_name}/proximity_radii.png', 
-            dpi=300, bbox_inches='tight')
+    dpi=300, bbox_inches='tight'
+)
 plt.close(fig)
 
 #endregion
 
-#region cellchat curio #########################################################
+#region cell type differential signalling curio ################################
 
-selected_cell_types = [
-    'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN',
-    'Microglia NN', 'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN'
-]
-comparisons = [
-    ('PREG_vs_CTRL', ('CTRL', 'PREG')),
-    ('POSTPART_vs_PREG', ('PREG', 'POSTPART'))
-]
+cellphonedb_v4_mouse_path = f'{working_dir}/cellphonedb'
+ortholog_cache_file = f'{working_dir}/cellphonedb/gprofiler_orthologs.pkl'
 
+extended_db_name = update_cellchat_db(
+    cellphonedb_path=cellphonedb_v4_mouse_path,
+    cache_path=ortholog_cache_file,
+    updated_db_name='CellChatDB_mouse_extended'
+)
+
+cell_type_diffs = {}
 for name, conditions in comparisons:
-    print(f"Loading CellChat object for {name}...")
-    cobj_rds_path = f'{working_dir}/output/curio/'\
-        f'cellchat_{name}_{cell_type_col}.rds'
-    if not os.path.exists(cobj_rds_path):
-        print(f"Preparing CellChat object for {name}...")
-        prepare_cellchat_object(
-            adata=adata_curio,
-            cell_type_col=cell_type_col,
-            conditions=conditions,
-            output_path=cobj_rds_path
-        )
+    cobj_rds_path = (
+        f'{working_dir}/output/curio/cellchat_{name}_{cell_type_col}.rds'
+    )
+    prepare_cellchat_object(
+        adata=adata_curio, cell_type_col=cell_type_col,
+        conditions=conditions, output_path=cobj_rds_path,
+        db_name=extended_db_name
+    )
 
-diffs = {}
-for name, conditions in comparisons:
-    print(f"Loading CellChat diff for {name}...")
-    file = f'{working_dir}/output/curio/' \
+    diff_path = (
+        f'{working_dir}/output/curio/'
         f'cellchat_cell_type_diff_{name}_{cell_type_col}_spatial.pkl'
-    if os.path.exists(file):
-        diffs[name] = pd.read_pickle(file)
+    )
+    if os.path.exists(diff_path):
+        cell_type_diffs[name] = pd.read_pickle(diff_path)
     else:
-        print(f"Running CellChat diff analysis for {name}...")
-        diffs[name] = get_cellchat_cell_type_diff(
-            cobj_rds_path=cobj_rds_path,
-            conditions=conditions
+        cell_type_diffs[name] = get_cellchat_cell_type_pair_diff(
+            cobj_rds_path=cobj_rds_path, conditions=conditions
         )
-        pd.to_pickle(diffs[name], file)
+        pd.to_pickle(cell_type_diffs[name], diff_path)
 
-diff_p_vs_c = diffs.get('PREG_vs_CTRL')
-diff_po_vs_p = diffs.get('POSTPART_vs_PREG')
+cellchat_count_df = pd.concat(
+    [df[df['measure'] == 'count'] for df in cell_type_diffs.values()]
+)
+cellchat_weight_df = pd.concat(
+    [df[df['measure'] == 'weight'] for df in cell_type_diffs.values()]
+)
 
-diff_count_p_vs_c = diff_p_vs_c[diff_p_vs_c['measure'] == 'count']
-diff_count_po_vs_p = diff_po_vs_p[diff_po_vs_p['measure'] == 'count']
-cellchat_count_df = pd.concat([diff_count_p_vs_c, diff_count_po_vs_p])
+cellchat_count_df[
+    cellchat_count_df['cell_type_b'].isin(selected_cell_types)
+].to_csv(
+    f'{working_dir}/output/curio/cellchat_cell_type_count_diff.csv',
+    index=False
+)
 
-diff_weight_p_vs_c = diff_p_vs_c[diff_p_vs_c['measure'] == 'weight']
-diff_weight_po_vs_p = diff_po_vs_p[diff_po_vs_p['measure'] == 'weight']
-cellchat_weight_df = pd.concat([diff_weight_p_vs_c, diff_weight_po_vs_p])
+cellchat_weight_df[
+    cellchat_weight_df['cell_type_b'].isin(selected_cell_types)
+].to_csv(
+    f'{working_dir}/output/curio/cellchat_cell_type_weight_diff.csv',
+    index=False
+)
 
 subplot_color = '#4361ee'
-contrasts = ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
 
 for align_sender_to_center_flag in [True, False]:
-    fig, axes = plt.subplots(
-        len(contrasts), 1, figsize=(4.5, 4 * len(contrasts))
-    )
-    for i, contrast in enumerate(contrasts):
-        plot_cellchat_vs_proximity_scatter(
-            cellchat_df=cellchat_count_df,
-            spatial_df=spatial_diff,
-            contrast=contrast,
-            ax=axes[i],
-            tested_pairs=pairs_tested,
-            color=subplot_color,
-            value_col='logFC',
-            cell_types_to_include=selected_cell_types,
-            align_sender_to_center=align_sender_to_center_flag
+    for df, measure in [
+        (cellchat_count_df, 'count'), (cellchat_weight_df, 'weight')
+    ]:
+        fig, axes = plt.subplots(
+            len(contrasts), 1, figsize=(4.5, 4 * len(contrasts))
         )
-    fig.tight_layout(rect=[0, 0, 1, 0.98])
-    fig.savefig(
-        f'{working_dir}/figures/scatter_prox_vs_cellchat_count'
-        f'_sender_is_center_{align_sender_to_center_flag}.png',
-        dpi=200,
-        bbox_inches='tight'
-    )
-    plt.close(fig)
-
-    fig, axes = plt.subplots(
-        len(contrasts), 1, figsize=(4.5, 4 * len(contrasts))
-    )
-    for i, contrast in enumerate(contrasts):
-        plot_cellchat_vs_proximity_scatter(
-            cellchat_df=cellchat_weight_df,
-            spatial_df=spatial_diff,
-            contrast=contrast,
-            ax=axes[i],
-            tested_pairs=pairs_tested,
-            color=subplot_color,
-            value_col='logFC',
-            cell_types_to_include=selected_cell_types,
-            align_sender_to_center=align_sender_to_center_flag
+        axes = [axes] if len(contrasts) == 1 else axes
+        for i, contrast in enumerate(contrasts):
+            plot_cellchat_vs_proximity_scatter(
+                cellchat_df=df,
+                spatial_df=spatial_diff,
+                contrast=contrast,
+                ax=axes[i],
+                tested_pairs=pairs_tested,
+                color=subplot_color,
+                value_col='logFC',
+                cell_types_to_include=selected_cell_types,
+                align_sender_to_center=align_sender_to_center_flag
+            )
+        fig.tight_layout(rect=[0, 0, 1, 0.98])
+        
+        base_name = (
+            f'{working_dir}/figures/scatter_prox_vs_cellchat_{measure}'
+            f'_sender_is_center_{align_sender_to_center_flag}'
         )
-    fig.tight_layout(rect=[0, 0, 1, 0.98])
-    fig.savefig(
-        f'{working_dir}/figures/scatter_prox_vs_cellchat_weight'
-        f'_sender_is_center_{align_sender_to_center_flag}.png',
-        dpi=200,
-        bbox_inches='tight'
-    )
-    fig.savefig(
-        f'{working_dir}/figures/scatter_prox_vs_cellchat_weight'
-        f'_sender_is_center_{align_sender_to_center_flag}.svg',
-        bbox_inches='tight'
-    )
-    plt.close(fig)
+        fig.savefig(f'{base_name}.png', dpi=200, bbox_inches='tight')
+        fig.savefig(f'{base_name}.svg', bbox_inches='tight')
+        plt.close(fig)
 
 for x_axis_are_senders in [True, False]:
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
-    im = plot_cellchat_cell_type_heatmap(
-        df=diff_count_p_vs_c,
-        ax=ax1,
-        x_axis_is_sender=x_axis_are_senders,
-        x_axis_cell_types=selected_cell_types,
-        tested_pairs=pairs_tested,
-        title=''
-    )
-    plot_cellchat_cell_type_heatmap(
-        df=diff_count_po_vs_p,
-        ax=ax2,
-        x_axis_is_sender=x_axis_are_senders,
-        x_axis_cell_types=selected_cell_types,
-        tested_pairs=pairs_tested,
-        title=''
-    )
-    ax2.set_ylabel('')
-    ax2.set_yticklabels([])
-    ax2.set_yticks([])
-    if im:
-        cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
-        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
-        cbar.set_label('Difference in Count')
-        plt.tight_layout(rect=[0, 0.05, 0.91, 1])
-    fig.savefig(
-        f'{working_dir}/figures/cellchat_diff_count_combined_'
-        f'xaxis_is_sender_{x_axis_are_senders}.png',
-        dpi=300,
-        bbox_inches='tight'
-    )
-    fig.savefig(
-        f'{working_dir}/figures/cellchat_diff_count_combined_'
-        f'xaxis_is_sender_{x_axis_are_senders}.svg',
-        dpi=300,
-        bbox_inches='tight'
-    )
-    plt.close(fig)
+    for df, measure in [
+        (cellchat_count_df, 'count'), (cellchat_weight_df, 'weight')
+    ]:
+        fig, axes = plt.subplots(1, 2, figsize=(7, 9))
+        for i, contrast in enumerate(contrasts):
+            im = plot_cellchat_cell_type_heatmap(
+                df=df[df['contrast'] == contrast],
+                ax=axes[i],
+                x_axis_is_sender=x_axis_are_senders,
+                x_axis_cell_types=selected_cell_types,
+                tested_pairs=pairs_tested,
+                title=''
+            )
+        
+        axes[1].set_ylabel('')
+        axes[1].set_yticklabels([])
+        axes[1].set_yticks([])
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 9))
-    im = plot_cellchat_cell_type_heatmap(
-        df=diff_weight_p_vs_c,
-        ax=ax1,
-        x_axis_is_sender=x_axis_are_senders,
-        x_axis_cell_types=selected_cell_types,
-        tested_pairs=pairs_tested,
-        title=''
-    )
-    plot_cellchat_cell_type_heatmap(
-        df=diff_weight_po_vs_p,
-        ax=ax2,
-        x_axis_is_sender=x_axis_are_senders,
-        x_axis_cell_types=selected_cell_types,
-        tested_pairs=pairs_tested,
-        title=''
-    )
-    ax2.set_ylabel('')
-    ax2.set_yticklabels([])
-    ax2.set_yticks([])
-    if im:
-        cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
-        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
-        cbar.set_label('Difference in Strength (logFC)')
-        plt.tight_layout(rect=[0, 0.05, 0.91, 1])
-    fig.savefig(
-        f'{working_dir}/figures/cellchat_diff_weight_combined_'
-        f'xaxis_is_sender_{x_axis_are_senders}.png',
-        dpi=300,
-        bbox_inches='tight'
-    )
-    fig.savefig(
-        f'{working_dir}/figures/cellchat_diff_weight_combined_'
-        f'xaxis_is_sender_{x_axis_are_senders}.svg',
-        dpi=300,
-        bbox_inches='tight'
-    )
-    plt.close(fig)
+        if im:
+            cbar_ax = fig.add_axes([0.05, 0.04, 0.2, 0.008])
+            label = ('Difference in Count' if measure == 'count' else 
+                     'Difference in Strength (logFC)')
+            fig.colorbar(
+                im, cax=cbar_ax, orientation='horizontal', label=label
+            )
+            plt.tight_layout(rect=[0, 0.05, 0.91, 1])
 
-comparisons = [
-    ('PREG_vs_CTRL', ('CTRL', 'PREG')),
-    ('POSTPART_vs_PREG', ('PREG', 'POSTPART'))
-]
+        base_name = (
+            f'{working_dir}/figures/cellchat_diff_{measure}_combined_'
+            f'xaxis_is_sender_{x_axis_are_senders}'
+        )
+        fig.savefig(f'{base_name}.png', dpi=300, bbox_inches='tight')
+        fig.savefig(f'{base_name}.svg', dpi=300, bbox_inches='tight')
+        plt.close(fig)
 
-pathway_pair_diffs = {}
+#endregion
+
+#region pathway differential signalling curio #################################
+
+pathway_diffs = {}
 for name, conditions in comparisons:
-    file = f'{working_dir}/output/curio/' \
-        f'cellchat_pathway_pair_diff_{name}_{cell_type_col}_spatial.pkl'
-    if os.path.exists(file):
-        print(f"Loading CellChat pathway pair diff for {name}...")
-        pathway_pair_diffs[name] = pd.read_pickle(file)
+    pathway_diff_path = (
+        f'{working_dir}/output/curio/'
+        f'cellchat_pathway_diff_{name}_{cell_type_col}_spatial.pkl'
+    )
+    if os.path.exists(pathway_diff_path):
+        pathway_diffs[name] = pd.read_pickle(pathway_diff_path)
     else:
-        print(f"Running CellChat pathway pair diff analysis for {name}...")
-        cobj_rds_path = f'{working_dir}/output/curio/'\
-            f'cellchat_{name}_{cell_type_col}.rds'
-        pathway_pair_diffs[name] = get_cellchat_pathway_pair_diff(
+        pathway_diffs[name] = get_cellchat_pathway_pair_diff(
             cobj_rds_path=cobj_rds_path,
             conditions=conditions,
             contrast_name=name
         )
-        pd.to_pickle(pathway_pair_diffs[name], file)
+        pd.to_pickle(pathway_diffs[name], pathway_diff_path)
 
-pathway_pair_diff_df = pd.concat(pathway_pair_diffs.values()).reset_index()
-pathway_pair_diff_df[abs(pathway_pair_diff_df['strength_diff']) > 0.01].to_csv(
-    f'{working_dir}/output/curio/cellchat_pathway_pair_diff.csv',
-    index=False)
-
-all_cell_type_pairs = [
-    ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
-    ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
-    ('Sst Chodl Gaba', 'Endo NN'),
-    ('Astro-NT NN', 'Endo NN'),
-    ('L5 ET CTX Glut', 'Peri NN'),
-    ('LSX Nkx2-1 Gaba', 'Peri NN'),
-    ('Microglia NN', 'OPC NN'),
-    ('STR Prox1 Lhx6 Gaba', 'OPC NN'),
-    ('MPO-ADP Lhx8 Gaba', 'Oligo NN'),
-    ('Pvalb Gaba', 'Oligo NN'),
-    ('OB-STR-CTX Inh IMN', 'Astro-NT NN'),
+exclude_pathways = [
+    'CD39', 'CEACAM', 'DHEA', 'DHT', 'Ddc', 'Gjb6', 'PROS', 'TGFb', 'WNT',
+    'PSAP', 'SLITRK', 'Slc17a7', 'COLLAGEN', 'Signaling by Calsyntenin'
 ]
+include_pathways = []
+
+pathway_pair_diff_df = pd.concat(pathway_diffs.values())
 
 fig = plot_pathway_diff_dotplot(
     pathway_pair_diff_df=pathway_pair_diff_df,
     cell_type_pairs=all_cell_type_pairs,
-    contrasts=['PREG_vs_CTRL', 'POSTPART_vs_PREG'],
-    top_n=10
+    contrasts=contrasts,
+    top_n=8,
+    pathways_to_exclude=exclude_pathways,
+    pathways_to_include=include_pathways,
+    cluster_rows=False
 )
-if fig:
-    fig.savefig(
-        f'{working_dir}/figures/cellchat_pathway_diff_dotplot.png',
-        dpi=300, bbox_inches='tight')
-    fig.savefig(
-        f'{working_dir}/figures/cellchat_pathway_diff_dotplot.svg',
-        dpi=300, bbox_inches='tight')
-    plt.close(fig)
+fig.savefig(
+    f'{working_dir}/figures/cellchat_pathway_diff_dotplot.png',
+    dpi=300, bbox_inches='tight'
+)
+fig.savefig(
+    f'{working_dir}/figures/cellchat_pathway_diff_dotplot.svg',
+    dpi=300, bbox_inches='tight'
+)
+plt.close(fig)
+
+adata = adata_curio.copy()
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+
+cellchat_interaction_df = get_cellchat_interaction_df(
+    cellphonedb_path=cellphonedb_v4_mouse_path,
+    cache_path=ortholog_cache_file
+)
+cellchat_interaction_df.to_csv(
+    f'{working_dir}/output/curio/cellchat_interaction_df.csv', index=False
+)
+pathway_map_cache_dir = f'{working_dir}/output/curio/pathway_maps'
+
+genes = sorted(set(
+    g for t in interaction_triplets_to_plot
+    for g in get_pathway_genes(t[0], cellchat_interaction_df)
+    if g in adata.var_names
+))
+pd.DataFrame({'gene': genes}).to_csv(
+    f'{working_dir}/output/curio/cellchat_interaction_df_select.csv', index=False)
+
+for p_name, ct_a, ct_b in tqdm(
+    interaction_triplets_to_plot, desc="Caching interface data"):
+    for contrast in contrasts:
+        get_pathway_interface_intermediate_data(
+            adata=adata,
+            pathway_name=p_name,
+            cell_type_a=ct_a,
+            cell_type_b=ct_b,
+            contrast=contrast,
+            interaction_df=cellchat_interaction_df,
+            cache_dir=pathway_map_cache_dir,
+            cell_type_col=cell_type_col
+        )
+
+fig, axs = plot_pathway_expression_maps_grid(
+    adata=adata,
+    interaction_triplets=interaction_triplets_to_plot,
+    contrasts=contrasts,
+    interaction_df=cellchat_interaction_df,
+    cache_dir=pathway_map_cache_dir,
+    resolution=300, 
+    influence_radius=18,
+    vmax=0.8
+)
+fig.savefig(
+    f'{working_dir}/figures/pathway_interface_maps_grid.png',
+    dpi=300, bbox_inches='tight'
+)
+fig.savefig(
+    f'{working_dir}/figures/pathway_interface_maps_grid.svg',
+    bbox_inches='tight'
+)
+plt.close(fig)
+
 
 #endregion
 
+#region scratchpad #############################################################
 
+df = pathway_pair_diff_df.copy()
 
+top_n_per_pair = 8
+pathways_to_include_from_plot = ['APP']
+cell_type_pairs_from_plot = all_cell_type_pairs
+contrasts_from_plot = contrasts
 
+df['canonical_pair'] = df.apply(
+    lambda row: frozenset([row['source'], row['target']]), axis=1
+)
+pairs_df = pd.DataFrame(cell_type_pairs_from_plot, columns=['c1', 'c2'])
+pairs_df['canonical_pair'] = pairs_df.apply(
+    lambda row: frozenset([row['c1'], row['c2']]), axis=1
+)
+plot_data = pd.merge(df, pairs_df[['canonical_pair']], on='canonical_pair')
+plot_data = plot_data[plot_data['contrast'].isin(contrasts_from_plot)]
 
+pair_str_map = {
+    frozenset(p): f"{p[0]} ↔ {p[1]}" for p in cell_type_pairs_from_plot
+}
+plot_data['pair_str'] = plot_data['canonical_pair'].map(pair_str_map)
+
+z_transformer = lambda x: (x - x.mean()) / x.std()
+plot_data['plot_value'] = (
+    plot_data.groupby(['contrast', 'pair_str'])['strength_diff']
+    .transform(z_transformer)
+    .fillna(0)
+)
+plot_data['abs_plot_value'] = plot_data['plot_value'].abs()
+
+top_pathways = set()
+unique_pairs = plot_data['canonical_pair'].unique()
+for pair_key in unique_pairs:
+    for contrast in contrasts_from_plot:
+        subset = plot_data[
+            (plot_data['canonical_pair'] == pair_key)
+            & (plot_data['contrast'] == contrast)
+        ]
+        subset = subset.sort_values('abs_plot_value', ascending=False)
+        top_pathways.update(subset.head(top_n_per_pair)['pathway'])
+
+if 'exclude_pathways' in locals() and exclude_pathways is not None:
+    top_pathways.difference_update(set(exclude_pathways))
+
+top_pathways.update(set(pathways_to_include_from_plot))
+
+plot_data = plot_data[plot_data['pathway'].isin(top_pathways)].copy()
+
+idx_max = plot_data.groupby(
+    ['contrast', 'canonical_pair', 'pathway']
+)['abs_plot_value'].idxmax()
+csv_df = plot_data.loc[idx_max].copy()
+
+csv_df.to_csv(
+    f'{working_dir}/output/curio/cellchat_pathway_pair_diff.csv',
+    index=False
+)
+
+#endregion
 
