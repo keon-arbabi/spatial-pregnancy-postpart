@@ -14,6 +14,17 @@ plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
 plt.rcParams['figure.dpi'] = 400
 
+dotplot_cmap = "seismic"
+condition_colors = {
+    'CTRL': '#7209b7',
+    'PREG': '#b5179e',
+    'POSTPART': '#f72585'
+}
+modality_colors = {
+    'merfish': '#4361ee',
+    'curio': '#4cc9f0'
+}
+
 working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 
 cells_joined = pd.read_csv(
@@ -237,7 +248,7 @@ for i in range(dotplot_vals_curio.shape[1]):
     scatter = ax2.scatter(i * np.ones(dotplot_vals_curio.shape[0]),
                          np.arange(dotplot_vals_curio.shape[0]), 
                          c=dotplot_vals_curio[:,i],
-                         s=s, cmap='seismic', vmin=-2, vmax=2)
+                         s=s, cmap=dotplot_cmap, vmin=-2, vmax=2)
 
 ax2.set_yticks(np.arange(len(curio_markers_rev)))
 ax2.set_yticklabels(curio_markers_rev)
@@ -269,7 +280,7 @@ for i in range(dotplot_vals_merfish.shape[1]):
                          np.arange(dotplot_vals_merfish.shape[0]), 
                          c=dotplot_vals_merfish[:,i],
                          s=s,
-                         cmap='seismic', vmin=-2, vmax=2)
+                         cmap=dotplot_cmap, vmin=-2, vmax=2)
 
 ax3.set_yticks(np.arange(len(merfish_markers_rev)))
 ax3.set_yticklabels(merfish_markers_rev)
@@ -294,23 +305,27 @@ for n, subclass in enumerate(lbl_order):
     
     total = sum(props.values())
     for cond in conditions:
-        props[cond] /= total
+        if total > 0:
+            props[cond] /= total
     
     start_idx = 0
-    for cond, prop in props.items():
+    for i, cond in enumerate(conditions):
+        prop = props[cond]
         n_cond_bins = int(round(n_bins * prop))
-        val = 2 if cond == 'PREG' else (1 if cond == 'CTRL' else 0)
+        val = i
         end_idx = start_idx + n_cond_bins
+        if i == len(conditions) - 1:
+            end_idx = n_bins
         frac_per_condition[n, start_idx:end_idx] = val
         start_idx = end_idx
 
 # plot condition proportions
 # For the condition proportions section
 ax4 = plt.subplot(gs[6])
-condition_colors = ['#f72585', '#7209b7', '#b5179e']
-condition_cmap = mpl.colors.ListedColormap(condition_colors, N=3) 
+ordered_colors = [condition_colors[c] for c in conditions]
+condition_cmap = mpl.colors.ListedColormap(ordered_colors, N=len(conditions))
 ax4.imshow(frac_per_condition.T, aspect='auto', interpolation='nearest',  
-           cmap=condition_cmap, vmin=-0.5, vmax=2.5)
+           cmap=condition_cmap)
 ax4.set_yticks([])
 ax4.set_xticks([])
 sns.despine(ax=ax4, left=True)
@@ -339,8 +354,8 @@ for n, subclass in enumerate(lbl_order):
 
 # plot modality proportions
 ax5 = plt.subplot(gs[7])
-modality_colors = ['#4361ee', '#4cc9f0']
-modality_cmap = mpl.colors.ListedColormap(modality_colors, N=2)   
+ordered_modality_colors = [modality_colors['merfish'], modality_colors['curio']]
+modality_cmap = mpl.colors.ListedColormap(ordered_modality_colors, N=2)   
 ax5.imshow(frac_per_modality.T, aspect='auto', interpolation='nearest',
            cmap=modality_cmap, vmin=-0.5, vmax=1.5) 
 ax5.set_yticks([])
@@ -351,7 +366,7 @@ ax5.axhline(n_bins/2, color='w', linestyle='--')
 
 # add unified legends for expression
 norm = plt.Normalize(vmin=-2, vmax=2)
-sm = plt.cm.ScalarMappable(cmap='seismic', norm=norm)
+sm = plt.cm.ScalarMappable(cmap=dotplot_cmap, norm=norm)
 cax = f.add_axes([0.97, 0.4, 0.02, 0.1])
 cbar = plt.colorbar(sm, cax=cax)
 cbar.outline.set_visible(False)

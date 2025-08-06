@@ -2,8 +2,10 @@ import os, gc, pickle, warnings
 import numpy as np
 import pandas as pd
 import scanpy as sc
+import seaborn as sns
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from scipy.sparse import coo_array
 from scipy.spatial import KDTree
 from scipy.stats import ttest_ind
@@ -24,6 +26,16 @@ warnings.filterwarnings('ignore')
 plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
 plt.rcParams['figure.dpi'] = 400
+
+condition_colors = {
+    'CTRL': '#7209b7',
+    'PREG': '#b5179e',
+    'POSTPART': '#f72585'
+}
+modality_colors = {
+    'merfish': '#4361ee',
+    'curio': '#4cc9f0'
+}
 
 #region functions #############################################################
 
@@ -56,9 +68,9 @@ def get_global_diff(
     form = ~ 0 + condition
     L = makeContrastsDream(form, meta,
         contrasts = c(
-            PREG_vs_CTRL = "conditionPREG - conditionCTRL",
-            POSTPART_vs_PREG = "conditionPOSTPART - conditionPREG",
-            POST_vs_CTRL = "conditionPOSTPART - conditionCTRL"
+            PREG_vs_CTRL = 'conditionPREG - conditionCTRL',
+            POSTPART_vs_PREG = 'conditionPOSTPART - conditionPREG',
+            POST_vs_CTRL = 'conditionPOSTPART - conditionCTRL'
         )
     )
     fit = dream(cobj, form, meta, L, useWeights=TRUE)
@@ -95,7 +107,7 @@ def get_global_diff(
     norm_props_summary = do.call(rbind, norm_props_by_condition)
     
     results = list()
-    for(coef in c("PREG_vs_CTRL", "POSTPART_vs_PREG")) {
+    for(coef in c('PREG_vs_CTRL', 'POSTPART_vs_PREG')) {
         tt = topTable(fit, coef=coef, number=Inf)
         tt$SE = fit$stdev.unscaled[,coef] * fit$sigma
         tt$contrast = coef
@@ -130,8 +142,8 @@ def get_global_diff(
 
     t_test_results = []
     contrasts_map = {
-        "PREG_vs_CTRL": ("PREG", "CTRL"),
-        "POSTPART_vs_PREG": ("POSTPART", "PREG")
+        'PREG_vs_CTRL': ('PREG', 'CTRL'),
+        'POSTPART_vs_PREG': ('POSTPART', 'PREG')
     }
 
     for cell_type_val in norm_props_long['cell_type'].unique():
@@ -149,7 +161,7 @@ def get_global_diff(
             t_stat, p_val = ttest_ind(
                 group1_values, 
                 group2_values, 
-                equal_var=True,  # Student's t-test (assumes equal variances)
+                equal_var=True,  # Student's t-test
                 nan_policy='omit'
             )
             t_test_results.append({
@@ -166,6 +178,34 @@ def get_global_diff(
     )
     return result, norm_props_long
 
+def _insert_gap(arr, indices, axis=0):
+    if isinstance(arr, pd.DataFrame):
+        for i in sorted(indices, reverse=True):
+            arr = pd.concat([
+                arr.iloc[:i],
+                pd.DataFrame([[np.nan]*arr.shape[1]], columns=arr.columns),
+                arr.iloc[i:]
+            ]).reset_index(drop=True)
+    else:
+        val = np.nan
+        if arr.dtype == object or arr.dtype.kind in ['U', 'S']:
+            val = ''
+        for i in sorted(indices, reverse=True):
+            arr = np.insert(arr, i, val, axis=axis)
+    return arr
+
+def _segments(mask):
+    seg, s = [], None
+    for i, v in enumerate(mask):
+        if v and s is None:
+            s = i
+        elif not v and s is not None:
+            seg.append((s, i))
+            s = None
+    if s is not None:
+        seg.append((s, len(mask)))
+    return seg
+
 def plot_cell_type_proportions(
     norm_props_df: pd.DataFrame,
     tt_combined: pd.DataFrame = None,
@@ -174,15 +214,14 @@ def plot_cell_type_proportions(
     base_figsize: Tuple[float, float] = (2.0, 2.0),
     palette: dict = {'curio': '#4cc9f0', 'merfish': '#4361ee'},
     condition_order: List[str] = ['CTRL', 'PREG', 'POSTPART'],
-    legend_position: Tuple[str, Tuple[float, float]] =
-        ('center right', (1.10, 0.5)),
-    datasets_to_plot: List[str] = ['merfish']
-    ) -> plt.Figure:
+    legend_position: Tuple[str, Tuple[float, float]] = (
+        'center right', (1.10, 0.5)),
+    datasets_to_plot: List[str] = ['merfish']) -> plt.Figure:
 
-    if cell_types is None:
-        cell_types = sorted(norm_props_df['cell_type'].unique())
-    else:
+    if cell_types:
         cell_types = sorted(cell_types)
+    else:
+        cell_types = sorted(norm_props_df['cell_type'].unique())
 
     ncols = int(np.ceil(len(cell_types) / nrows))
     figsize = (base_figsize[0] * ncols, base_figsize[1] * nrows)
@@ -190,152 +229,108 @@ def plot_cell_type_proportions(
     axes = axes.flatten()
 
     condition_labels = {
-        'CTRL': 'Control',
-        'PREG': 'Pregnant',
-        'POSTPART': 'Postpartem'
+        'CTRL': 'Control', 'PREG': 'Pregnancy', 'POSTPART': 'Postpartum'
     }
-
-    legend_handles = []
-    legend_labels = []
+    legend_handles, legend_labels = [], []
 
     for i, cell_type_val in enumerate(cell_types):
         ax = axes[i]
-        ct_data = norm_props_df[
-            norm_props_df['cell_type'] == cell_type_val
-        ].copy()
-
+        ct_data = norm_props_df[norm_props_df['cell_type'] == cell_type_val]
         plotted_conditions_on_ax = []
 
         for dataset_name, line_color in palette.items():
             if datasets_to_plot and dataset_name not in datasets_to_plot:
                 continue
 
-            ds_data = ct_data[ct_data['dataset'] == dataset_name].copy()
-            if ds_data.empty:
-                continue
-
-            cond_data_initial = ds_data.drop_duplicates(
+            ds_data = ct_data[ct_data['dataset'] == dataset_name]
+            cond_data_init = ds_data.drop_duplicates(
                 subset=['condition', 'mean', 'se']
             )
-            ordered_cond_values_for_ds = [
+            ordered_conds = [
                 c for c in condition_order
-                if c in cond_data_initial['condition'].values
+                if c in cond_data_init['condition'].values
             ]
-            if not ordered_cond_values_for_ds:
-                continue
-            
-            cond_data = cond_data_initial.set_index('condition').loc[
-                ordered_cond_values_for_ds
-            ].reset_index()
+            cond_data = (cond_data_init.set_index('condition')
+                         .loc[ordered_conds].reset_index())
 
             if not plotted_conditions_on_ax:
                 plotted_conditions_on_ax = cond_data['condition'].tolist()
 
             if len(cond_data) > 1:
-                mean_val = cond_data['mean'].mean()
-                std_val = cond_data['mean'].std()
-                if pd.notna(std_val) and std_val > 0:
-                    cond_data['mean'] = (cond_data['mean']-mean_val)/std_val
-                    cond_data['se'] = cond_data['se'] / std_val
+                mean = cond_data['mean'].mean()
+                std = cond_data['mean'].std()
+                cond_data['mean'] = (cond_data['mean'] - mean) / std
+                cond_data['se'] = cond_data['se'] / std
 
-            current_line = ax.errorbar(
-                x=cond_data['condition'],
-                y=cond_data['mean'],
-                yerr=cond_data['se'],
-                fmt='o-', color=line_color, alpha=0.7, label=dataset_name,
-                capsize=3, markersize=5, linewidth=1.5,
-                elinewidth=1, ecolor=line_color, capthick=1
+            line = ax.errorbar(
+                x=cond_data['condition'], y=cond_data['mean'],
+                yerr=cond_data['se'], fmt='o-', color=line_color, alpha=0.7,
+                label=dataset_name, capsize=3, markersize=5,
+                linewidth=1.5, elinewidth=1, ecolor=line_color,
+                capthick=1
             )
             if dataset_name not in legend_labels:
-                legend_handles.append(current_line)
+                legend_handles.append(line)
                 legend_labels.append(dataset_name)
 
-            asterisks_to_plot_on_line = []
             if tt_combined is not None:
-                for j in range(len(condition_order)-1):
-                    cond1_plot_name = condition_order[j]
-                    cond2_plot_name = condition_order[j+1]
-
-                    contrast_lookup = f'{cond2_plot_name}_vs_{cond1_plot_name}'
-
-                    filter_ct = (tt_combined['cell_type'] == cell_type_val)
-                    filter_ds = (tt_combined['dataset'] == dataset_name)
-                    filter_cn = (tt_combined['contrast'] == contrast_lookup)
-                    sig_data_row = tt_combined[
-                        filter_ct & filter_ds & filter_cn
+                asts_to_plot = []
+                for j in range(len(condition_order) - 1):
+                    c1, c2 = condition_order[j], condition_order[j+1]
+                    sig_row = tt_combined[
+                        (tt_combined['cell_type'] == cell_type_val) &
+                        (tt_combined['dataset'] == dataset_name) &
+                        (tt_combined['contrast'] == f'{c2}_vs_{c1}')
                     ]
-                    
-                    if sig_data_row.empty:
-                        continue
-
-                    p_val_col = 't_test_P.Value'
-                    p_val = sig_data_row[p_val_col].iloc[0]
-                    
-                    sig_str = ''
-                    if p_val < 0.01: sig_str = '**'
-                    elif p_val < 0.05: sig_str = '*'
-
+                    if sig_row.empty: continue
+                    p_val = sig_row['t_test_P.Value'].iloc[0]
+                    sig_str = '**' if p_val < 0.01 else '*' if p_val < 0.05 else ''
                     if sig_str:
-                        current_plot_conds = cond_data['condition'].tolist()
-                        idx1 = current_plot_conds.index(cond1_plot_name)
-                        idx2 = current_plot_conds.index(cond2_plot_name)
-                        x_txt_pos = (idx1 + idx2) / 2.0
-                        asterisks_to_plot_on_line.append(
-                            {'x': x_txt_pos, 's': sig_str}
-                        )
-            
-            if asterisks_to_plot_on_line:
-                se_safe = cond_data['se'].fillna(0)
-                line_data_tops = cond_data['mean'] + se_safe
-                max_error_bar_top = line_data_tops.max()
-                
-                if pd.notna(max_error_bar_top):
-                    asterisk_y_coord = max_error_bar_top - 0.5
-                    for ast_info in asterisks_to_plot_on_line:
+                        conds = cond_data['condition'].tolist()
+                        x_pos = (conds.index(c1) + conds.index(c2)) / 2.0
+                        asts_to_plot.append({'x': x_pos, 's': sig_str})
+
+                if asts_to_plot:
+                    se = cond_data['se'].fillna(0)
+                    y_coord = (cond_data['mean'] + se).max() - 0.5
+                    for info in asts_to_plot:
                         ax.text(
-                            ast_info['x'], asterisk_y_coord, ast_info['s'],
-                            ha='center', va='bottom',
-                            fontsize=12, color='black',
+                            info['x'], y_coord, info['s'], ha='center',
+                            va='bottom', fontsize=12, color='black',
                             fontweight='bold', clip_on=True, zorder=20
                         )
 
         ax.set_title(cell_type_val, fontsize=10)
-        row_idx = i // ncols
-        is_bottom_row = (row_idx == nrows - 1 or 
-                         i >= len(cell_types) - ncols)
-        
-        ax_xtick_lbls_use = (plotted_conditions_on_ax if 
-                             plotted_conditions_on_ax else condition_order)
-        ax.set_xticks(range(len(ax_xtick_lbls_use)))
+        is_bottom = (i // ncols == nrows - 1) or \
+                    (i >= len(cell_types) - ncols)
+        xtick_lbls = plotted_conditions_on_ax or condition_order
 
-        if is_bottom_row:
+        if is_bottom:
+            ax.set_xticks(range(len(xtick_lbls)))
             ax.set_xticklabels(
-                [condition_labels.get(c, c) for c in ax_xtick_lbls_use],
+                [condition_labels.get(c, c) for c in xtick_lbls],
                 rotation=45, ha='right', fontsize=9,
                 rotation_mode='anchor'
             )
         else:
-            ax.set_xticklabels([])
-            
-        for spine in ax.spines.values():
-            spine.set_visible(True)
-    
+            ax.set_xticks([])
+
     for i in range(len(cell_types), len(axes)):
         axes[i].set_visible(False)
-    
-    fig.text(0.035, 0.5, 'Normalized Proportion\n(Z-score)', 
-             va='center', ha='center', rotation='vertical', fontsize=9)
-    
+
+    fig.text(
+        0.035, 0.5, 'Normalized Proportion\n(Z-score)', va='center',
+        ha='center', rotation='vertical', fontsize=9
+    )
     if legend_handles:
         fig.legend(
             handles=legend_handles, labels=legend_labels,
             loc=legend_position[0], bbox_to_anchor=legend_position[1],
             fontsize=9
         )
-    
     plt.tight_layout(rect=[0.05, 0, 0.95, 1])
     fig.subplots_adjust(wspace=0.3, hspace=0.35)
-    
+
     return fig
 
 def calculate_distance_scale(coords: np.ndarray) -> float:
@@ -460,22 +455,22 @@ def get_spatial_diff(
     form = ~ 0 + condition + (1 | sample_id)
     L = makeContrastsDream(form, meta,
         contrasts = c(
-        PREG_vs_CTRL="conditionPREG-conditionCTRL",
-        POSTPART_vs_PREG="conditionPOSTPART-conditionPREG"
+        PREG_vs_CTRL='conditionPREG-conditionCTRL',
+        POSTPART_vs_PREG='conditionPOSTPART-conditionPREG'
         )
     )
     fit = dream(cobj, form, meta, L, param=param)
     fit = eBayes(fit)
     tt = list(
-    PREG_vs_CTRL=topTable(fit,coef="PREG_vs_CTRL",number=Inf),
-    POSTPART_vs_PREG=topTable(fit,coef="POSTPART_vs_PREG",number=Inf)
+    PREG_vs_CTRL=topTable(fit,coef='PREG_vs_CTRL',number=Inf),
+    POSTPART_vs_PREG=topTable(fit,coef='POSTPART_vs_PREG',number=Inf)
     )
     ''')
     
     tt = to_py('tt', format='pandas')
     pair_results = []
     for contrast, df in tt.items():
-        df = df.loc[df.index == "b_count"].copy()
+        df = df.loc[df.index == 'b_count'].copy()
         df['contrast'] = contrast
         df['cell_type_a'] = cell_type_a
         df['cell_type_b'] = cell_type_b
@@ -483,16 +478,28 @@ def get_spatial_diff(
     return pair_results
 
 def plot_spatial_diff_heatmap(
-    df, tested_pairs, sig=0.10, figsize=(15, 15),
-    cell_types_a=None, cell_types_b=None,
-    recompute_fdr=True, ax=None, vmin=None, vmax=None) -> Tuple[
-        plt.Figure, plt.Axes, plt.cm.ScalarMappable]:
+    df, 
+    tested_pairs,
+    sig=0.10, 
+    figsize=(15, 15),
+    cell_types_a=None, 
+    cell_types_b=None,
+    recompute_fdr=True, 
+    ax=None, 
+    vmin=None, vmax=None,
+    row_order=None, 
+    adata=None) -> Tuple[
+        plt.Figure, plt.Axes, plt.cm.ScalarMappable, List[str]]:
     
     filtered_df = df.copy()
     if cell_types_a is not None:
-        filtered_df = filtered_df[filtered_df['cell_type_a'].isin(cell_types_a)]
+        filtered_df = filtered_df[
+            filtered_df['cell_type_a'].isin(cell_types_a)
+        ]
     if cell_types_b is not None:
-        filtered_df = filtered_df[filtered_df['cell_type_b'].isin(cell_types_b)]
+        filtered_df = filtered_df[
+            filtered_df['cell_type_b'].isin(cell_types_b)
+        ]
         
     if recompute_fdr and len(filtered_df) > 0:
         for cell_type_b in filtered_df['cell_type_b'].unique():
@@ -504,61 +511,116 @@ def plot_spatial_diff_heatmap(
     a_types = sorted(filtered_df['cell_type_a'].unique())
     b_types = sorted(filtered_df['cell_type_b'].unique())
     
-    mat = np.full((len(a_types), len(b_types)), np.nan)
-    sigs = np.full((len(a_types), len(b_types)), '', dtype=object)
-    a_idx = {c: i for i, c in enumerate(a_types)}
-    b_idx = {c: i for i, c in enumerate(b_types)}
+    mat = pd.DataFrame(
+        index=a_types, columns=b_types, 
+        data=np.nan
+    )
+    sigs = pd.DataFrame(
+        index=a_types, columns=b_types,
+        data=''
+    )
     
     for _, row in filtered_df.iterrows():
-        i = a_idx[row['cell_type_a']]
-        j = b_idx[row['cell_type_b']]
-        mat[i, j] = row['logFC']
+        i, j = row['cell_type_a'], row['cell_type_b']
+        mat.loc[i, j] = row['logFC']
         if row['adj.P.Val'] < sig: 
-            sigs[i, j] = '*'
+            sigs.loc[i, j] = '*'
+
+    if row_order is None and adata is not None:
+        type_info = adata.obs[['subclass', 'type']]\
+            .drop_duplicates().set_index('subclass')
+        mat = mat.join(type_info)
+        
+        type_order = ['Glut', 'Gaba', 'NN']
+        mat['type'] = pd.Categorical(
+            mat['type'], categories=type_order, ordered=True
+        )
+        mat = mat.sort_values('type')
+        
+        ordered_a_types = []
+        for type_name, group in mat.groupby('type'):
+            cluster_data = group.drop('type', axis=1).fillna(0)
+            if len(group) > 1:
+                link = linkage(cluster_data.values, method='average')
+                order = leaves_list(link)
+                ordered_a_types.extend(cluster_data.index[order])
+            else:
+                ordered_a_types.extend(cluster_data.index)
+        mat = mat.reindex(ordered_a_types)
+    elif row_order is not None:
+        mat = mat.reindex(row_order)
+        mat = mat.join(
+            adata.obs[['subclass', 'type']].drop_duplicates()
+            .set_index('subclass'))
+    else:
+        ordered_a_types = a_types
+
+    row_order = mat.index.tolist()
+    a_types = row_order
     
     fig = None
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
     
-    cmap = LinearSegmentedColormap.from_list(
-        "custom_diverging",
-        ["#4b0857", "#813e8f", "white", "#66b66b", "#156a2f"], N=100)
+    cmap = 'PRGn'
     
     if vmin is None or vmax is None:
-        if np.all(np.isnan(mat)):
-            mabs = 1.0
-        else:
-            mabs = np.nanmax(np.abs(mat))
-            if np.isnan(mabs) or mabs == 0:
-                mabs = 1.0
-        if vmin is None:
-            vmin = -mabs
-        if vmax is None:
-            vmax = mabs
+        mabs = np.nanmax(np.abs(mat.drop('type', axis=1).values))
+        mabs = 1.0 if (np.isnan(mabs) or mabs == 0) else mabs
+        if vmin is None: vmin = -mabs
+        if vmax is None: vmax = mabs
     
-    x = np.arange(len(b_types) + 1)
-    y = np.arange(len(a_types) + 1)
-    X, Y = np.meshgrid(x, y)
-    im = ax.pcolormesh(X, Y, mat, cmap=cmap, vmin=vmin, vmax=vmax, 
+    plot_mat = mat.drop('type', axis=1)
+    type_boundaries = mat['type'].ne(mat['type'].shift()).cumsum()
+    gaps = np.where(type_boundaries.diff() > 0)[0]
+    plot_mat = _insert_gap(plot_mat, gaps, axis=0)
+
+    plot_sigs = sigs.reindex(mat.index)
+    plot_sigs = _insert_gap(plot_sigs, gaps, axis=0)
+    
+    a_types_gapped = _insert_gap(
+        pd.Series(a_types, dtype=object), gaps, axis=0
+    )
+
+    im = ax.pcolormesh(plot_mat.values, cmap=cmap, vmin=vmin, vmax=vmax,
                       rasterized=False)
     
-    ax.set_xlim(0, len(b_types))
-    ax.set_ylim(len(a_types), 0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
     
-    for i in range(len(a_types)):
-        for j in range(len(b_types)):
-            a, b = a_types[i], b_types[j]
-            if (a, b) not in tested_pairs:
-                ax.text(j + 0.5, i + 0.5, 'X', ha='center', va='center', 
+    row_seg = _segments(~plot_mat.isna().all(1))
+    col_seg = [(0, len(b_types))]
+
+    for r0, r1 in row_seg:
+        for c0, c1 in col_seg:
+            ax.add_patch(
+                patches.Rectangle(
+                    (c0, r0), c1 - c0, r1 - r0,
+                    fill=False, ec='black', lw=0.5
+                )
+            )
+
+    mask = pd.isna(mat)
+    for i, a in enumerate(a_types_gapped):
+        if a == '': continue
+        for j, b in enumerate(b_types):
+            is_tested = (a, b) in tested_pairs
+            
+            if not is_tested:
+                ax.text(j + 0.5, i + 0.5, 'X', ha='center', va='center',
                         color='gray', size=10)
-            elif sigs[i, j]=='*':
+            elif plot_sigs.iloc[i, j] == '*':
                 ax.text(j + 0.5, i + 0.5, '*', ha='center', va='center',
                         color='black', size=14, weight='bold')
-    
+
+    ax.set_xlim(0, len(b_types))
+    ax.set_ylim(len(a_types_gapped), 0)
     ax.set_xticks(np.arange(len(b_types)) + 0.5)
-    ax.set_yticks(np.arange(len(a_types)) + 0.5)
+    ax.set_yticks(np.arange(len(a_types_gapped)) + 0.5)
     ax.set_xticklabels(b_types, rotation=45, ha='right')
-    ax.set_yticklabels(a_types)
+    ax.set_yticklabels(a_types_gapped)
+    ax.tick_params(length=0)
+
     ax.set_xlabel('Surround Cell Type')
     ax.set_ylabel('Center Cell Type')
     
@@ -566,7 +628,7 @@ def plot_spatial_diff_heatmap(
         cbar = fig.colorbar(im, ax=ax, shrink=0.2) 
         cbar.set_label('logFC')
         plt.tight_layout()    
-    return fig, ax, im
+    return fig, ax, im, row_order
 
 def get_spatial_map_intermediate_data(
     adata,
@@ -797,9 +859,7 @@ def plot_spatial_diff_map(
         vmax = 1.0
     vmin = -vmax
 
-    cmap = LinearSegmentedColormap.from_list(
-        'custom_diverging',
-        ['#4b0857', '#813e8f', '#ffffff', '#66b66b', '#156a2f'], N=100)
+    cmap = 'PRGn'
     
     ax.pcolormesh(X, Y, tissue_mask,
                  cmap='Greys', alpha=0.4, rasterized=True)
@@ -849,7 +909,7 @@ def plot_spatial_maps_grid(
         axs = axs.reshape(-1, 1)
 
     images = []
-    for i, pair in enumerate(tqdm(cell_type_pairs, desc="Plotting maps")):
+    for i, pair in enumerate(tqdm(cell_type_pairs, desc='Plotting maps')):
         for j, contrast in enumerate(contrasts):
             ax = axs[i, j]
             _, _, im = plot_spatial_diff_map(
@@ -865,11 +925,11 @@ def plot_spatial_maps_grid(
             if im:
                 images.append(im)
             if i == 0:
-                title = "Pregnancy vs Control" if contrast == 'PREG_vs_CTRL' \
-                    else "Postpartum vs Pregnancy"
+                title = 'Pregnancy vs Control' if contrast == 'PREG_vs_CTRL' \
+                    else 'Postpartum vs Pregnancy'
                 ax.set_title(title, fontsize=10)
             if j == 0:
-                ylabel_str = f"{pair[0]} (Center)\n{pair[1]} (Surround)"
+                ylabel_str = f'{pair[0]} (Center)\n{pair[1]} (Surround)'
                 ax.set_ylabel(
                     ylabel_str, fontsize=7, 
                     rotation='vertical', va='center', labelpad=15)
@@ -887,7 +947,7 @@ def plot_cellchat_diff_radii(
     spatial_data: pd.DataFrame,
     coords_cols: tuple = ('x', 'y'),
     sample_col: str = 'sample',
-    interaction_range: float = 250,
+    interaction_range: float = 600,
     s: float = 0.2):
 
     samples = sorted(spatial_data[sample_col].unique())
@@ -913,14 +973,17 @@ def plot_cellchat_diff_radii(
         ax.scatter(*random_point, c='red', s=s*10, zorder=10)
 
         ax.set_title(f'Sample: {sample}')
-        ax.set_xlabel("X coordinate (microns)")
-        ax.set_ylabel("Y coordinate (microns)")
+        ax.set_xlabel('X coordinate (microns)')
+        ax.set_ylabel('Y coordinate (microns)')
         ax.set_aspect('equal', adjustable='box')
 
     for i in range(len(samples), len(axes)):
         axes[i].set_visible(False)
 
-    fig.suptitle("CellChat Interaction Radius (250 microns)", fontsize=16)
+    fig.suptitle(
+        f'CellChat Interaction Radius ({interaction_range} microns)', 
+        fontsize=16
+    )
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
 
@@ -973,7 +1036,7 @@ def update_cellchat_db(
     to_r(cpdb_gene_info_mouse.reset_index(drop=True), 'cpdb_gene_info_mouse')
     to_r(updated_db_name, 'updated_db_name')
 
-    r_script = """
+    r_script = '''
     suppressPackageStartupMessages({
         library(CellChat)
         library(NeuronChat)
@@ -1002,9 +1065,9 @@ def update_cellchat_db(
                pathway_name = classification) %>%
         mutate(
             annotation = case_when(
-                directionality == "secreted" ~ "Secreted Signaling",
-                directionality == "transmembrane" ~ "Cell-Cell Contact",
-                TRUE ~ "Cell-Cell Contact"
+                directionality == 'secreted' ~ 'Secreted Signaling',
+                directionality == 'transmembrane' ~ 'Cell-Cell Contact',
+                TRUE ~ 'Cell-Cell Contact'
             ),
             interaction_name_2 = interaction_name
         )
@@ -1020,15 +1083,15 @@ def update_cellchat_db(
             stringsAsFactors = FALSE
         )
     ) %>%
-    mutate(pathway_name = ligand, annotation = "Secreted Signaling")
+    mutate(pathway_name = ligand, annotation = 'Secreted Signaling')
 
     required_cols <- colnames(base_interaction)
     for (col in required_cols) {
         if (!col %in% names(cpdb_formatted)) {
-            cpdb_formatted[[col]] <- ""
+            cpdb_formatted[[col]] <- ''
         }
         if (!col %in% names(neuron_chat_formatted)) {
-            neuron_chat_formatted[[col]] <- ""
+            neuron_chat_formatted[[col]] <- ''
         }
     }
     cpdb_final <- cpdb_formatted[, required_cols]
@@ -1052,7 +1115,7 @@ def update_cellchat_db(
     )
     
     assign(updated_db_name, db_extended, envir = .GlobalEnv)
-    """
+    '''
     r(r_script)
     return updated_db_name
 
@@ -1122,8 +1185,8 @@ def prepare_cellchat_object(
             ratio = conversion_factor,
             tol = spot.size / 2)
         cobj_1 <- createCellChat(
-            object = sobj_1, group.by = cell_type_col, assay = "RNA",
-            datatype = "spatial", coordinates = spatial_locs_1,
+            object = sobj_1, group.by = cell_type_col, assay = 'RNA',
+            datatype = 'spatial', coordinates = spatial_locs_1,
             spatial.factors = spatial_factors_1)
         
         spatial_locs_2 <- spatial_locs[colnames(sobj_2), ]
@@ -1131,8 +1194,8 @@ def prepare_cellchat_object(
             ratio = conversion_factor,
             tol = spot.size / 2)
         cobj_2 <- createCellChat(
-            object = sobj_2, group.by = cell_type_col, assay = "RNA",
-            datatype = "spatial", coordinates = spatial_locs_2,
+            object = sobj_2, group.by = cell_type_col, assay = 'RNA',
+            datatype = 'spatial', coordinates = spatial_locs_2,
             spatial.factors = spatial_factors_2)
 
         cobj_1@DB <- cellchat_db
@@ -1147,11 +1210,11 @@ def prepare_cellchat_object(
         cobj_2 <- identifyOverExpressedInteractions(cobj_2)
         
         cobj_1 <- computeCommunProb(
-            cobj_1, type = "truncatedMean", trim = 0.1, 
+            cobj_1, type = 'truncatedMean', trim = 0.1, 
             distance.use = TRUE, interaction.range = 600, 
             scale.distance = 1.8, contact.range = 10)
         cobj_2 <- computeCommunProb(
-            cobj_2, type = "truncatedMean", trim = 0.1, 
+            cobj_2, type = 'truncatedMean', trim = 0.1, 
             distance.use = TRUE, interaction.range = 600, 
             scale.distance = 1.8, contact.range = 10)
 
@@ -1219,15 +1282,15 @@ def get_cellchat_cell_type_pair_diff(
             ncol=length(all_targets), dimnames=list(all_sources, all_targets))
         if (!is.null(g2_c)) g2_c_full[rownames(g2_c), colnames(g2_c)] <- g2_c
         
-        net_df_w <- reshape2::melt(g2_w_full - g1_w_full, value.name = "logFC")
-        net_df_w$measure <- "weight"
+        net_df_w <- reshape2::melt(g2_w_full - g1_w_full, value.name = 'logFC')
+        net_df_w$measure <- 'weight'
         
-        net_df_c <- reshape2::melt(g2_c_full - g1_c_full, value.name = "logFC")
-        net_df_c$measure <- "count"
+        net_df_c <- reshape2::melt(g2_c_full - g1_c_full, value.name = 'logFC')
+        net_df_c$measure <- 'count'
 
         net_df <- rbind(net_df_w, net_df_c)
-        colnames(net_df)[1:2] <- c("cell_type_a", "cell_type_b")
-        net_df$contrast <- paste0(cond_2, "_vs_", cond_1)
+        colnames(net_df)[1:2] <- c('cell_type_a', 'cell_type_b')
+        net_df$contrast <- paste0(cond_2, '_vs_', cond_1)
     '''
     r(r_script)
     diff_df = to_py('net_df', format='pandas')
@@ -1300,8 +1363,8 @@ def get_cellchat_pathway_pair_diff(
                     }}
 
                     diff_mat <- mat2 - mat1
-                    diff_df <- melt(diff_mat, value.name = "strength_diff")
-                    colnames(diff_df)[1:2] <- c("source", "target")
+                    diff_df <- melt(diff_mat, value.name = 'strength_diff')
+                    colnames(diff_df)[1:2] <- c('source', 'target')
                     diff_df$pathway <- pathway
                     all_diffs[[pathway]] <- diff_df
                 }}
@@ -1323,109 +1386,93 @@ def get_cellchat_pathway_pair_diff(
 def plot_cellchat_cell_type_heatmap(
     df: pd.DataFrame,
     ax: plt.Axes,
-    tested_pairs: set = None,
+    tested_pairs: Optional[set] = None,
     value_col: str = 'logFC',
-    x_axis_cell_types: List[str] = None,
-    vmin: float = None,
-    vmax: float = None,
+    x_axis_cell_types: Optional[List[str]] = None,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
     title: str = '',
-    x_axis_is_sender: bool = True) -> plt.cm.ScalarMappable:
+    x_axis_is_sender: bool = True,
+    row_order: Optional[List[str]] = None,
+    adata: Optional[sc.AnnData] = None
+) -> Optional[plt.cm.ScalarMappable]:
 
+    sender_col, receiver_col = ('cell_type_a', 'cell_type_b') if \
+        x_axis_is_sender else ('cell_type_b', 'cell_type_a')
+    
     df_plot = df.copy()
-
-    if x_axis_is_sender:
-        sender_col, receiver_col = 'cell_type_a', 'cell_type_b'
-        if x_axis_cell_types:
-            df_plot = df_plot[df_plot[sender_col].isin(x_axis_cell_types)]
-    else:
-        sender_col, receiver_col = 'cell_type_b', 'cell_type_a'
-        if x_axis_cell_types:
-            df_plot = df_plot[df_plot[sender_col].isin(x_axis_cell_types)]
-
-    if df_plot.empty:
-        ax.text(0.5, 0.5, "No interactions to plot",
-                ha='center', va='center')
-        ax.set_xticks([])
-        ax.set_yticks([])
-        return None
-
-    heatmap_data = (
-        df_plot.groupby([receiver_col, sender_col])[value_col]
-        .sum()
-        .unstack(fill_value=0)
-    )
-
     if x_axis_cell_types:
-        x_types = [
-            ct for ct in x_axis_cell_types if ct in heatmap_data.columns
-        ]
-    else:
-        x_types = sorted(heatmap_data.columns)
+        df_plot = df_plot[df_plot[sender_col].isin(x_axis_cell_types)]
 
-    y_types = sorted(list(heatmap_data.index))
-
-    mat_data = heatmap_data.reindex(
-        index=y_types, columns=x_types, fill_value=0
+    heatmap_data = df_plot.pivot_table(
+        index=receiver_col, columns=sender_col, values=value_col,
+        aggfunc='sum', fill_value=0
     )
-    mat = mat_data.values.astype(float)
-
-    if mat.size == 0:
-        ax.text(0.5, 0.5, "No interactions to plot",
-                ha='center', va='center')
-        ax.set_xticks([])
-        ax.set_yticks([])
+    if heatmap_data.empty:
         return None
 
-    if tested_pairs is not None:
+    y_types = [r for r in row_order if r in heatmap_data.index] if \
+        row_order else sorted(heatmap_data.index)
+    x_types = [ct for ct in x_axis_cell_types if ct in heatmap_data.columns] \
+        if x_axis_cell_types else sorted(heatmap_data.columns)
+
+    mat = heatmap_data.reindex(
+        index=y_types, columns=x_types, fill_value=0
+    ).values.astype(float)
+    if not mat.size: return None
+
+    if tested_pairs:
         for i, y_label in enumerate(y_types):
             for j, x_label in enumerate(x_types):
-
-                if x_axis_is_sender:
-                    sender, receiver = x_label, y_label
-                else:
-                    sender, receiver = y_label, x_label
-
+                sender = x_label if x_axis_is_sender else y_label
+                receiver = y_label if x_axis_is_sender else x_label
                 if (receiver, sender) not in tested_pairs:
                     mat[i, j] = np.nan
-                    ax.text(
-                        j + 0.5, i + 0.5, 'X',
-                        ha='center',
-                        va='center',
-                        color='gray',
-                        size=10
-                    )
 
-    cmap = plt.get_cmap('seismic').copy()
+    gaps = []
+    if row_order and adata:
+        type_info = adata.obs[['subclass', 'type']].drop_duplicates()\
+            .set_index('subclass').reindex(y_types)
+        gaps = np.where(type_info['type'].ne(type_info['type'].shift()))[0]
+    
+    mat = _insert_gap(mat, gaps, axis=0)
+    y_types_gapped = _insert_gap(pd.Series(y_types, dtype=object), gaps)
+
+    cmap = plt.get_cmap('seismic')
     cmap.set_bad(color='white')
+    
+    mabs = np.nanmax(np.abs(mat)) if np.any(~np.isnan(mat)) else 1.0
+    vmin = -mabs if vmin is None else vmin
+    vmax = mabs if vmax is None else vmax
 
-    if vmin is None or vmax is None:
-        valid_vals = mat[~np.isnan(mat)]
-        mabs = (np.max(np.abs(valid_vals)) if valid_vals.size > 0 else 0)
-        mabs = mabs if mabs > 0 else 1.0
-        if vmin is None:
-            vmin = -mabs
-        if vmax is None:
-            vmax = mabs
+    im = ax.pcolormesh(mat, cmap=cmap, vmin=vmin, vmax=vmax)
+    for spine in ax.spines.values(): spine.set_visible(False)
 
-    im = ax.pcolormesh(
-        mat, cmap=cmap, vmin=vmin, vmax=vmax, rasterized=False
-    )
+    for r0, r1 in _segments(~np.isnan(mat).all(1)):
+        ax.add_patch(patches.Rectangle(
+            (0, r0), len(x_types), r1 - r0, fill=False, ec='black', lw=0.5
+        ))
+
+    if tested_pairs:
+        for i, y_label in enumerate(y_types_gapped):
+            if not y_label: continue
+            for j, x_label in enumerate(x_types):
+                sender = x_label if x_axis_is_sender else y_label
+                receiver = y_label if x_axis_is_sender else x_label
+                if (receiver, sender) not in tested_pairs:
+                    ax.text(j + 0.5, i + 0.5, 'X', ha='center',
+                            va='center', color='gray', size=8)
 
     ax.set_xticks(np.arange(len(x_types)) + 0.5)
-    ax.set_yticks(np.arange(len(y_types)) + 0.5)
+    ax.set_yticks(np.arange(len(y_types_gapped)) + 0.5)
     ax.set_xticklabels(x_types, rotation=45, ha='right')
-    ax.set_yticklabels(y_types)
-
-    if x_axis_is_sender:
-        ax.set_xlabel('Sender Cell Type')
-        ax.set_ylabel('Target Cell Type')
-    else:
-        ax.set_xlabel('Target Cell Type')
-        ax.set_ylabel('Sender Cell Type')
+    ax.set_yticklabels(y_types_gapped)
+    ax.tick_params(length=0)
+    ax.set_xlabel('Sender' if x_axis_is_sender else 'Target')
+    ax.set_ylabel('Target' if x_axis_is_sender else 'Sender')
     ax.set_title(title)
-
     ax.set_xlim(0, len(x_types))
-    ax.set_ylim(len(y_types), 0)
+    ax.set_ylim(len(y_types_gapped), 0)
 
     return im
 
@@ -1498,7 +1545,7 @@ def plot_cellchat_vs_proximity_scatter(
     ]
 
     if merged_df.empty:
-        ax.text(0.5, 0.5, "No data to plot", ha='center', va='center')
+        ax.text(0.5, 0.5, 'No data to plot', ha='center', va='center')
         ax.set_xticks([])
         ax.set_yticks([])
         return
@@ -1515,7 +1562,7 @@ def plot_cellchat_vs_proximity_scatter(
     r_val, p_val = pearsonr(x_vals, y_vals)
 
     display_contrast = contrast_map.get(contrast, contrast)
-    legend_text = f"R={r_val:.2f}, p={p_val:.4f}"
+    legend_text = f'R={r_val:.2f}, p={p_val:.4f}'
     ax.text(
         0.95, 0.95, legend_text, transform=ax.transAxes, fontsize=9,
         verticalalignment='top', horizontalalignment='right',
@@ -1526,8 +1573,8 @@ def plot_cellchat_vs_proximity_scatter(
     ax.axvline(0, color='grey', linestyle='--', linewidth=0.8)
 
     ax.set_title(display_contrast, fontsize=11)
-    ax.set_xlabel(f"Signaling Change ({value_col})", fontsize=9)
-    ax.set_ylabel("Proximity Change (logFC)", fontsize=9)
+    ax.set_xlabel(f'Signaling Change ({value_col})', fontsize=9)
+    ax.set_ylabel('Proximity Change (logFC)', fontsize=9)
     ax.tick_params(axis='both', which='major', labelsize=8)
 
 def plot_pathway_diff_dotplot(
@@ -1540,47 +1587,47 @@ def plot_pathway_diff_dotplot(
     pathways_to_include: Optional[List[str]] = None,
     cluster_rows: bool = True):
 
-    pathway_pair_diff_df["canonical_pair"] = pathway_pair_diff_df.apply(
-        lambda row: frozenset([row["source"], row["target"]]), axis=1
+    pathway_pair_diff_df['canonical_pair'] = pathway_pair_diff_df.apply(
+        lambda row: frozenset([row['source'], row['target']]), axis=1
     )
-    pairs_df = pd.DataFrame(cell_type_pairs, columns=["c1", "c2"])
-    pairs_df["canonical_pair"] = pairs_df.apply(
-        lambda row: frozenset([row["c1"], row["c2"]]), axis=1
+    pairs_df = pd.DataFrame(cell_type_pairs, columns=['c1', 'c2'])
+    pairs_df['canonical_pair'] = pairs_df.apply(
+        lambda row: frozenset([row['c1'], row['c2']]), axis=1
     )
     plot_data = pd.merge(
-        pathway_pair_diff_df, pairs_df[["canonical_pair"]], on="canonical_pair"
+        pathway_pair_diff_df, pairs_df[['canonical_pair']], on='canonical_pair'
     )
     
     pair_str_map = {
-        frozenset(p): f"{p[0]} ↔ {p[1]}" for p in cell_type_pairs
+        frozenset(p): f'{p[0]} ↔ {p[1]}' for p in cell_type_pairs
     }
     plot_data['pair_str'] = plot_data['canonical_pair'].map(pair_str_map)
 
     if plot_data.empty:
-        print("No matching data found for the provided cell type pairs.")
+        print('No matching data found for the provided cell type pairs.')
         return None
 
     if z_score:
-        grouped = plot_data.groupby(["contrast", "pair_str"])["strength_diff"]
+        grouped = plot_data.groupby(['contrast', 'pair_str'])['strength_diff']
         transform_func = lambda x: (x - x.mean()) / x.std()
-        plot_data["plot_value"] = grouped.transform(transform_func).fillna(0)
-        cbar_label_base = "Signaling Change\n(Pair-wise Z-score"
+        plot_data['plot_value'] = grouped.transform(transform_func).fillna(0)
+        cbar_label_base = 'Signaling Change\n(Pair-wise Z-score'
     else:
-        plot_data["plot_value"] = plot_data["strength_diff"]
-        cbar_label_base = "Change in Signaling Strength"
+        plot_data['plot_value'] = plot_data['strength_diff']
+        cbar_label_base = 'Change in Signaling Strength'
 
-    plot_data["abs_plot_value"] = plot_data["plot_value"].abs()
+    plot_data['abs_plot_value'] = plot_data['plot_value'].abs()
 
     top_pathways = set()
-    unique_pairs = plot_data["canonical_pair"].unique()
+    unique_pairs = plot_data['canonical_pair'].unique()
     for pair_key in unique_pairs:
         for contrast in contrasts:
             subset = plot_data[
-                (plot_data["canonical_pair"] == pair_key)
-                & (plot_data["contrast"] == contrast)
+                (plot_data['canonical_pair'] == pair_key)
+                & (plot_data['contrast'] == contrast)
             ]
-            subset = subset.sort_values("abs_plot_value", ascending=False)
-            top_pathways.update(subset.head(top_n)["pathway"])
+            subset = subset.sort_values('abs_plot_value', ascending=False)
+            top_pathways.update(subset.head(top_n)['pathway'])
 
     if pathways_to_exclude is not None:
         top_pathways.difference_update(set(pathways_to_exclude))
@@ -1588,35 +1635,35 @@ def plot_pathway_diff_dotplot(
     if pathways_to_include is not None:
         top_pathways.update(set(pathways_to_include))
 
-    plot_data = plot_data[plot_data["pathway"].isin(top_pathways)].copy()
+    plot_data = plot_data[plot_data['pathway'].isin(top_pathways)].copy()
     
     if plot_data.empty:
-        print("No data to plot for the selected pathways.")
+        print('No data to plot for the selected pathways.')
         return None
 
     idx_max = plot_data.groupby(
-        ["contrast", "canonical_pair", "pathway"]
-    )["abs_plot_value"].idxmax()
+        ['contrast', 'canonical_pair', 'pathway']
+    )['abs_plot_value'].idxmax()
     plot_data = plot_data.loc[idx_max]
 
-    lower_thresh = plot_data["plot_value"].quantile(0.01)
-    upper_thresh = plot_data["plot_value"].quantile(0.99)
-    plot_data["plot_value_winsorized"] = plot_data["plot_value"].clip(
+    lower_thresh = plot_data['plot_value'].quantile(0.01)
+    upper_thresh = plot_data['plot_value'].quantile(0.99)
+    plot_data['plot_value_winsorized'] = plot_data['plot_value'].clip(
         lower_thresh, upper_thresh
     )
-    cbar_label = f"{cbar_label_base}, Winsorized)"
+    cbar_label = f'{cbar_label_base}, Winsorized)'
 
     n_contrasts = len(contrasts)
-    fig_height = len(top_pathways) * 0.5
-    fig_width = 2.4 * n_contrasts 
+    fig_height = len(top_pathways) * 0.4
+    fig_width = 3.2 * n_contrasts 
     fig, axes = plt.subplots(
         1, n_contrasts, figsize=(fig_width, fig_height), sharey=True
     )
     if n_contrasts == 1:
         axes = [axes]
 
-    cmap = plt.get_cmap("seismic")
-    vmax = plot_data["plot_value_winsorized"].abs().max()
+    cmap = plt.get_cmap('seismic')
+    vmax = plot_data['plot_value_winsorized'].abs().max()
     if pd.isna(vmax) or vmax == 0:
         vmax = 1.5
     
@@ -1625,8 +1672,8 @@ def plot_pathway_diff_dotplot(
     norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
     mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
 
-    ordered_pair_strs = [f"{p[0]} ↔ {p[1]}" for p in cell_type_pairs]
-    plotted_pairs = plot_data["pair_str"].unique()
+    ordered_pair_strs = [f'{p[0]} ↔ {p[1]}' for p in cell_type_pairs]
+    plotted_pairs = plot_data['pair_str'].unique()
     x_cats = [p for p in ordered_pair_strs if p in plotted_pairs]
     
     if cluster_rows:
@@ -1654,31 +1701,36 @@ def plot_pathway_diff_dotplot(
     y_map = {cat: j for j, cat in enumerate(y_cats)}
     x_map = {cat: j for j, cat in enumerate(x_cats)}
 
+    title_map = {
+        'PREG_vs_CTRL': 'Pregnancy vs Control',
+        'POSTPART_vs_PREG': 'Postpartum vs Pregnancy',
+    }
+
     for i, (ax, contrast) in enumerate(zip(axes, contrasts)):
-        contrast_data = plot_data[plot_data["contrast"] == contrast].copy()
+        contrast_data = plot_data[plot_data['contrast'] == contrast].copy()
 
         grid_df = pd.DataFrame(
             [(p, pair) for p in y_cats for pair in x_cats],
-            columns=["pathway", "pair_str"],
+            columns=['pathway', 'pair_str'],
         )
-        grid_df["y_coord"] = grid_df["pathway"].map(y_map)
-        grid_df["x_coord"] = grid_df["pair_str"].map(x_map)
+        grid_df['y_coord'] = grid_df['pathway'].map(y_map)
+        grid_df['x_coord'] = grid_df['pair_str'].map(x_map)
         ax.scatter(
-            x=grid_df["x_coord"],
-            y=grid_df["y_coord"],
+            x=grid_df['x_coord'],
+            y=grid_df['y_coord'],
             s=100,
-            facecolors="none",
-            edgecolors="#eeeeee",
+            facecolors='none',
+            edgecolors='#eeeeee',
             zorder=1,
         )
 
         if not contrast_data.empty:
-            contrast_data["y_coord"] = contrast_data["pathway"].map(y_map)
-            contrast_data["x_coord"] = contrast_data["pair_str"].map(x_map)
-            scatter_colors = contrast_data["plot_value_winsorized"]
+            contrast_data['y_coord'] = contrast_data['pathway'].map(y_map)
+            contrast_data['x_coord'] = contrast_data['pair_str'].map(x_map)
+            scatter_colors = contrast_data['plot_value_winsorized']
             ax.scatter(
-                x=contrast_data["x_coord"],
-                y=contrast_data["y_coord"],
+                x=contrast_data['x_coord'],
+                y=contrast_data['y_coord'],
                 c=scatter_colors,
                 s=120,
                 cmap=cmap,
@@ -1690,20 +1742,21 @@ def plot_pathway_diff_dotplot(
         ax.set_xticks(range(len(x_cats)))
         ax.set_xticklabels(
             x_cats,
-            rotation=90,
-            fontsize=9,
-            ha="right",
-            rotation_mode="anchor",
+            rotation=45,
+            ha='right',
+            rotation_mode='anchor',
         )
-        ax.set_title(contrast.replace("_", " vs "), fontsize=11)
-        ax.grid(True, color="lightgray", linestyle="-", linewidth=0.5, zorder=0)
+        ax.set_title(
+            title_map.get(contrast, contrast.replace('_', ' vs ')), fontsize=11
+        )
+        ax.grid(True, color='lightgray', linestyle='-', linewidth=0.5, zorder=0)
 
         if i == 0:
             ax.set_yticks(range(len(y_cats)))
             ax.set_yticklabels(y_cats, fontsize=9)
 
-        ax.tick_params(axis="x", length=0)
-        ax.tick_params(axis="y", length=0)
+        ax.tick_params(axis='x', length=0)
+        ax.tick_params(axis='y', length=0)
         ax.set_xlim(-0.5, len(x_cats) - 0.5)
         ax.set_ylim(-0.5, len(y_cats) - 0.5)
         for spine in ax.spines.values():
@@ -1788,9 +1841,9 @@ def get_cellchat_interaction_df(
                pathway_name = classification) %>%
         mutate(
             annotation = case_when(
-                directionality == "secreted" ~ "Secreted Signaling",
-                directionality == "transmembrane" ~ "Cell-Cell Contact",
-                TRUE ~ "Cell-Cell Contact"
+                directionality == 'secreted' ~ 'Secreted Signaling',
+                directionality == 'transmembrane' ~ 'Cell-Cell Contact',
+                TRUE ~ 'Cell-Cell Contact'
             ),
             interaction_name_2 = interaction_name
         )
@@ -1805,14 +1858,14 @@ def get_cellchat_interaction_df(
             stringsAsFactors = FALSE
         )
     ) %>%
-    mutate(pathway_name = ligand, annotation = "Secreted Signaling")
+    mutate(pathway_name = ligand, annotation = 'Secreted Signaling')
     required_cols <- colnames(base_interaction)
     for (col in required_cols) {
         if (!col %in% names(cpdb_formatted)) {
-            cpdb_formatted[[col]] <- ""
+            cpdb_formatted[[col]] <- ''
         }
         if (!col %in% names(neuron_chat_formatted)) {
-            neuron_chat_formatted[[col]] <- ""
+            neuron_chat_formatted[[col]] <- ''
         }
     }
     cpdb_final <- cpdb_formatted[, required_cols]
@@ -1855,7 +1908,8 @@ def get_pathway_genes(
     all_genes = set()
     for gene_group in np.concatenate([ligands, receptors]):
         all_genes.update(
-            g for g in str(gene_group).replace('_', ',').replace(' ', '').split(',') if g
+            g for g in str(gene_group).replace('_', ',')
+                .replace(' ', '').split(',') if g
         )
     
     return sorted(list(all_genes))
@@ -1876,7 +1930,8 @@ def get_pathway_interface_intermediate_data(
     safe_b = cell_type_b.replace(' ', '_').replace('/', '_')
     os.makedirs(cache_dir, exist_ok=True)
     cache_file = os.path.join(
-        cache_dir, f'interface_{safe_p}_{safe_a}_{safe_b}_{contrast}.pkl')
+        cache_dir, f'interface_{safe_p}_{safe_a}_{safe_b}_{contrast}.pkl'
+    )
 
     if os.path.exists(cache_file):
         with open(cache_file, 'rb') as f: return pickle.load(f)
@@ -1947,7 +2002,7 @@ def plot_pathway_interface_diff_map(
         interaction_df, cache_dir, coords_cols, cell_type_col)
 
     if map_data is None:
-        ax.text(0.5, 0.5, "No data", ha='center', va='center')
+        ax.text(0.5, 0.5, 'No data', ha='center', va='center')
         return fig, ax, None
 
     base_tree = KDTree(map_data['base_coords'])
@@ -2074,7 +2129,7 @@ def plot_pathway_expression_maps_grid(
 
     images = []
     
-    pbar_desc="Plotting maps"
+    pbar_desc='Plotting maps'
     with tqdm(total=n_rows * n_cols, desc=pbar_desc) as pbar:
         for i, (p_name, ct_a, ct_b) in enumerate(interaction_triplets):
             for j, contrast in enumerate(contrasts):
@@ -2088,13 +2143,13 @@ def plot_pathway_expression_maps_grid(
                 
                 if i == 0:
                     if contrast == 'PREG_vs_CTRL':
-                        title = "Pregnancy vs Control"
+                        title = 'Pregnancy vs Control'
                     else:
-                        title = "Postpartum vs Pregnancy"
+                        title = 'Postpartum vs Pregnancy'
                     ax.set_title(title, fontsize=10)
 
                 if j == 0:
-                    ylabel_str = f"{p_name.upper()}\n{ct_a} ↔ {ct_b}"
+                    ylabel_str = f'{p_name.upper()}\n{ct_a} ↔ {ct_b}'
                     ax.set_ylabel(
                         ylabel_str, fontsize=7, 
                         rotation='vertical', va='center', labelpad=15)
@@ -2107,6 +2162,146 @@ def plot_pathway_expression_maps_grid(
         fig.subplots_adjust(wspace=0, hspace=0)
 
     return fig, axs
+
+def plot_proximity_violins(
+    adata: sc.AnnData,
+    spatial_stats: pd.DataFrame,
+    cell_type_pairs: List[tuple],
+    cache_dir: str,
+    cell_type_col: str,
+    coords_cols: Tuple[str, str],
+    condition_palette: dict):
+
+    n_rows = len(cell_type_pairs)
+    fig, axes = plt.subplots(
+        n_rows, 2, figsize=(1.8, n_rows * 1.8), sharey='row'
+    )
+    if n_rows == 1: axes = axes.reshape(1, 2)
+    
+    comparisons = [['CTRL', 'PREG'], ['PREG', 'POSTPART']]
+    pbar_desc = 'Plotting proximity violins'
+    for i, pair in enumerate(tqdm(cell_type_pairs, desc=pbar_desc)):
+        all_data = [
+            get_spatial_map_intermediate_data(
+                adata, spatial_stats, pair, c, cache_dir,
+                cell_type_col, coords_cols
+            ) for c in ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
+        ]
+        valid_data = [pd.DataFrame(
+            {'clr': d['clr_values'], 'condition': d['all_conditions']}
+        ) for d in all_data if d]
+
+        if not valid_data:
+            for ax in axes[i]: ax.set_visible(False)
+            continue
+            
+        df = pd.concat(valid_data).drop_duplicates()
+        df['x'] = ''
+
+        for j, comp in enumerate(comparisons):
+            ax = axes[i, j]
+            sns.violinplot(
+                data=df[df['condition'].isin(comp)], x='x', y='clr',
+                hue='condition', hue_order=comp, palette=condition_palette,
+                split=True, ax=ax, cut=0, width=0.6,
+                linewidth=1.0, inner=None
+            )
+            ax.get_legend().remove()
+            ax.set(ylabel='', xlabel='', yticklabels=[], yticks=[])
+            ax.spines[:].set_visible(False)
+            ax.set_xticks([])
+
+    legend_patches = [patches.Patch(color=c, label=l) for l, c in \
+               condition_palette.items()]
+    fig.legend(
+        handles=legend_patches, loc='lower center', ncol=3,
+        bbox_to_anchor=(0.5, -0.05), frameon=False, fontsize=8
+    )
+    fig.tight_layout()
+    return fig, axes
+
+def get_pathway_violin_data(
+    adata: sc.AnnData,
+    interaction_df: pd.DataFrame,
+    triplet: Tuple[str, str, str]
+) -> pd.DataFrame:
+    
+    p_name, ct_a, ct_b = triplet
+    pathway_genes = get_pathway_genes(p_name, interaction_df)
+    if not pathway_genes: return pd.DataFrame()
+
+    adata_var_upper = adata.var['gene_symbol'].str.upper()
+    available_genes = [
+        g for g in pathway_genes if g.upper() in adata_var_upper.values
+    ]
+    if not available_genes: return pd.DataFrame()
+
+    upper_to_symbol = pd.Series(
+        adata.var['gene_symbol'].values, index=adata_var_upper
+    )
+    genes_to_use = upper_to_symbol[
+        upper_to_symbol.index.isin([g.upper() for g in available_genes])
+    ].unique()
+
+    pathway_expr = np.array(adata[:, genes_to_use].X.mean(axis=1)).flatten()
+    log_pathway_expr = np.log1p(pathway_expr) # Apply log1p transformation
+
+    mask = adata.obs['subclass'].isin([ct_a, ct_b])
+    df = pd.DataFrame({
+        'pathway_expr': log_pathway_expr[mask],
+        'condition': adata.obs['condition'][mask],
+        'cell_type': adata.obs['subclass'][mask]
+    })
+    return df
+
+def plot_pathway_violins(
+    adata: sc.AnnData,
+    interaction_df: pd.DataFrame,
+    interaction_triplets: List[Tuple[str, str, str]],
+    condition_palette: dict):
+    
+    n_rows = len(interaction_triplets)
+    fig, axes = plt.subplots(
+        n_rows, 2, figsize=(1.8, n_rows * 1.8), sharey='row'
+    )
+    if n_rows == 1: axes = axes.reshape(1, 2)
+    
+    comparisons = [['CTRL', 'PREG'], ['PREG', 'POSTPART']]
+    pbar_desc = 'Plotting pathway violins'
+    for i, triplet in enumerate(tqdm(interaction_triplets, desc=pbar_desc)):
+        df = get_pathway_violin_data(adata, interaction_df, triplet)
+
+        if df.empty:
+            for ax in axes[i]: ax.set_visible(False)
+            continue
+        
+        df['x'] = ''
+        axes[i, 0].set_ylabel(
+            f'{triplet[0]}', fontsize=8, rotation=0,
+            ha='right', va='center', labelpad=25
+        )
+        for j, comp in enumerate(comparisons):
+            ax = axes[i, j]
+            sub_df = df[df['condition'].isin(comp)]
+            sns.violinplot(
+                data=sub_df, x='x', y='pathway_expr', hue='condition',
+                hue_order=comp, palette=condition_palette,
+                split=True, ax=ax, cut=0, width=0.6,
+                linewidth=1.0, inner=None
+            )
+            ax.get_legend().remove()
+            ax.set(ylabel='', xlabel='', yticklabels=[], yticks=[])
+            ax.spines[:].set_visible(False)
+            ax.set_xticks([])
+
+    legend_patches = [patches.Patch(color=c, label=l) for l, c in \
+               condition_palette.items()]
+    fig.legend(
+        handles=legend_patches, loc='lower center', ncol=3,
+        bbox_to_anchor=(0.5, -0.05), frameon=False, fontsize=8
+    )
+    fig.tight_layout()
+    return fig, axes
 
 #endregion 
 
@@ -2128,24 +2323,24 @@ comparisons = [
 ]
 
 all_cell_type_pairs = [
+    ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
+    ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
     ('Pvalb Gaba', 'Oligo NN'),
     ('Astro-NT NN', 'OPC NN'),
     ('STR D1 Gaba', 'OPC NN'),
-    ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
-    ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
 ]
 
 interaction_triplets_to_plot = [
-    # 1. Interneuron Trophic Support to Oligodendrocytes
-    ('FGF', 'Pvalb Gaba', 'Oligo NN'),
-    # 2. Astrocyte-Driven Regulation of Glial Precursors
-    ('PTN', 'Astro-NT NN', 'OPC NN'),
-    # 3. Neuron-Glia Synaptic Adhesion in the Striatum
-    ('NRXN', 'STR D1 Gaba', 'OPC NN'),
-    # 4. Hypothalamic Neuro-Vascular Remodeling
+    # 1. Hypothalamic Neuro-Vascular Remodeling
     ('VEGF', 'MPO-ADP Lhx8 Gaba', 'Endo NN'),
-    # 5. Neurotransmitter-Based Neuro-Vascular Modulation
+    # 2. Neurotransmitter-Based Neuro-Vascular Modulation
     ('GABA-A', 'SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
+    # 3. Interneuron Trophic Support to Oligodendrocytes
+    ('FGF', 'Pvalb Gaba', 'Oligo NN'),
+    # 4. Astrocyte-Driven Regulation of Glial Precursors
+    ('PTN', 'Astro-NT NN', 'OPC NN'),
+    # 5. Neuron-Glia Synaptic Adhesion in the Striatum
+    ('NRXN', 'STR D1 Gaba', 'OPC NN'),
 ]
 
 #endregion
@@ -2179,6 +2374,10 @@ for adata in [adata_curio, adata_merfish]:
     for col in ['class', 'subclass']:
         adata.obs[col] = adata.obs[col].astype(str)\
             .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
+    adata.obs['type'] = adata.obs[cell_type_col]\
+        .astype(str).str.extract(r'(\w+)$', expand=False)
+    adata.obs['type'] = adata.obs['type'].replace({'IMN': 'Gaba'})
+    adata.obs['type'] = adata.obs['type'].replace({'Chol': 'Gaba'})
 
 common_cell_types = (
     set(adata_curio.obs[
@@ -2216,7 +2415,7 @@ fig = plot_cell_type_proportions(
     tt_combined,
     selected_cell_types,
     datasets_to_plot=['merfish'],
-    base_figsize=(2, 2),
+    base_figsize=(2.1, 2.0),
     nrows=int(np.ceil(len(selected_cell_types)/2)),
     legend_position=('center left', (0, 0))
 )
@@ -2317,19 +2516,23 @@ spatial_diff.to_csv(
     index=False
 )
 
-fig, axes = plt.subplots(1, 2, figsize=(7, 9))
-all_logFC = spatial_diff[
-    spatial_diff['contrast'].isin(contrasts)
-]['logFC']
+fig, axes = plt.subplots(1, 2, figsize=(7.5, 11))
+all_logFC = spatial_diff[spatial_diff['contrast'].isin(contrasts)]['logFC']
 vmax = all_logFC.abs().max()
 vmin = -vmax
 
 for ax, contrast in zip(axes, contrasts):
     contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
-    _, _, im = plot_spatial_diff_heatmap(
-        contrast_data, pairs_tested, sig=0.10,
+    _, _, im, row_order = plot_spatial_diff_heatmap(
+        contrast_data,
+        pairs_tested,
+        sig=0.01,
         cell_types_b=selected_cell_types,
-        recompute_fdr=True, ax=ax, vmin=vmin, vmax=vmax
+        recompute_fdr=True,
+        ax=ax,
+        vmin=-0.45,
+        vmax=0.45,
+        adata=adata_merfish
     )
     ax.set_title('')
 
@@ -2352,7 +2555,7 @@ plt.savefig(
 plt.close(fig)
 
 cache_dir = f'{working_dir}/output/merfish/spatial_maps'
-for pair in tqdm(all_cell_type_pairs, desc="Preparing map data"):
+for pair in tqdm(all_cell_type_pairs, desc='Preparing map data'):
     for contrast in contrasts:
         get_spatial_map_intermediate_data(
             adata=adata_merfish,
@@ -2378,6 +2581,21 @@ fig.savefig(f'{working_dir}/figures/spatial_maps.png',
 fig.savefig(f'{working_dir}/figures/spatial_maps.svg',
             bbox_inches='tight')
 plt.close(fig)
+
+fig_violins, _ = plot_proximity_violins(
+    adata=adata_merfish,
+    spatial_stats=spatial_stats,
+    cell_type_pairs=all_cell_type_pairs,
+    cache_dir=cache_dir,
+    cell_type_col=cell_type_col,
+    coords_cols=('x_affine', 'y_affine'),
+    condition_palette=condition_colors
+)
+fig_violins.savefig(
+    f'{working_dir}/figures/proximity_violins_final.svg',
+    bbox_inches='tight'
+)
+plt.close(fig_violins)
 
 fig, axes = plot_spatial_diff_radii(
     spatial_data=adata_merfish.obs,
@@ -2483,17 +2701,38 @@ for align_sender_to_center_flag in [True, False]:
 
 for x_axis_are_senders in [True, False]:
     for df, measure in [
-        (cellchat_count_df, 'count'), (cellchat_weight_df, 'weight')
-    ]:
-        fig, axes = plt.subplots(1, 2, figsize=(7, 9))
+        (cellchat_count_df, 'count'), (cellchat_weight_df, 'weight')]:
+        
+        fig, axes = plt.subplots(1, 2, figsize=(7.5, 11))
+        row_order_contrast = {}
         for i, contrast in enumerate(contrasts):
+            
+            spatial_fig, spatial_ax = plt.subplots()
+            _, _, _, row_order = plot_spatial_diff_heatmap(
+                spatial_diff[spatial_diff['contrast'] == contrast],
+                pairs_tested,
+                sig=0.01,
+                cell_types_b=selected_cell_types,
+                recompute_fdr=True,
+                ax=spatial_ax,
+                vmin=-0.45,
+                vmax=0.45,
+                adata=adata_merfish
+            )
+            plt.close(spatial_fig)
+            row_order_contrast[contrast] = row_order
+
             im = plot_cellchat_cell_type_heatmap(
                 df=df[df['contrast'] == contrast],
                 ax=axes[i],
+                vmin=-0.01,
+                vmax=0.01,
                 x_axis_is_sender=x_axis_are_senders,
                 x_axis_cell_types=selected_cell_types,
                 tested_pairs=pairs_tested,
-                title=''
+                title='',
+                row_order=row_order_contrast[contrast],
+                adata=adata_curio
             )
         
         axes[1].set_ylabel('')
@@ -2586,7 +2825,7 @@ pd.DataFrame({'gene': genes}).to_csv(
     f'{working_dir}/output/curio/cellchat_interaction_df_select.csv', index=False)
 
 for p_name, ct_a, ct_b in tqdm(
-    interaction_triplets_to_plot, desc="Caching interface data"):
+    interaction_triplets_to_plot, desc='Caching interface data'):
     for contrast in contrasts:
         get_pathway_interface_intermediate_data(
             adata=adata,
@@ -2619,6 +2858,18 @@ fig.savefig(
 )
 plt.close(fig)
 
+fig_pathway_violins, _ = plot_pathway_violins(
+    adata=adata_curio,
+    interaction_df=cellchat_interaction_df,
+    interaction_triplets=interaction_triplets_to_plot,
+    condition_palette=condition_colors
+)
+if fig_pathway_violins:
+    fig_pathway_violins.savefig(
+        f'{working_dir}/figures/pathway_violins_final.svg',
+        bbox_inches='tight'
+    )
+    plt.close(fig_pathway_violins)
 
 #endregion
 
@@ -2642,7 +2893,7 @@ plot_data = pd.merge(df, pairs_df[['canonical_pair']], on='canonical_pair')
 plot_data = plot_data[plot_data['contrast'].isin(contrasts_from_plot)]
 
 pair_str_map = {
-    frozenset(p): f"{p[0]} ↔ {p[1]}" for p in cell_type_pairs_from_plot
+    frozenset(p): f'{p[0]} ↔ {p[1]}' for p in cell_type_pairs_from_plot
 }
 plot_data['pair_str'] = plot_data['canonical_pair'].map(pair_str_map)
 
