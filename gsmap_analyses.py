@@ -7,9 +7,12 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as colors
+import matplotlib.patches as patches
 from utils import run
 from pathlib import Path
 from ryp import r, to_r
+from scipy.cluster.hierarchy import linkage, leaves_list
+from typing import Optional, List
 
 plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
@@ -25,6 +28,47 @@ os.makedirs(figures_dir, exist_ok=True)
 
 #region functions ##############################################################
 
+def _insert_gap(arr, indices, axis=0):
+    if isinstance(arr, pd.DataFrame):
+        res = arr.copy()
+        if axis == 0:
+            for i in sorted(indices, reverse=True):
+                res = pd.concat([
+                    res.iloc[:i],
+                    pd.DataFrame([[np.nan]*res.shape[1]], columns=res.columns),
+                    res.iloc[i:]
+                ]).reset_index(drop=True)
+        elif axis == 1:
+            for i in sorted(indices, reverse=True):
+                res.insert(loc=int(i), column=f'gap_{i}', value=np.nan)
+        return res
+
+    is_series = isinstance(arr, pd.Series)
+    if is_series:
+        arr = arr.values
+
+    val = np.nan
+    if arr.dtype == object or arr.dtype.kind in ['U', 'S']:
+        val = ''
+    for i in sorted(indices, reverse=True):
+        arr = np.insert(arr, i, val, axis=axis)
+    
+    if is_series:
+        return pd.Series(arr)
+    return arr
+
+def _segments(mask):
+    seg, s = [], None
+    for i, v in enumerate(mask):
+        if v and s is None:
+            s = i
+        elif not v and s is not None:
+            seg.append((s, i))
+            s = None
+    if s is not None:
+        seg.append((s, len(mask)))
+    return seg
+
 def plot_trait_ranking(output_dir, figures_dir, conditions):
     sample_map = {s: c for c, L in conditions.items() for s in L}
     files = Path(output_dir).glob('*/cauchy_combination/*.Cauchy.csv.gz')
@@ -36,35 +80,405 @@ def plot_trait_ranking(output_dir, figures_dir, conditions):
                 .replace('.Cauchy.csv.gz', '')
             )
         ) for f in files if sample_map.get(f.parts[-3])
-    ]).collect()
-    n_traits = df['trait'].n_unique()
-    n_annotations = df['annotation'].n_unique()
+    ])
+
+    stats_df = df.select(['trait', 'annotation']).collect()
+    n_traits = stats_df['trait'].n_unique()
+    n_annotations = stats_df['annotation'].n_unique()
     bonferroni_p = 0.05 / (n_traits * n_annotations)
     log_p_threshold = -np.log10(bonferroni_p)
-    log_df = df.with_columns(p_log=(-pl.col('p_cauchy').log10()))
-    condition_agg_df = log_df.group_by('trait', 'annotation', 'condition') \
-        .agg(pl.median('p_log').alias('median_log_p'))
-    ranking_data = condition_agg_df.group_by('trait') \
-        .agg(pl.max('median_log_p').alias('max_median_log_p')) \
-        .sort('max_median_log_p', descending=True) \
+
+    ranking_data = df\
+        .with_columns(p_log=(-pl.col('p_cauchy').log10()))\
+        .group_by('trait', 'annotation', 'condition')\
+        .agg(pl.median('p_log').alias('median_log_p'))\
+        .group_by('trait')\
+        .agg(pl.max('median_log_p').alias('max_median_log_p'))\
+        .sort('max_median_log_p', descending=True)\
+        .collect()\
         .to_pandas()
-    fig, ax = plt.subplots(figsize=(7, 9), facecolor='white')
+
+    fig, ax = plt.subplots(figsize=(2.5, 3.5), facecolor='white')
+
+    scores = ranking_data['max_median_log_p']
+    norm = colors.Normalize(vmin=scores.min(), vmax=scores.max())
+    cmap = plt.get_cmap('GnBu')
+
     sns.barplot(
         x='max_median_log_p', y='trait', data=ranking_data,
-        color='#4682B4', ax=ax, orient='h'
+        hue='trait', palette=list(cmap(norm(scores.values))), 
+        ax=ax, orient='h', legend=False
     )
+
     ax.axvline(
-        x=log_p_threshold, color='#C44E52', linestyle='--',
-        linewidth=2, label=f'Bonferroni (α = 0.05)'
+        x=log_p_threshold, color='black', linestyle='--',
+        linewidth=2
     )
-    ax.set_xlabel(r'Peak Association Score ($-\log_{10}$ P-value)')
-    ax.set_ylabel('GWAS Trait')
+
+    ax.set_xlabel('Peak Score')
+    ax.set_ylabel('')
     sns.despine(ax=ax)
-    ax.legend()
-    fig.tight_layout(pad=1)
-    fig.savefig(f'{figures_dir}/trait_ranking.svg')
-    fig.savefig(f'{figures_dir}/trait_ranking.png', dpi=300)
+    ax.tick_params(axis='y', length=0)
+
+    fig.tight_layout()
+    fig.savefig(f'{figures_dir}/trait_ranking.svg', bbox_inches='tight')
+    fig.savefig(
+        f'{figures_dir}/trait_ranking.png', dpi=300, bbox_inches='tight')
     plt.close(fig)
+
+def plot_gwas_heatmap(
+    adata, output_dir, figures_dir, conditions, 
+    traits_to_include: Optional[List[str]] = None
+):
+    sample_map = {s: c for c, L in conditions.items() for s in L}
+    files = [f for f in Path(output_dir).glob(
+        '*/cauchy_combination/*.Cauchy.csv.gz'
+    ) if sample_map.get(f.parts[-3])]
+
+    def get_trait(f):
+        return f.name.replace(f.parts[-3] + '_', '')\
+            .replace('.Cauchy.csv.gz', '')
+
+    df = pl.concat([
+        pl.scan_csv(f).with_columns(
+            condition=pl.lit(sample_map.get(f.parts[-3])),
+            trait=pl.lit(get_trait(f))
+        ) for f in files
+    ])
+
+    agg_data = df\
+        .with_columns(p_log=(-pl.col('p_cauchy').log10()).fill_null(0.0))\
+        .group_by(['condition', 'trait', 'annotation'])\
+        .agg(pl.col('p_log').median())\
+        .group_by(['trait', 'annotation'])\
+        .agg(pl.col('p_log').mean().alias('score'))\
+        .collect()\
+        .to_pandas()
+
+    mat = agg_data.pivot(
+        index='annotation', columns='trait', values='score'
+    ).dropna().sort_index()
+
+    if traits_to_include:
+        mat = mat[[t for t in traits_to_include if t in mat.columns]]
+
+    mat = mat.T
+    if not mat.empty:
+        mat = mat.reindex(mat.mean(axis=1).sort_values(ascending=False).index)
+
+    type_info = adata.obs[['subclass', 'type']]\
+        .drop_duplicates().set_index('subclass')
+    col_df = pd.DataFrame(index=mat.columns).join(type_info)
+    col_df['type'] = pd.Categorical(
+        col_df['type'], categories=['Glut', 'Gaba', 'NN'], ordered=True
+    )
+    col_df = col_df.sort_values('type')
+
+    ordered_cols = []
+    for _, group in col_df.groupby('type', sort=False):
+        subtypes = group.index
+        if len(subtypes) > 1:
+            avg_scores = mat[subtypes].mean(axis=0)
+            subtypes = avg_scores.sort_values(ascending=False).index
+        ordered_cols.extend(subtypes)
+    mat = mat[ordered_cols]
+
+    a_types, b_types = mat.index.tolist(), mat.columns.tolist()
+    fig, ax = plt.subplots(figsize=(13.5, 3.5), facecolor='white')
+
+    col_df_sorted = col_df.reindex(b_types)
+    type_boundaries = col_df_sorted['type'].ne(
+        col_df_sorted['type'].shift()
+    ).cumsum()
+    gaps = np.where(type_boundaries.diff() > 0)[0]
+
+    plot_mat = _insert_gap(mat, gaps, axis=1)
+    b_types_gapped = _insert_gap(pd.Series(b_types, dtype=object), gaps)
+
+    im = ax.pcolormesh(plot_mat.values, cmap='GnBu', rasterized=False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    for r0, r1 in [(0, len(a_types))]:
+        for c0, c1 in _segments(~plot_mat.isna().all(0)):
+            ax.add_patch(patches.Rectangle(
+                (c0, r0), c1 - c0, r1 - r0,
+                fill=False, ec='black', lw=0.5
+            ))
+
+    ax.set_xlim(0, len(b_types_gapped))
+    ax.set_ylim(len(a_types), 0)
+    ax.set_xticks(np.arange(len(b_types_gapped)) + 0.5)
+    ax.set_yticks(np.arange(len(a_types)) + 0.5)
+    ax.set_xticklabels(b_types_gapped, rotation=45, ha='right')
+    ax.set_yticklabels(a_types)
+    ax.tick_params(length=0)
+    ax.set_xlabel('Cell Type')
+    ax.set_ylabel('GWAS Trait')
+
+    fig.tight_layout()
+    fig.subplots_adjust(right=0.88, bottom=0.3, left=0.2)
+
+    cbar_ax = fig.add_axes([0.9, 0.3, 0.015, 0.4])
+    cbar = fig.colorbar(im, cax=cbar_ax)
+    cbar.set_label(r'Mean of Median $-\log_{10}(P\text{-value})$')
+
+    fig.savefig(
+        f'{figures_dir}/gwas_association_heatmap.svg', bbox_inches='tight')
+    fig.savefig(
+        f'{figures_dir}/gwas_association_heatmap.png', 
+        dpi=300, bbox_inches='tight'
+    )
+    plt.close(fig)
+
+def plot_boxplot_profiles(
+    output_dir, figures_dir, conditions, traits_of_interest: List[str],
+    p_adj_threshold: float = 0.05
+):
+    condition_colors = {
+        'control': '#7209b7',
+        'pregnant': '#b5179e',
+        'postpartum': '#f72585'
+    }
+    sample_map = {s: c for c, L in conditions.items() for s in L}
+    all_samples = sorted([s for L in conditions.values() for s in L])
+
+    files = [
+        p for sample in all_samples for trait in traits_of_interest
+        if (p := Path(output_dir) / sample / 'report' / trait /
+                'gsMap_plot' / f'{sample}_{trait}_gsMap_plot.csv').exists()
+    ]
+    df = pl.concat([
+        pl.scan_csv(f).with_columns(
+            sample=pl.lit(f.parts[-5]),
+            trait=pl.lit(f.parts[-3]),
+            condition=pl.lit(sample_map.get(f.parts[-5]))
+        ) for f in files
+    ])\
+    .with_columns(gsmap_score=-pl.col('p').log10())\
+    .select(['gsmap_score', 'annotation', 'sample', 'trait', 'condition'])\
+    .collect()\
+    .to_pandas()
+
+    median_scores = df.groupby(['trait', 'annotation', 'condition'])\
+        ['gsmap_score'].median().unstack().dropna()
+    median_scores['range'] = median_scores.max(axis=1) \
+        - median_scores.min(axis=1)
+
+    top_annotations_idx = median_scores.groupby('trait')['range']\
+        .nlargest(5).index
+
+    top_annotations_df = pd.DataFrame({
+        'trait': top_annotations_idx.get_level_values(0),
+        'annotation': top_annotations_idx.get_level_values(2)
+    })
+
+    plot_df = pd.merge(df, top_annotations_df, on=['trait', 'annotation'])
+    plot_df = plot_df.merge(
+        median_scores['range'].reset_index(), on=['trait', 'annotation']
+    ).reset_index(drop=True)
+
+    to_r(plot_df, 'plot_data_py')
+    to_r(condition_colors, 'condition_colors')
+    to_r(traits_of_interest, 'traits_of_interest')
+    to_r(p_adj_threshold, 'p_adj_threshold')
+
+    r_script = f'''
+        suppressPackageStartupMessages({{
+            library(ggplot2)
+            library(ggpubr)
+            library(dplyr)
+            library(forcats)
+            library(rstatix)
+            library(svglite)
+            library(ggbeeswarm)
+            library(patchwork)
+            library(lmerTest)
+            library(emmeans)
+            library(tidyr)
+        }})
+
+        plot_data <- as.data.frame(plot_data_py)
+        condition_order <- c("control", "pregnant", "postpartum")
+        plot_data$condition <- factor(
+            plot_data$condition, levels = condition_order
+        )
+
+        create_trait_plot <- function(trait_name) {{
+            trait_df <- plot_data %>% filter(trait == trait_name)
+            
+            annotation_order <- trait_df %>%
+                group_by(annotation) %>%
+                summarise(mean_score = mean(gsmap_score, na.rm = TRUE)) %>%
+                arrange(desc(mean_score)) %>%
+                pull(annotation)
+            
+            trait_df$annotation <- factor(
+                trait_df$annotation, levels = annotation_order)
+
+            plottable_annotations <- trait_df %>%
+                group_by(annotation, condition) %>%
+                summarise(n = n(), .groups = "drop_last") %>%
+                filter(n >= 2) %>%
+                summarise(n_conditions = n(), .groups = "drop") %>%
+                filter(n_conditions == 3) %>%
+                pull(annotation)
+
+            trait_df_filtered <- trait_df %>%
+                filter(annotation %in% plottable_annotations)
+
+            if(nrow(trait_df_filtered) == 0) {{ return(NULL) }}
+
+            omnibus_results <- trait_df_filtered %>%
+                group_by(annotation) %>%
+                do({{
+                    df <- .
+                    if (length(unique(df$sample)) > length(unique(df$condition))) {{
+                        lmm_fit <- lmer(gsmap_score ~ condition + (1 | sample), data = df)
+                        anova_res <- anova(lmm_fit)
+                        data.frame(p.value = anova_res$`Pr(>F)`[1])
+                    }} else {{
+                        data.frame(p.value = NA_real_)
+                    }}
+                }}) %>%
+                ungroup() %>%
+                filter(!is.na(p.value))
+            
+            if(nrow(omnibus_results) > 0) {{
+                omnibus_results <- omnibus_results %>%
+                    mutate(p.adj = p.adjust(p.value, method = "fdr"))
+                
+                significant_annotations <- omnibus_results %>%
+                    filter(p.adj < p_adj_threshold) %>%
+                    pull(annotation)
+            }} else {{
+                significant_annotations <- c()
+            }}
+
+            if (length(significant_annotations) == 0) {{
+                stat_test_sig <- data.frame()
+            }} else {{
+                trait_df_for_pairwise <- trait_df_filtered %>%
+                    filter(annotation %in% significant_annotations)
+                
+                stat_test <- trait_df_for_pairwise %>%
+                    group_by(annotation) %>%
+                    do({{
+                        df <- .
+                        lmm_fit <- lmer(gsmap_score ~ condition + (1 | sample), data = df)
+                        emm_res <- emmeans(lmm_fit, ~ condition)
+                        pairs(emm_res) %>% as.data.frame()
+                    }}) %>%
+                    ungroup()
+
+                if(nrow(stat_test) > 0) {{
+                     stat_test <- stat_test %>%
+                        mutate(p.adj = p.adjust(p.value, method = "fdr"))
+                }}
+
+                stat_test_sig <- stat_test %>%
+                    filter(p.adj < p_adj_threshold) %>%
+                    mutate(p.adj.signif = "*") %>%
+                    separate(
+                        contrast, 
+                        into = c("group1", "group2"), 
+                        sep = " - "
+                    )
+            }}
+
+            max_scores <- trait_df_filtered %>%
+                group_by(annotation) %>%
+                summarise(max_score = max(gsmap_score, na.rm = TRUE))
+
+            if(nrow(stat_test_sig) > 0) {{
+                stat_test_sig <- stat_test_sig %>%
+                    left_join(max_scores, by = "annotation") %>%
+                    group_by(annotation) %>%
+                    mutate(y.position = max_score + (row_number() * max_score * 0.12)) %>%
+                    ungroup()
+            }}
+
+            p <- trait_df_filtered %>%
+                ggplot(aes(x = condition, y = gsmap_score)) +
+                facet_wrap(~annotation, nrow = 1, strip.position = "top") +
+                geom_quasirandom(
+                    aes(color = condition),
+                    dodge.width = 0.8, alpha = 0.6, size = 0.8,
+                    stroke = 0
+                ) +
+                geom_boxplot(
+                    aes(fill = condition),
+                    outlier.shape = NA, alpha = 0.4,
+                    width = 0.6
+                )
+            
+            if(nrow(stat_test_sig) > 0) {{
+                p <- p + stat_pvalue_manual(
+                    stat_test_sig, label = "p.adj.signif",
+                    y.position = "y.position",
+                    tip.length = 0.01,
+                    hjust = 0.5, vjust = -0.2
+                )
+            }}
+
+            p <- p +
+                scale_color_manual(
+                    values = condition_colors,
+                    name = "Condition", guide = "none"
+                ) +
+                scale_fill_manual(
+                    values = condition_colors,
+                    name = "Condition"
+                ) +
+                labs(
+                    y = bquote("gsMap Score ("~-log[10]~P~")"),
+                    x = NULL, title = trait_name
+                ) +
+                theme_classic() +
+                theme(
+                    text = element_text(family = "DejaVu Sans"),
+                    plot.title = element_text(
+                        hjust = 0.5, size = 14
+                    ),
+                    legend.position = "none",
+                    panel.border = element_rect(
+                        colour = "black", fill=NA, linewidth=0.5),
+                    strip.background = element_blank(),
+                    strip.text = element_text(hjust = 0),
+                    panel.spacing.y = unit(0.5, "lines"),
+                    axis.text.x = element_text(angle = 45, hjust = 1)
+                )
+            return(p)
+        }}
+
+        plots <- lapply(traits_of_interest, create_trait_plot)
+        plots <- plots[!sapply(plots, is.null)]
+
+        if (length(plots) > 0) {{
+            if (length(plots) > 1) {{
+                combined_plot <- Reduce(`/`, plots) + 
+                    plot_layout(guides = "collect") &
+                    theme(legend.position = "bottom")
+            }} else {{
+                combined_plot <- plots[[1]]
+            }}
+            
+            dir.create("{figures_dir}", showWarnings = FALSE, recursive = TRUE)
+            ggsave(
+                paste0("{figures_dir}/condition_comparison_boxplot.svg"),
+                plot = combined_plot, width = 7, 
+                height = 2.5 * length(plots)
+            )
+            ggsave(
+                paste0("{figures_dir}/combined_divergent_profiles.png"),
+                plot = combined_plot, width = 7, 
+                height = 2.5 * length(plots), dpi = 300
+            )
+        }}
+    '''
+    r(r_script)
+
+
 
 def plot_profile_heatmap(
     output_dir, figures_dir, conditions
@@ -81,14 +495,18 @@ def plot_profile_heatmap(
             )
         ) for f in files if sample_map.get(f.parts[-3])
     ]).filter(pl.col('trait').is_in(traits_of_interest)).collect()
-    log_df = df.with_columns(p_log=-pl.col('p_cauchy').log10())
-    pivoted_df = log_df.group_by('trait', 'annotation', 'condition') \
-        .agg(pl.median('p_log').alias('score')) \
+    pivoted_df = df\
+        .with_columns(p_log=-pl.col('p_cauchy').log10())\
+        .group_by('trait', 'annotation', 'condition')\
+        .agg(pl.median('p_log').alias('score'))\
         .pivot(
             index=['trait', 'annotation'],
             columns='condition',
             values='score'
-        ).drop_nulls().to_pandas().reset_index()
+        )\
+        .drop_nulls()\
+        .to_pandas()\
+        .reset_index()
     
     pivoted_df['range'] = pivoted_df[list(conditions.keys())].max(axis=1) - \
                         pivoted_df[list(conditions.keys())].min(axis=1)
@@ -192,263 +610,9 @@ def plot_profile_heatmap(
         '''
         r(r_script)
 
-def plot_boxplot_profiles(
-    output_dir, figures_dir, conditions
-):
-    traits_of_interest = ['MDD', 'Neuroticism']
-    sample_map = {s: c for c, L in conditions.items() for s in L}
-    all_samples = sorted([s for L in conditions.values() for s in L])
 
-    files = [
-        p for sample in all_samples for trait in traits_of_interest
-        if (p := Path(output_dir) / sample / 'report' / trait /
-                'gsMap_plot' / f'{sample}_{trait}_gsMap_plot.csv').exists()
-    ]
-    df = pl.concat([
-        pl.scan_csv(f).with_columns(
-            sample=pl.lit(f.parts[-5]),
-            trait=pl.lit(f.parts[-3]),
-            condition=pl.lit(sample_map.get(f.parts[-5]))
-        ) for f in files
-    ]).with_columns(
-        gsmap_score=-pl.col('p').log10()
-    ).select(
-        ['gsmap_score', 'annotation', 'sample', 'trait', 'condition']
-    ).collect().to_pandas()
 
-    median_scores = df.groupby(['trait', 'annotation', 'condition'])\
-        ['gsmap_score'].median().unstack().dropna()
-    median_scores['range'] = median_scores.max(axis=1) \
-        - median_scores.min(axis=1)
 
-    top_annotations_idx = median_scores.groupby('trait')['range']\
-        .nlargest(5).index
-
-    top_annotations_df = pd.DataFrame({
-        'trait': top_annotations_idx.get_level_values(0),
-        'annotation': top_annotations_idx.get_level_values(2)
-    })
-
-    plot_df = pd.merge(df, top_annotations_df, on=['trait', 'annotation'])
-    plot_df = plot_df.merge(
-        median_scores['range'].reset_index(), on=['trait', 'annotation']
-    )
-
-    to_r(plot_df, 'plot_data_py')
-
-    r_script = f'''
-        suppressPackageStartupMessages({{
-            library(ggplot2)
-            library(ggpubr)
-            library(dplyr)
-            library(forcats)
-            library(rstatix)
-            library(svglite)
-            library(ggbeeswarm)
-            library(patchwork)
-        }})
-
-        plot_data <- as.data.frame(plot_data_py)
-        condition_order <- c("control", "pregnant", "postpartum")
-        plot_data$condition <- factor(
-            plot_data$condition, levels = condition_order
-        )
-
-        create_trait_plot <- function(trait_name) {{
-            trait_df <- plot_data %>% filter(trait == trait_name)
-            
-            annotation_order <- trait_df %>%
-                group_by(annotation) %>%
-                summarise(mean_score = mean(gsmap_score, na.rm = TRUE)) %>%
-                arrange(desc(mean_score)) %>%
-                pull(annotation)
-            
-            trait_df$annotation <- factor(
-                trait_df$annotation, levels = annotation_order)
-
-            plottable_annotations <- trait_df %>%
-                group_by(annotation, condition) %>%
-                summarise(n = n(), .groups = "drop_last") %>%
-                filter(n >= 2) %>%
-                summarise(n_conditions = n(), .groups = "drop") %>%
-                filter(n_conditions == 3) %>%
-                pull(annotation)
-
-            trait_df_filtered <- trait_df %>%
-                filter(annotation %in% plottable_annotations)
-
-            if(nrow(trait_df_filtered) == 0) {{ return(NULL) }}
-
-            stat_test <- trait_df_filtered %>%
-                group_by(annotation) %>%
-                t_test(gsmap_score ~ condition) %>%
-                adjust_pvalue(method = "bonferroni") %>%
-                mutate(p.adj.signif = ifelse(p.adj < 0.01, "*", NA_character_))
-
-            stat_test_sig <- stat_test %>% filter(!is.na(p.adj.signif))
-
-            max_scores <- trait_df_filtered %>%
-                group_by(annotation) %>%
-                summarise(max_score = max(gsmap_score, na.rm = TRUE))
-
-            if(nrow(stat_test_sig) > 0) {{
-                stat_test_sig <- stat_test_sig %>%
-                    left_join(max_scores, by = "annotation") %>%
-                    group_by(annotation) %>%
-                    mutate(y.position = max_score + (row_number() * max_score * 0.12)) %>%
-                    ungroup()
-            }}
-
-            p <- trait_df_filtered %>%
-                ggplot(aes(x = condition, y = gsmap_score)) +
-                facet_wrap(~annotation, ncol = 1, strip.position = "top") +
-                geom_quasirandom(
-                    aes(color = condition),
-                    dodge.width = 0.8, alpha = 0.6, size = 0.8,
-                    stroke = 0
-                ) +
-                geom_boxplot(
-                    aes(fill = condition),
-                    outlier.shape = NA, alpha = 0.4,
-                    width = 0.6
-                )
-            
-            if(nrow(stat_test_sig) > 0) {{
-                p <- p + stat_pvalue_manual(
-                    stat_test_sig, label = "p.adj.signif",
-                    y.position = "y.position",
-                    tip.length = 0.01,
-                    hjust = 0.5, vjust = -0.2
-                )
-            }}
-
-            p <- p + coord_flip() +
-                scale_color_manual(
-                    values = c("control"="#1F78B4", "pregnant"="#E31A1C",
-                               "postpartum"="#33A02C"),
-                    name = "Condition", guide = "none"
-                ) +
-                scale_fill_manual(
-                    values = c("control"="#A6CEE3", "pregnant"="#FB9A99",
-                               "postpartum"="#B2DF8A"),
-                    name = "Condition"
-                ) +
-                labs(
-                    y = bquote("gsMap Score ("~-log[10]~P~")"),
-                    x = NULL, title = trait_name
-                ) +
-                theme_classic() +
-                theme(
-                    text = element_text(family = "DejaVu Sans"),
-                    plot.title = element_text(
-                        hjust = 0.5, size = 14
-                    ),
-                    legend.position = "bottom",
-                    panel.border = element_rect(
-                        colour = "black", fill=NA, linewidth=0.5),
-                    strip.background = element_blank(),
-                    strip.text = element_text(hjust = 0),
-                    panel.spacing.y = unit(0.5, "lines"),
-                    axis.text.y = element_blank(),
-                    axis.ticks.y = element_blank(),
-                    axis.line.y = element_blank()
-                )
-            return(p)
-        }}
-
-        p_mdd <- create_trait_plot("MDD")
-        p_neuro <- create_trait_plot("Neuroticism")
-
-        if (!is.null(p_mdd) & !is.null(p_neuro)) {{
-            combined_plot <- p_mdd + p_neuro +
-                plot_layout(guides = "collect") &
-                theme(legend.position = "bottom")
-        }} else if (!is.null(p_mdd)) {{
-            combined_plot <- p_mdd
-        }} else {{
-            combined_plot <- p_neuro
-        }}
-
-        if (!is.null(combined_plot)) {{
-            dir.create("{figures_dir}", showWarnings = FALSE, recursive = TRUE)
-            ggsave(
-                paste0("{figures_dir}/condition_comparison_boxplot.svg"),
-                plot = combined_plot, width = 6, height = 10
-            )
-            ggsave(
-                paste0("{figures_dir}/combined_divergent_profiles.png"),
-                plot = combined_plot, width = 6, height = 10, dpi = 300
-            )
-        }}
-    '''
-    r(r_script)
-
-def plot_gwas_heatmap(output_dir, figures_dir, conditions):
-    sample_map = {s: c for c, L in conditions.items() for s in L}
-    files = [
-        f for f in Path(output_dir).glob(
-            '*/cauchy_combination/*.Cauchy.csv.gz'
-        ) if sample_map.get(f.parts[-3])
-    ]
-    def get_trait(f):
-        return f.name.replace(
-            f.parts[-3] + '_', ''
-        ).replace('.Cauchy.csv.gz', '')
-    df = pl.concat([
-        pl.scan_csv(f).with_columns(
-            condition=pl.lit(sample_map.get(f.parts[-3])),
-            trait=pl.lit(get_trait(f))
-        ) for f in files
-    ])
-    agg_data = df\
-        .with_columns(p_log=(-pl.col('p_cauchy').log10()).fill_null(0.0))\
-        .group_by(['condition', 'trait', 'annotation'])\
-        .agg(pl.col('p_log').median())\
-        .group_by(['trait', 'annotation'])\
-        .agg(pl.col('p_log').mean().alias('score'))\
-        .collect().to_pandas()
-
-    heatmap_data = agg_data.pivot(
-        index='annotation', columns='trait', values='score')\
-        .dropna().sort_index()
-
-    if not heatmap_data.empty:
-        trait_order = heatmap_data.mean().sort_values(
-            ascending=False
-        ).index
-        heatmap_data = heatmap_data[trait_order]
-
-    figsize = (7, 12)
-    fig, ax = plt.subplots(figsize=figsize, facecolor='white')
-    sns.heatmap(
-        heatmap_data,
-        ax=ax,
-        cmap='inferno',
-        rasterized=False,
-        cbar=False
-    )
-    for _, spine in ax.spines.items():
-        spine.set_visible(True)
-        spine.set_color('black')
-        spine.set_linewidth(1)
-
-    ax.set_xlabel('GWAS Trait')
-    ax.set_ylabel('Cell Type')
-    plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
-    plt.setp(ax.get_yticklabels(), rotation=0)
-
-    fig.tight_layout(rect=[0, 0.1, 1, 1])
-
-    cbar_ax = fig.add_axes([0.1, 0.05, 0.2, 0.03])
-    cbar = fig.colorbar(
-        ax.collections[0],
-        cax=cbar_ax,
-        orientation='horizontal')
-    cbar.set_label(r'Mean of Median $-\log_{10}(P\text{-value})$')
-
-    fig.savefig(f'{figures_dir}/gwas_association_heatmap.svg')
-    fig.savefig(f'{figures_dir}/gwas_association_heatmap.png', dpi=300)
-    plt.close(fig)
 
 def plot_spatial_gwas(
     output_dir, figures_dir, conditions, trait, logp_threshold, cell_types
@@ -651,10 +815,37 @@ for sample_name in all_sample_names:
 
 #region analysis ###############################################################
 
+adata = sc.read_h5ad(f'{workdir}/output/data/adata_query_curio_final.h5ad')
+for col in ['class', 'subclass']:
+    adata.obs[col] = adata.obs[col].astype(str)\
+        .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
+adata.obs['type'] = adata.obs['subclass']\
+    .astype(str).str.extract(r'(\w+)$', expand=False)
+adata.obs['type'] = adata.obs['type'].replace({'IMN': 'Gaba'})
+adata.obs['type'] = adata.obs['type'].replace({'Chol': 'Gaba'})
+
+all_sample_names = adata.obs['sample'].unique()
+conditions = {
+    'control': [s for s in all_sample_names if 'CTRL' in s],
+    'pregnant': [s for s in all_sample_names if 'PREG' in s],
+    'postpartum': [s for s in all_sample_names if 'POSTPART' in s]
+}
+traits = ['MDD', 'Neuroticism', 'ADHD', 'Autism', 'PTSD']
+
 plot_trait_ranking(output_dir, figures_dir, conditions)
+
+plot_gwas_heatmap(
+    adata, output_dir, figures_dir, conditions, traits)
+
+plot_boxplot_profiles(
+    output_dir, figures_dir, conditions, traits_of_interest=['MDD'],
+    p_adj_threshold=0.1
+)
+
 plot_profile_heatmap(output_dir, figures_dir, conditions)
-plot_boxplot_profiles(output_dir, figures_dir, conditions)
-plot_gwas_heatmap(output_dir, figures_dir, conditions)
+
+
+
 
 plot_spatial_gwas(
     output_dir=output_dir,
