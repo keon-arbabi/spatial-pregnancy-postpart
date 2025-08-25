@@ -147,28 +147,34 @@ def plot_gwas_heatmap(
     ])
 
     agg_data = df\
-        .with_columns(p_log=(-pl.col('p_cauchy').log10()).fill_null(0.0))\
+        .with_columns(
+            p_log=(-pl.col('p_cauchy').log10()).fill_null(0.0))\
         .group_by(['condition', 'trait', 'annotation'])\
         .agg(pl.col('p_log').median())\
-        .group_by(['trait', 'annotation'])\
-        .agg(pl.col('p_log').mean().alias('score'))\
         .collect()\
         .to_pandas()
+    
+    avg_data = agg_data.groupby(
+        ['trait', 'annotation'])['p_log'].mean().reset_index()
+    avg_data.columns = ['trait', 'annotation', 'score']
 
-    mat = agg_data.pivot(
+    mat_order = avg_data.pivot(
         index='annotation', columns='trait', values='score'
     ).dropna().sort_index()
 
     if traits_to_include:
-        mat = mat[[t for t in traits_to_include if t in mat.columns]]
+        mat_order = mat_order[[t for t in traits_to_include 
+                              if t in mat_order.columns]]
 
-    mat = mat.T
-    if not mat.empty:
-        mat = mat.reindex(mat.mean(axis=1).sort_values(ascending=False).index)
+    mat_order = mat_order.T
+    if not mat_order.empty:
+        mat_order = mat_order.reindex(
+            mat_order.mean(axis=1).sort_values(
+                ascending=False).index)
 
     type_info = adata.obs[['subclass', 'type']]\
         .drop_duplicates().set_index('subclass')
-    col_df = pd.DataFrame(index=mat.columns).join(type_info)
+    col_df = pd.DataFrame(index=mat_order.columns).join(type_info)
     col_df['type'] = pd.Categorical(
         col_df['type'], categories=['Glut', 'Gaba', 'NN'], ordered=True
     )
@@ -178,13 +184,37 @@ def plot_gwas_heatmap(
     for _, group in col_df.groupby('type', sort=False):
         subtypes = group.index
         if len(subtypes) > 1:
-            avg_scores = mat[subtypes].mean(axis=0)
+            avg_scores = mat_order[subtypes].mean(axis=0)
             subtypes = avg_scores.sort_values(ascending=False).index
         ordered_cols.extend(subtypes)
-    mat = mat[ordered_cols]
+    
+    a_types = mat_order.index.tolist()
+    b_types = ordered_cols
 
-    a_types, b_types = mat.index.tolist(), mat.columns.tolist()
-    fig, ax = plt.subplots(figsize=(13.5, 3.5), facecolor='white')
+    condition_data = {}
+    for cond in ['control', 'pregnant', 'postpartum']:
+        cond_df = agg_data[agg_data['condition'] == cond]
+        cond_mat = cond_df.pivot(
+            index='annotation', columns='trait', values='p_log'
+        )
+        if traits_to_include:
+            cond_mat = cond_mat[[t for t in traits_to_include 
+                               if t in cond_mat.columns]]
+        cond_mat = cond_mat.T
+        cond_mat = cond_mat.reindex(index=a_types, columns=b_types)
+        condition_data[cond] = cond_mat
+    
+    complete_data_mask = pd.DataFrame(True, index=a_types, columns=b_types)
+    for cond_mat in condition_data.values():
+        complete_data_mask &= ~cond_mat.isna()
+    
+    valid_cols = complete_data_mask.columns[complete_data_mask.any()]
+    b_types = [col for col in b_types if col in valid_cols]
+    
+    for cond in condition_data:
+        condition_data[cond] = condition_data[cond][b_types]
+
+    fig, ax = plt.subplots(figsize=(15.5, 3.0), facecolor='white')
 
     col_df_sorted = col_df.reindex(b_types)
     type_boundaries = col_df_sorted['type'].ne(
@@ -192,13 +222,115 @@ def plot_gwas_heatmap(
     ).cumsum()
     gaps = np.where(type_boundaries.diff() > 0)[0]
 
-    plot_mat = _insert_gap(mat, gaps, axis=1)
+    all_values = []
+    for cond_mat in condition_data.values():
+        all_values.extend(cond_mat.values.flatten())
+    all_values = [v for v in all_values if pd.notna(v)]
+    vmin, vmax = min(all_values), max(all_values)
+    
+    cmap = plt.get_cmap('GnBu')
+    norm = colors.Normalize(vmin=vmin, vmax=vmax)
+
+    gap_offset = 0
+    for col_idx, col in enumerate(b_types):
+        if col_idx in gaps:
+            gap_offset += 1
+        
+        for row_idx, row in enumerate(a_types):
+            x = col_idx + gap_offset
+            y = row_idx
+            
+            ctrl_val = condition_data['control'].loc[row, col]
+            preg_val = condition_data['pregnant'].loc[row, col]
+            post_val = condition_data['postpartum'].loc[row, col]
+            
+            values = {
+                'control': ctrl_val,
+                'pregnant': preg_val,
+                'postpartum': post_val
+            }
+            
+            cx, cy = x + 0.5, y + 0.5
+            corners = [(x, y), (x+1, y), (x+1, y+1), (x, y+1)]
+            
+            angles = [np.pi/6, np.pi/6 + 2*np.pi/3, np.pi/6 + 4*np.pi/3]
+            
+            def get_edge_points(angle):
+                dx, dy = np.cos(angle), np.sin(angle)
+                edge_pts = []
+                
+                if abs(dx) > 1e-10:
+                    t_right = (x + 1 - cx) / dx
+                    y_right = cy + t_right * dy
+                    if y <= y_right <= y + 1 and t_right > 0:
+                        edge_pts.append((x + 1, y_right))
+                    
+                    t_left = (x - cx) / dx
+                    y_left = cy + t_left * dy
+                    if y <= y_left <= y + 1 and t_left > 0:
+                        edge_pts.append((x, y_left))
+                
+                if abs(dy) > 1e-10:
+                    t_bottom = (y + 1 - cy) / dy
+                    x_bottom = cx + t_bottom * dx
+                    if x <= x_bottom <= x + 1 and t_bottom > 0:
+                        edge_pts.append((x_bottom, y + 1))
+                    
+                    t_top = (y - cy) / dy
+                    x_top = cx + t_top * dx
+                    if x <= x_top <= x + 1 and t_top > 0:
+                        edge_pts.append((x_top, y))
+                
+                return edge_pts[0] if edge_pts else (cx, cy)
+            
+            edge_points = [get_edge_points(a) for a in angles]
+            
+            def angle_from_center(pt):
+                return np.arctan2(pt[1] - cy, pt[0] - cx)
+            
+            wedges = []
+            for i in range(3):
+                p1 = edge_points[i]
+                p2 = edge_points[(i + 1) % 3]
+                a1 = angle_from_center(p1)
+                a2 = angle_from_center(p2)
+                
+                if a2 < a1:
+                    a2 += 2 * np.pi
+                
+                poly_points = [(cx, cy), p1]
+                
+                for corner in corners:
+                    ca = angle_from_center(corner)
+                    if ca < a1:
+                        ca += 2 * np.pi
+                    if a1 <= ca <= a2:
+                        poly_points.append(corner)
+                
+                poly_points.append(p2)
+                
+                def polar_sort_key(pt):
+                    angle = angle_from_center(pt)
+                    if angle < a1:
+                        angle += 2 * np.pi
+                    return angle
+                
+                poly_points = [poly_points[0]] + sorted(
+                    poly_points[1:], key=polar_sort_key)
+                wedges.append(poly_points)
+            
+            conditions = ['control', 'pregnant', 'postpartum']
+            for i, (cond, poly_pts) in enumerate(zip(conditions, wedges)):
+                wedge = patches.Polygon(
+                    poly_pts,
+                    facecolor=cmap(norm(values[cond])),
+                    edgecolor='white', linewidth=0.1
+                )
+                ax.add_patch(wedge)
+
+    plot_mat = _insert_gap(mat_order, gaps, axis=1)
     b_types_gapped = _insert_gap(pd.Series(b_types, dtype=object), gaps)
-
-    im = ax.pcolormesh(plot_mat.values, cmap='GnBu', rasterized=False)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-
+    
     for r0, r1 in [(0, len(a_types))]:
         for c0, c1 in _segments(~plot_mat.isna().all(0)):
             ax.add_patch(patches.Rectangle(
@@ -215,31 +347,128 @@ def plot_gwas_heatmap(
     ax.tick_params(length=0)
     ax.set_xlabel('Cell Type')
     ax.set_ylabel('GWAS Trait')
+    
+    for spine in ax.spines.values():
+        spine.set_visible(False)
 
     fig.tight_layout()
     fig.subplots_adjust(right=0.88, bottom=0.3, left=0.2)
 
     cbar_ax = fig.add_axes([0.9, 0.3, 0.015, 0.4])
-    cbar = fig.colorbar(im, cax=cbar_ax)
-    cbar.set_label(r'Mean of Median $-\log_{10}(P\text{-value})$')
+    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label(r'Median $-\log_{10}(P\text{-value})$')
+    
+    legend_ax = fig.add_axes([0.92, 0.75, 0.05, 0.1])
+    legend_ax.set_xlim(0, 1)
+    legend_ax.set_ylim(0, 1)
+    legend_ax.axis('off')
+    
+    cell_border = patches.Rectangle(
+        (0.2, 0.2), 0.6, 0.6,
+        facecolor='none', edgecolor='black', linewidth=1
+    )
+    legend_ax.add_patch(cell_border)
+    
+    cx, cy = 0.5, 0.5
+    x, y = 0.2, 0.8
+    size = 0.6
+    
+    angles = [np.pi/6, np.pi/6 + 2*np.pi/3, np.pi/6 + 4*np.pi/3]
+    
+    def get_legend_edge(angle):
+        dx, dy = np.cos(angle), -np.sin(angle)
+        edge_pts = []
+        
+        if abs(dx) > 1e-10:
+            t_right = (x + size - cx) / dx
+            y_right = cy + t_right * dy
+            if y - size <= y_right <= y and t_right > 0:
+                edge_pts.append((x + size, y_right))
+            
+            t_left = (x - cx) / dx
+            y_left = cy + t_left * dy
+            if y - size <= y_left <= y and t_left > 0:
+                edge_pts.append((x, y_left))
+        
+        if abs(dy) > 1e-10:
+            t_top = (y - cy) / dy
+            x_top = cx + t_top * dx
+            if x <= x_top <= x + size and t_top > 0:
+                edge_pts.append((x_top, y))
+            
+            t_bottom = (y - size - cy) / dy
+            x_bottom = cx + t_bottom * dx
+            if x <= x_bottom <= x + size and t_bottom > 0:
+                edge_pts.append((x_bottom, y - size))
+        
+        return edge_pts[0] if edge_pts else (cx, cy)
+    
+    edge_points = [get_legend_edge(a) for a in angles]
+    corners = [(x, y), (x+size, y), (x+size, y-size), (x, y-size)]
+    
+    def angle_from_center(pt):
+        return np.arctan2(-(pt[1] - cy), pt[0] - cx)
+    
+    wedges = []
+    labels = ['C', 'P', 'PP']
+    
+    for i in range(3):
+        p1 = edge_points[i]
+        p2 = edge_points[(i + 1) % 3]
+        a1 = angle_from_center(p1)
+        a2 = angle_from_center(p2)
+        
+        if a2 < a1:
+            a2 += 2 * np.pi
+        
+        poly_points = [(cx, cy), p1]
+        
+        for corner in corners:
+            ca = angle_from_center(corner)
+            if ca < a1:
+                ca += 2 * np.pi
+            if a1 <= ca <= a2:
+                poly_points.append(corner)
+        
+        poly_points.append(p2)
+        
+        def polar_sort_key(pt):
+            angle = angle_from_center(pt)
+            if angle < a1:
+                angle += 2 * np.pi
+            return angle
+        
+        poly_points = [poly_points[0]] + sorted(
+            poly_points[1:], key=polar_sort_key)
+        
+        wedge = patches.Polygon(
+            poly_points,
+            facecolor='lightgray', edgecolor='black', linewidth=0.5
+        )
+        legend_ax.add_patch(wedge)
+        
+        label_x = sum(pt[0] for pt in poly_points) / len(poly_points)
+        label_y = sum(pt[1] for pt in poly_points) / len(poly_points)
+        legend_ax.text(label_x, label_y, labels[i], 
+                      ha='center', va='center', fontsize=6)
+    
+    legend_ax.text(0.5, -0.1, 'Conditions', 
+                   ha='center', va='top', fontsize=8)
 
     fig.savefig(
-        f'{figures_dir}/gwas_association_heatmap.svg', bbox_inches='tight')
+        f'{figures_dir}/gwas_association_heatmap.svg', 
+        bbox_inches='tight')
     fig.savefig(
         f'{figures_dir}/gwas_association_heatmap.png', 
         dpi=300, bbox_inches='tight'
     )
     plt.close(fig)
 
-def plot_boxplot_profiles(
-    output_dir, figures_dir, conditions, traits_of_interest: List[str],
-    p_adj_threshold: float = 0.05
+def analyze_trait_associations(
+    output_dir, conditions, traits_of_interest: List[str]
 ):
-    condition_colors = {
-        'control': '#7209b7',
-        'pregnant': '#b5179e',
-        'postpartum': '#f72585'
-    }
+    from scipy.stats import mannwhitneyu, kruskal
     sample_map = {s: c for c, L in conditions.items() for s in L}
     all_samples = sorted([s for L in conditions.values() for s in L])
 
@@ -260,367 +489,196 @@ def plot_boxplot_profiles(
     .collect()\
     .to_pandas()
 
-    median_scores = df.groupby(['trait', 'annotation', 'condition'])\
-        ['gsmap_score'].median().unstack().dropna()
-    median_scores['range'] = median_scores.max(axis=1) \
-        - median_scores.min(axis=1)
+    plot_df = df.reset_index(drop=True)
+    
+    results = []
+    for (trait, annotation), group in plot_df.groupby(['trait', 'annotation']):
+        ctrl = group[group['condition'] == 'control']['gsmap_score'].values
+        preg = group[group['condition'] == 'pregnant']['gsmap_score'].values
+        post = group[group['condition'] == 'postpartum']['gsmap_score'].values
+        
+        if len(ctrl) >= 10 and len(preg) >= 10 and len(post) >= 10:
+            _, kruskal_p = kruskal(ctrl, preg, post)
+        else:
+            kruskal_p = np.nan
+        
+        if len(ctrl) >= 10 and len(preg) >= 10:
+            _, preg_ctrl_p = mannwhitneyu(
+                preg, ctrl, alternative='two-sided')
+            results.append({
+                'trait': trait, 'annotation': annotation,
+                'comparison': 'pregnant_vs_control',
+                'logfc': np.median(preg) - np.median(ctrl),
+                'p_value': preg_ctrl_p, 'kruskal_p': kruskal_p,
+                'ctrl_n': len(ctrl), 'test_n': len(preg)
+            })
+        
+        if len(ctrl) >= 10 and len(post) >= 10:
+            _, post_ctrl_p = mannwhitneyu(
+                post, ctrl, alternative='two-sided')
+            results.append({
+                'trait': trait, 'annotation': annotation,
+                'comparison': 'postpartum_vs_control',
+                'logfc': np.median(post) - np.median(ctrl),
+                'p_value': post_ctrl_p, 'kruskal_p': kruskal_p,
+                'ctrl_n': len(ctrl), 'test_n': len(post)
+            })
+        
+        if len(preg) >= 10 and len(post) >= 10:
+            _, post_preg_p = mannwhitneyu(
+                post, preg, alternative='two-sided')
+            results.append({
+                'trait': trait, 'annotation': annotation,
+                'comparison': 'postpartum_vs_pregnant',
+                'logfc': np.median(post) - np.median(preg),
+                'p_value': post_preg_p, 'kruskal_p': kruskal_p,
+                'ctrl_n': len(preg), 'test_n': len(post)
+            })
+    
+    results_df = pd.DataFrame(results)
+    if not results_df.empty:
+        results_df['p_adj'] = results_df.groupby('comparison')['p_value']\
+            .transform(lambda x: pd.Series(
+                np.minimum(x * len(x) / (~x.isna()).sum(), 1)
+            ))
+    return results_df
 
-    top_annotations_idx = median_scores.groupby('trait')['range']\
-        .nlargest(5).index
-
-    top_annotations_df = pd.DataFrame({
-        'trait': top_annotations_idx.get_level_values(0),
-        'annotation': top_annotations_idx.get_level_values(2)
-    })
-
-    plot_df = pd.merge(df, top_annotations_df, on=['trait', 'annotation'])
-    plot_df = plot_df.merge(
-        median_scores['range'].reset_index(), on=['trait', 'annotation']
-    ).reset_index(drop=True)
-
-    to_r(plot_df, 'plot_data_py')
-    to_r(condition_colors, 'condition_colors')
-    to_r(traits_of_interest, 'traits_of_interest')
-    to_r(p_adj_threshold, 'p_adj_threshold')
-
-    r_script = f'''
-        suppressPackageStartupMessages({{
-            library(ggplot2)
-            library(ggpubr)
-            library(dplyr)
-            library(forcats)
-            library(rstatix)
-            library(svglite)
-            library(ggbeeswarm)
-            library(patchwork)
-            library(lmerTest)
-            library(emmeans)
-            library(tidyr)
-        }})
-
-        plot_data <- as.data.frame(plot_data_py)
-        condition_order <- c("control", "pregnant", "postpartum")
-        plot_data$condition <- factor(
-            plot_data$condition, levels = condition_order
-        )
-
-        create_trait_plot <- function(trait_name) {{
-            trait_df <- plot_data %>% filter(trait == trait_name)
-            
-            annotation_order <- trait_df %>%
-                group_by(annotation) %>%
-                summarise(mean_score = mean(gsmap_score, na.rm = TRUE)) %>%
-                arrange(desc(mean_score)) %>%
-                pull(annotation)
-            
-            trait_df$annotation <- factor(
-                trait_df$annotation, levels = annotation_order)
-
-            plottable_annotations <- trait_df %>%
-                group_by(annotation, condition) %>%
-                summarise(n = n(), .groups = "drop_last") %>%
-                filter(n >= 2) %>%
-                summarise(n_conditions = n(), .groups = "drop") %>%
-                filter(n_conditions == 3) %>%
-                pull(annotation)
-
-            trait_df_filtered <- trait_df %>%
-                filter(annotation %in% plottable_annotations)
-
-            if(nrow(trait_df_filtered) == 0) {{ return(NULL) }}
-
-            omnibus_results <- trait_df_filtered %>%
-                group_by(annotation) %>%
-                do({{
-                    df <- .
-                    if (length(unique(df$sample)) > length(unique(df$condition))) {{
-                        lmm_fit <- lmer(gsmap_score ~ condition + (1 | sample), data = df)
-                        anova_res <- anova(lmm_fit)
-                        data.frame(p.value = anova_res$`Pr(>F)`[1])
-                    }} else {{
-                        data.frame(p.value = NA_real_)
-                    }}
-                }}) %>%
-                ungroup() %>%
-                filter(!is.na(p.value))
-            
-            if(nrow(omnibus_results) > 0) {{
-                omnibus_results <- omnibus_results %>%
-                    mutate(p.adj = p.adjust(p.value, method = "fdr"))
-                
-                significant_annotations <- omnibus_results %>%
-                    filter(p.adj < p_adj_threshold) %>%
-                    pull(annotation)
-            }} else {{
-                significant_annotations <- c()
-            }}
-
-            if (length(significant_annotations) == 0) {{
-                stat_test_sig <- data.frame()
-            }} else {{
-                trait_df_for_pairwise <- trait_df_filtered %>%
-                    filter(annotation %in% significant_annotations)
-                
-                stat_test <- trait_df_for_pairwise %>%
-                    group_by(annotation) %>%
-                    do({{
-                        df <- .
-                        lmm_fit <- lmer(gsmap_score ~ condition + (1 | sample), data = df)
-                        emm_res <- emmeans(lmm_fit, ~ condition)
-                        pairs(emm_res) %>% as.data.frame()
-                    }}) %>%
-                    ungroup()
-
-                if(nrow(stat_test) > 0) {{
-                     stat_test <- stat_test %>%
-                        mutate(p.adj = p.adjust(p.value, method = "fdr"))
-                }}
-
-                stat_test_sig <- stat_test %>%
-                    filter(p.adj < p_adj_threshold) %>%
-                    mutate(p.adj.signif = "*") %>%
-                    separate(
-                        contrast, 
-                        into = c("group1", "group2"), 
-                        sep = " - "
-                    )
-            }}
-
-            max_scores <- trait_df_filtered %>%
-                group_by(annotation) %>%
-                summarise(max_score = max(gsmap_score, na.rm = TRUE))
-
-            if(nrow(stat_test_sig) > 0) {{
-                stat_test_sig <- stat_test_sig %>%
-                    left_join(max_scores, by = "annotation") %>%
-                    group_by(annotation) %>%
-                    mutate(y.position = max_score + (row_number() * max_score * 0.12)) %>%
-                    ungroup()
-            }}
-
-            p <- trait_df_filtered %>%
-                ggplot(aes(x = condition, y = gsmap_score)) +
-                facet_wrap(~annotation, nrow = 1, strip.position = "top") +
-                geom_quasirandom(
-                    aes(color = condition),
-                    dodge.width = 0.8, alpha = 0.6, size = 0.8,
-                    stroke = 0
-                ) +
-                geom_boxplot(
-                    aes(fill = condition),
-                    outlier.shape = NA, alpha = 0.4,
-                    width = 0.6
-                )
-            
-            if(nrow(stat_test_sig) > 0) {{
-                p <- p + stat_pvalue_manual(
-                    stat_test_sig, label = "p.adj.signif",
-                    y.position = "y.position",
-                    tip.length = 0.01,
-                    hjust = 0.5, vjust = -0.2
-                )
-            }}
-
-            p <- p +
-                scale_color_manual(
-                    values = condition_colors,
-                    name = "Condition", guide = "none"
-                ) +
-                scale_fill_manual(
-                    values = condition_colors,
-                    name = "Condition"
-                ) +
-                labs(
-                    y = bquote("gsMap Score ("~-log[10]~P~")"),
-                    x = NULL, title = trait_name
-                ) +
-                theme_classic() +
-                theme(
-                    text = element_text(family = "DejaVu Sans"),
-                    plot.title = element_text(
-                        hjust = 0.5, size = 14
-                    ),
-                    legend.position = "none",
-                    panel.border = element_rect(
-                        colour = "black", fill=NA, linewidth=0.5),
-                    strip.background = element_blank(),
-                    strip.text = element_text(hjust = 0),
-                    panel.spacing.y = unit(0.5, "lines"),
-                    axis.text.x = element_text(angle = 45, hjust = 1)
-                )
-            return(p)
-        }}
-
-        plots <- lapply(traits_of_interest, create_trait_plot)
-        plots <- plots[!sapply(plots, is.null)]
-
-        if (length(plots) > 0) {{
-            if (length(plots) > 1) {{
-                combined_plot <- Reduce(`/`, plots) + 
-                    plot_layout(guides = "collect") &
-                    theme(legend.position = "bottom")
-            }} else {{
-                combined_plot <- plots[[1]]
-            }}
-            
-            dir.create("{figures_dir}", showWarnings = FALSE, recursive = TRUE)
-            ggsave(
-                paste0("{figures_dir}/condition_comparison_boxplot.svg"),
-                plot = combined_plot, width = 7, 
-                height = 2.5 * length(plots)
-            )
-            ggsave(
-                paste0("{figures_dir}/combined_divergent_profiles.png"),
-                plot = combined_plot, width = 7, 
-                height = 2.5 * length(plots), dpi = 300
-            )
-        }}
-    '''
-    r(r_script)
-
-
-
-def plot_profile_heatmap(
-    output_dir, figures_dir, conditions
+def plot_trait_boxplots(
+    results_df, output_dir, conditions, figures_dir, 
+    traits_of_interest: List[str], cell_types_to_plot: List[str], 
+    p_threshold: float = 0.05
 ):
-    traits_of_interest = ['MDD', 'Neuroticism']
+    condition_colors = {
+        'control': '#7209b7', 'pregnant': '#b5179e', 'postpartum': '#f72585'
+    }
     sample_map = {s: c for c, L in conditions.items() for s in L}
-    files = Path(output_dir).glob('*/cauchy_combination/*.Cauchy.csv.gz')
+    all_samples = sorted([s for L in conditions.values() for s in L])
+    
+    files = [
+        p for sample in all_samples for trait in traits_of_interest
+        if (p := Path(output_dir) / sample / 'report' / trait /
+                'gsMap_plot' / f'{sample}_{trait}_gsMap_plot.csv').exists()
+    ]
     df = pl.concat([
         pl.scan_csv(f).with_columns(
-            condition=pl.lit(sample_map.get(f.parts[-3])),
-            trait=pl.lit(
-                f.name.replace(f.parts[-3] + '_', '')
-                .replace('.Cauchy.csv.gz', '')
-            )
-        ) for f in files if sample_map.get(f.parts[-3])
-    ]).filter(pl.col('trait').is_in(traits_of_interest)).collect()
-    pivoted_df = df\
-        .with_columns(p_log=-pl.col('p_cauchy').log10())\
-        .group_by('trait', 'annotation', 'condition')\
-        .agg(pl.median('p_log').alias('score'))\
-        .pivot(
-            index=['trait', 'annotation'],
-            columns='condition',
-            values='score'
-        )\
-        .drop_nulls()\
-        .to_pandas()\
-        .reset_index()
+            sample=pl.lit(f.parts[-5]),
+            trait=pl.lit(f.parts[-3]),
+            condition=pl.lit(sample_map.get(f.parts[-5]))
+        ) for f in files
+    ])\
+    .with_columns(gsmap_score=-pl.col('p').log10())\
+    .select(['gsmap_score', 'annotation', 'sample', 'trait', 'condition'])\
+    .collect()\
+    .to_pandas()
     
-    pivoted_df['range'] = pivoted_df[list(conditions.keys())].max(axis=1) - \
-                        pivoted_df[list(conditions.keys())].min(axis=1)
+    if results_df.empty:
+        return
     
-    def get_trend(row):
-        c, p, pp = row['control'], row['pregnant'], row['postpartum']
-        if c <= p and p <= pp: return 'Increasing'
-        if c >= p and p >= pp: return 'Decreasing'
-        if p >= c and p >= pp: return 'Peak Pregnancy'
-        if p <= c and p <= pp: return 'Dip Pregnancy'
-        return 'Other'
-
-    pivoted_df['trend'] = pivoted_df.apply(get_trend, axis=1)
+    plot_annotations = pd.DataFrame({
+        'trait': [traits_of_interest[0]] * len(cell_types_to_plot),
+        'annotation': cell_types_to_plot
+    })
     
-    for trait in traits_of_interest:
-        trait_data = pivoted_df[pivoted_df['trait'] == trait] \
-            .nlargest(25, 'range') \
-            .reset_index(drop=True)
+    plot_df = pd.merge(df, plot_annotations, on=['trait', 'annotation'])
+    
+    n_annotations = plot_annotations['annotation'].nunique()
+    fig, axes = plt.subplots(
+        1, n_annotations, figsize=(2.2 * n_annotations, 3.5), 
+        squeeze=False, constrained_layout=True
+    )
+    axes = axes.flatten()
+    
+    annotation_order = [
+        ct for ct in cell_types_to_plot if ct in plot_df['annotation'].values]
+    
+    for idx, annotation in enumerate(annotation_order):
+        ax = axes[idx]
+        ann_df = plot_df[plot_df['annotation'] == annotation]
         
-        to_r(trait_data, 'plot_data_py')
+        positions = []
+        for i, cond in enumerate(['control', 'pregnant', 'postpartum']):
+            cond_data = ann_df[ann_df['condition'] == cond]['gsmap_score']
+            if len(cond_data) > 0:
+                y = cond_data.values
+                x = np.random.normal(i, 0.04, size=len(y))
+                ax.scatter(x, y, alpha=1.0, color=condition_colors[cond], s=4, 
+                          edgecolors='none')
+                positions.append((i, cond_data))
+            else:
+                positions.append((i, pd.Series(dtype=float)))
         
-        r_script = f'''
-            library(ComplexHeatmap)
-            library(circlize)
-            library(svglite)
-
-            plot_data <- as.data.frame(plot_data_py)
-            rownames(plot_data) <- plot_data$annotation
-
-            trend_order <- c(
-                "Increasing", "Peak Pregnancy", 
-                "Dip Pregnancy", "Decreasing", "Other"
+        bp_data = [pos[1] for pos in positions if len(pos[1]) > 0]
+        bp_positions = [pos[0] for pos in positions if len(pos[1]) > 0]
+        
+        if bp_data:
+            bp = ax.boxplot(
+                bp_data, positions=bp_positions, widths=0.4,
+                patch_artist=True, showfliers=False
             )
-            plot_data$trend <- factor(
-                plot_data$trend, levels = trend_order
-            )
-
-            heatmap_matrix <- as.matrix(
-                plot_data[, c("control", "pregnant", "postpartum")]
-            )
+            for patch, pos in zip(bp['boxes'], bp_positions):
+                cond = ['control', 'pregnant', 'postpartum'][pos]
+                patch.set_facecolor(condition_colors[cond])
+                patch.set_alpha(0.4)
+                patch.set_edgecolor('black')
+                patch.set_linewidth(1.0)
             
-            trend_colors <- c(
-                "Increasing" = "#E66101", "Peak Pregnancy" = "#FDB863",
-                "Dip Pregnancy" = "#5E3C99", "Decreasing" = "#B2ABD2",
-                "Other" = "grey"
-            )
+            for element in ['whiskers', 'medians', 'caps']:
+                for item in bp[element]:
+                    item.set_color('black')
+                    item.set_alpha(1.0)
+        
+        ann_results = results_df[
+            (results_df['annotation'] == annotation) & 
+            (results_df['p_adj'] < p_threshold)
+        ]
+        
+        y_max = ann_df['gsmap_score'].max()
+        y_offset = y_max * 0.05
+        sig_y = y_max + y_offset
+        
+        for _, row in ann_results.iterrows():
+            if row['comparison'] == 'pregnant_vs_control':
+                x1, x2 = 0, 1
+            elif row['comparison'] == 'postpartum_vs_control':
+                x1, x2 = 0, 2
+            else:
+                x1, x2 = 1, 2
             
-            min_val <- min(heatmap_matrix, na.rm = TRUE)
-            max_val <- max(heatmap_matrix, na.rm = TRUE)
-            med_val <- median(heatmap_matrix, na.rm = TRUE)
-
-            left_ha <- HeatmapAnnotation(
-                "Trend" = plot_data$trend,
-                col = list(Trend = trend_colors), which = "row",
-                show_annotation_name = FALSE,
-                annotation_width = unit(0.75, "cm")
-            )
-            
-            right_ha <- HeatmapAnnotation(
-                "Score Range" = anno_barplot(
-                    plot_data$range, 
-                    gp = gpar(col = NA, fill = "grey")
-                ),
-                which = "row", show_annotation_name = TRUE,
-                annotation_width = unit(2, "cm"),
-                annotation_name_side = "top",
-                annotation_name_rot = 0,
-                annotation_name_gp = gpar(fontsize = 10)
-            )
-
-            ht <- Heatmap(
-                heatmap_matrix, name = "−log10(P-value)",
-                col = colorRamp2(
-                    c(min_val, med_val, max_val), 
-                    c("white", "tomato", "darkred")
-                ),
-                border = TRUE,
-                cluster_rows = FALSE, cluster_columns = FALSE,
-                row_split = plot_data$trend, row_title = NULL,
-                row_labels = rownames(heatmap_matrix),
-                row_names_side = "left",
-                row_names_gp = gpar(fontsize = 9),
-                left_annotation = left_ha,
-                right_annotation = right_ha,
-                column_title = "{trait}",
-                column_title_gp = gpar(fontsize = 16)
-            )
-            
-            svglite("{figures_dir}/condition_comparison_heatmap_{trait}.svg", 
-                    width = 6.5, height = 10,
-                    system_fonts = list(sans = "DejaVu Sans"))
-            draw(ht, heatmap_legend_side = "bottom", 
-                 annotation_legend_side = "bottom")
-            dev.off()
-
-            png("{figures_dir}/condition_comparison_heatmap_{trait}.png", 
-                width = 5, height = 10, units = "in", res = 300)
-            draw(ht, heatmap_legend_side = "bottom", 
-                 annotation_legend_side = "bottom")
-            dev.off()
-        '''
-        r(r_script)
-
-
-
-
+            ax.plot([x1, x1, x2, x2], 
+                   [sig_y, sig_y + y_offset/2, sig_y + y_offset/2, sig_y],
+                   'k-', linewidth=0.5)
+            ax.text((x1 + x2)/2, sig_y + y_offset/2, '*', 
+                   ha='center', va='bottom', fontsize=12)
+            sig_y += y_offset * 2
+        
+        ax.set_xticks([0, 1, 2])
+        ax.set_xticklabels(['Control', 'Pregnancy', 'Postpartum'], 
+                          rotation=45, ha='right')
+        ax.set_title(annotation, fontsize=10)
+        ax.set_ylabel('gsMap Score' if idx == 0 else '')
+        
+        # Make y-axis ticks more sparse
+        y_ticks = ax.get_yticks()
+        ax.set_yticks(y_ticks[::2])
+        
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    
+    for idx in range(n_annotations, len(axes)):
+        axes[idx].set_visible(False)
+    
+    fig.savefig(f'{figures_dir}/condition_comparison_boxplot.svg')
+    fig.savefig(f'{figures_dir}/condition_comparison_boxplot.png', dpi=300)
+    plt.close(fig)
 
 def plot_spatial_gwas(
-    output_dir, figures_dir, conditions, trait, logp_threshold, cell_types
+    output_dir, figures_dir, conditions, trait, cell_types, 
+    bg_point_size=5, fg_point_size=15
 ):
     fig, axes = plt.subplots(
-        3, 1, figsize=(5, 9), facecolor='white', sharex=True
+        1, 3, figsize=(15, 5), facecolor='white', sharey=True
     )
-    fig.subplots_adjust(hspace=0.1)
+    fig.subplots_adjust(wspace=0)
     
     all_dfs = []
     for condition in conditions.keys():
@@ -640,22 +698,25 @@ def plot_spatial_gwas(
             all_dfs.append(condition_df)
 
     if not all_dfs:
-        print(f"No data found for trait '{trait}'")
+        print(f'No data found for trait {trait}')
         plt.close(fig)
         return
         
     combined_df = pd.concat(all_dfs, ignore_index=True)
     
     is_selected_type = combined_df['annotation'].isin(cell_types)
-    combined_df['alpha'] = np.where(is_selected_type, 1.0, 0.3)
+    combined_df['alpha'] = np.where(is_selected_type, 1.0, 0.4)
     combined_df['edgecolor'] = np.where(is_selected_type, 'black', 'none')
     combined_df['linewidth'] = np.where(is_selected_type, 0.5, 0.0)
-    combined_df['size'] = np.where(is_selected_type, 15, 5)
+    combined_df['size'] = np.where(is_selected_type, fg_point_size, bg_point_size)
 
     vmin = combined_df['logp'].min()
     vmax = combined_df['logp'].max()
 
-    for i, (condition, ax) in enumerate(zip(conditions.keys(), axes)):
+    condition_order = ['control', 'pregnant', 'postpartum']
+    for i, condition in enumerate(condition_order):
+        if condition in conditions:
+            ax = axes[i]
         plot_df = combined_df[combined_df['condition'] == condition]
         plot_df = plot_df.sort_values(by='size').reset_index(drop=True)
         
@@ -663,7 +724,7 @@ def plot_spatial_gwas(
             x=plot_df['sx'], y=plot_df['sy'], c=plot_df['logp'],
             alpha=plot_df['alpha'], s=plot_df['size'],
             edgecolors=plot_df['edgecolor'], linewidths=plot_df['linewidth'],
-            cmap='inferno', vmin=vmin, vmax=vmax, rasterized=True
+                cmap='GnBu', vmin=vmin, vmax=vmax, rasterized=True
         )
 
         ax.set_title(condition.capitalize())
@@ -672,14 +733,14 @@ def plot_spatial_gwas(
         ax.set_yticks([])
         sns.despine(ax=ax, left=True, bottom=True)
 
-    norm = colors.Normalize(vmin=vmin, vmax=vmax)
-    mappable = cm.ScalarMappable(norm=norm, cmap='inferno')
+    # norm = colors.Normalize(vmin=vmin, vmax=vmax)
+    # mappable = cm.ScalarMappable(norm=norm, cmap='GnBu')
 
-    cbar_ax = fig.add_axes([0.25, 0.08, 0.5, 0.015])
-    cbar = fig.colorbar(
-        mappable, cax=cbar_ax, orientation='horizontal'
-    )
-    cbar.set_label(r'$-\log_{10}(P)$')
+    # cbar_ax = fig.add_axes([0.25, 0.08, 0.5, 0.03])
+    # cbar = fig.colorbar(
+    #     mappable, cax=cbar_ax, orientation='horizontal'
+    # )
+    # cbar.set_label(r'$-\log_{10}(P)$')
     
     os.makedirs(figures_dir, exist_ok=True)
     fig_path = f'{figures_dir}/spatial_plot_{trait}'
@@ -815,54 +876,46 @@ for sample_name in all_sample_names:
 
 #region analysis ###############################################################
 
-adata = sc.read_h5ad(f'{workdir}/output/data/adata_query_curio_final.h5ad')
-for col in ['class', 'subclass']:
-    adata.obs[col] = adata.obs[col].astype(str)\
-        .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
-adata.obs['type'] = adata.obs['subclass']\
-    .astype(str).str.extract(r'(\w+)$', expand=False)
-adata.obs['type'] = adata.obs['type'].replace({'IMN': 'Gaba'})
-adata.obs['type'] = adata.obs['type'].replace({'Chol': 'Gaba'})
-
-all_sample_names = adata.obs['sample'].unique()
-conditions = {
-    'control': [s for s in all_sample_names if 'CTRL' in s],
-    'pregnant': [s for s in all_sample_names if 'PREG' in s],
-    'postpartum': [s for s in all_sample_names if 'POSTPART' in s]
-}
 traits = ['MDD', 'Neuroticism', 'ADHD', 'Autism', 'PTSD']
 
 plot_trait_ranking(output_dir, figures_dir, conditions)
 
-plot_gwas_heatmap(
-    adata, output_dir, figures_dir, conditions, traits)
+plot_gwas_heatmap(adata, output_dir, figures_dir, conditions, traits)
 
-plot_boxplot_profiles(
-    output_dir, figures_dir, conditions, traits_of_interest=['MDD'],
-    p_adj_threshold=0.1
+results = analyze_trait_associations(output_dir, conditions, ['MDD'])
+
+results.to_csv(f'{figures_dir}/MDD_association_summary.csv', index=False)
+print(f'\nKruskal-Wallis test results:')
+kruskal_results = results[['trait', 'annotation', 'kruskal_p']]\
+    .drop_duplicates().sort_values('kruskal_p')
+print(kruskal_results.to_string())
+print(f'\nSignificant pairwise comparisons (p_adj < 0.05):')
+sig_results = results[results['p_adj'] < 0.05]\
+    .sort_values('p_adj')[[
+        'annotation', 'comparison', 'logfc', 'p_value', 'p_adj']]
+print(sig_results.to_string())
+
+plot_trait_boxplots(
+    results, output_dir, conditions, figures_dir, ['MDD'], 
+    cell_types_to_plot=[
+        'SI-MPO-LPO Lhx8 Gaba', 'MPO-ADP Lhx8 Gaba', 'NDB-SI-MA-STRv Lhx8 Gaba',
+        'STR Prox1 Lhx6 Gaba', 'LSX Nkx2-1 Gaba', 'LSX Prdm12 Zeb2 Gaba'
+    ],
+    p_threshold=0.01
 )
-
-plot_profile_heatmap(output_dir, figures_dir, conditions)
-
-
-
 
 plot_spatial_gwas(
     output_dir=output_dir,
     figures_dir=figures_dir,
     conditions=conditions,
     trait='MDD',
-    logp_threshold=12.0,
-    cell_types=['SI-MPO-LPO Lhx8 Gaba', 'MPO-LPO Lhx8 Gaba']
-)
-
-plot_spatial_gwas(
-    output_dir=output_dir,
-    figures_dir=figures_dir,
-    conditions=conditions,
-    trait='Neuroticism',
-    logp_threshold=12.0,
-    cell_types=['LSX Nkx2-1 Gaba', 'LSX Prdm12 Zeb2 Gaba']
+    cell_types=[
+        'SI-MPO-LPO Lhx8 Gaba', 'MPO-ADP Lhx8 Gaba',
+        'STR Prox1 Lhx6 Gaba', 
+        'LSX Nkx2-1 Gaba', 'LSX Prdm12 Zeb2 Gaba'
+    ],
+    bg_point_size=3,
+    fg_point_size=12
 )
 
 #endregion

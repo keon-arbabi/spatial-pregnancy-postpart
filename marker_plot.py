@@ -672,6 +672,60 @@ plt.savefig(
     f'{working_dir}/figures/linkplot.svg', format='svg', bbox_inches='tight')
 plt.close()
 
+
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import matplotlib.pyplot as plt
+
+plt.rcParams['svg.fonttype'] = 'none'
+plt.rcParams['font.family'] = 'DejaVu Sans'
+plt.rcParams['figure.dpi'] = 400
+
+working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
+
+adata_merfish = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
+
+cells_joined = pd.read_csv(
+    'projects/rrg-wainberg/single-cell/ABC/metadata/'
+    'MERFISH-C57BL6J-638850/20231215/views/cells_joined.csv')
+
+color_map = {k.replace('_', '/'): v for k, v in 
+            zip(cells_joined['subclass'].str.replace('/', '_'),
+                cells_joined['subclass_color'])}
+
+sample = 'PREG1'
+adata_sample = adata_merfish[adata_merfish.obs['sample'] == sample].copy()
+
+for col in ['subclass']:
+    adata_sample.obs[col] = adata_sample.obs[col].astype(str)\
+        .str.extract(r'^(\d+)\s+(.*)', expand=False)[1]
+
+colors = [color_map.get(c, '#999999') 
+         for c in adata_sample.obs['subclass']]
+
+fig = plt.figure(figsize=(12, 12))
+ax = fig.add_subplot(projection='3d')
+ax.set_box_aspect([1, 1, 0.6])
+ax.view_init(elev=25)
+
+coords = np.array(adata_sample.obs[['x_ffd', 'y_ffd']])
+padding = 0.05 * coords.ptp(0).max()
+ax.set_xlim(coords[:,0].min() - padding, coords[:,0].max() + padding)
+ax.set_ylim(coords[:,1].min() - padding, coords[:,1].max() + padding)
+ax.set_zlim(-0.1, 1.1)
+
+ax.scatter(coords[:,0], coords[:,1], 0, s=0.5, c=colors, alpha=0.6, 
+          rasterized=True)
+
+ax.axis('off')
+plt.savefig(f'{working_dir}/figures/merfish_angled.png', 
+           bbox_inches='tight', dpi=300)
+plt.savefig(f'{working_dir}/figures/merfish_angled.svg', 
+           format='svg', bbox_inches='tight')
+plt.close() 
+
 #endregion 
 
 # create standalone legend for common subclasses

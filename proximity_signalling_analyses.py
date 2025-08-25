@@ -186,6 +186,15 @@ def _insert_gap(arr, indices, axis=0):
                 pd.DataFrame([[np.nan]*arr.shape[1]], columns=arr.columns),
                 arr.iloc[i:]
             ]).reset_index(drop=True)
+    elif isinstance(arr, pd.Series):
+        val = ''
+        if arr.dtype != object and arr.dtype.kind not in ['U', 'S']:
+            val = np.nan
+        for i in sorted(indices, reverse=True):
+            # Convert to list, insert, then back to Series
+            arr_list = arr.tolist()
+            arr_list.insert(i, val)
+            arr = pd.Series(arr_list, dtype=arr.dtype)
     else:
         val = np.nan
         if arr.dtype == object or arr.dtype.kind in ['U', 'S']:
@@ -1603,10 +1612,6 @@ def plot_pathway_diff_dotplot(
     }
     plot_data['pair_str'] = plot_data['canonical_pair'].map(pair_str_map)
 
-    if plot_data.empty:
-        print('No matching data found for the provided cell type pairs.')
-        return None
-
     if z_score:
         grouped = plot_data.groupby(['contrast', 'pair_str'])['strength_diff']
         transform_func = lambda x: (x - x.mean()) / x.std()
@@ -1636,10 +1641,6 @@ def plot_pathway_diff_dotplot(
         top_pathways.update(set(pathways_to_include))
 
     plot_data = plot_data[plot_data['pathway'].isin(top_pathways)].copy()
-    
-    if plot_data.empty:
-        print('No data to plot for the selected pathways.')
-        return None
 
     idx_max = plot_data.groupby(
         ['contrast', 'canonical_pair', 'pathway']
@@ -1654,13 +1655,11 @@ def plot_pathway_diff_dotplot(
     cbar_label = f'{cbar_label_base}, Winsorized)'
 
     n_contrasts = len(contrasts)
-    fig_height = len(top_pathways) * 0.4
-    fig_width = 3.2 * n_contrasts 
+    fig_height = len(top_pathways) * 0.45
+    fig_width = 5
     fig, axes = plt.subplots(
         1, n_contrasts, figsize=(fig_width, fig_height), sharey=True
     )
-    if n_contrasts == 1:
-        axes = [axes]
 
     cmap = plt.get_cmap('seismic')
     vmax = plot_data['plot_value_winsorized'].abs().max()
@@ -1742,9 +1741,8 @@ def plot_pathway_diff_dotplot(
         ax.set_xticks(range(len(x_cats)))
         ax.set_xticklabels(
             x_cats,
-            rotation=45,
-            ha='right',
-            rotation_mode='anchor',
+            rotation=90,
+            ha='center',
         )
         ax.set_title(
             title_map.get(contrast, contrast.replace('_', ' vs ')), fontsize=11
@@ -2163,108 +2161,130 @@ def plot_pathway_expression_maps_grid(
 
     return fig, axs
 
-def plot_proximity_violins(
-    adata: sc.AnnData,
-    spatial_stats: pd.DataFrame,
-    cell_type_pairs: List[tuple],
-    cache_dir: str,
-    cell_type_col: str,
-    coords_cols: Tuple[str, str],
-    condition_palette: dict):
-
+def plot_proximity_violins(adata, spatial_stats, cell_type_pairs, cache_dir, 
+                          cell_type_col, coords_cols, condition_palette):
     n_rows = len(cell_type_pairs)
-    fig, axes = plt.subplots(
-        n_rows, 2, figsize=(1.8, n_rows * 1.8), sharey='row'
-    )
-    if n_rows == 1: axes = axes.reshape(1, 2)
+    fig, axes = plt.subplots(n_rows, 1, figsize=(2, n_rows * 2.5), 
+                            squeeze=False)
+    axes = axes.flatten()
     
     comparisons = [['CTRL', 'PREG'], ['PREG', 'POSTPART']]
     pbar_desc = 'Plotting proximity violins'
     for i, pair in enumerate(tqdm(cell_type_pairs, desc=pbar_desc)):
-        all_data = [
-            get_spatial_map_intermediate_data(
-                adata, spatial_stats, pair, c, cache_dir,
-                cell_type_col, coords_cols
-            ) for c in ['PREG_vs_CTRL', 'POSTPART_vs_PREG']
-        ]
-        valid_data = [pd.DataFrame(
-            {'clr': d['clr_values'], 'condition': d['all_conditions']}
-        ) for d in all_data if d]
+        all_data = [get_spatial_map_intermediate_data(
+            adata, spatial_stats, pair, c, cache_dir, cell_type_col, 
+            coords_cols
+        ) for c in ['PREG_vs_CTRL', 'POSTPART_vs_PREG']]
+        valid_data = [pd.DataFrame({'clr': d['clr_values'], 
+                     'condition': d['all_conditions']}) for d in all_data if d]
 
         if not valid_data:
-            for ax in axes[i]: ax.set_visible(False)
+            axes[i].set_visible(False)
             continue
             
         df = pd.concat(valid_data).drop_duplicates()
-        df['x'] = ''
+        
+        axes[i].set_title(f'{pair[0]} (center)\n{pair[1]} (surround)', 
+                         fontsize=10)
 
-        for j, comp in enumerate(comparisons):
-            ax = axes[i, j]
-            sns.violinplot(
-                data=df[df['condition'].isin(comp)], x='x', y='clr',
-                hue='condition', hue_order=comp, palette=condition_palette,
-                split=True, ax=ax, cut=0, width=0.6,
-                linewidth=1.0, inner=None
-            )
-            ax.get_legend().remove()
-            ax.set(ylabel='', xlabel='', yticklabels=[], yticks=[])
-            ax.spines[:].set_visible(False)
+        ax = axes[i]
+        df_comp1 = df[df['condition'].isin(comparisons[0])].copy()
+        df_comp2 = df[df['condition'].isin(comparisons[1])].copy()
+        df_comp1['x'] = 'Control vs\nPregnancy'
+        df_comp2['x'] = 'Pregnancy vs\nPostpartum'
+        
+        if not df_comp1.empty:
+            sns.violinplot(data=df_comp1, x='x', y='clr',
+                          hue='condition', hue_order=comparisons[0], 
+                          palette=condition_palette, split=True, ax=ax, 
+                          cut=0, width=0.6, linewidth=1.0, inner=None)
+        
+        if not df_comp2.empty:
+            sns.violinplot(data=df_comp2, x='x', y='clr',
+                          hue='condition', hue_order=comparisons[1], 
+                          palette=condition_palette, split=True, ax=ax, 
+                          cut=0, width=0.5, linewidth=1.0, inner=None)
+        
+        ax.get_legend().remove()
+        ax.set(ylabel='', xlabel='', yticklabels=[], yticks=[])
+        ax.spines[:].set_visible(False)
+        
+        if i == n_rows - 1:
+            ax.tick_params(axis='x', rotation=45)
+        else:
             ax.set_xticks([])
+            ax.set_xticklabels([])
+        
+        ax.spines['bottom'].set_visible(True)
+        ax.spines['left'].set_visible(True)
 
-    legend_patches = [patches.Patch(color=c, label=l) for l, c in \
-               condition_palette.items()]
-    fig.legend(
-        handles=legend_patches, loc='lower center', ncol=3,
-        bbox_to_anchor=(0.5, -0.05), frameon=False, fontsize=8
-    )
     fig.tight_layout()
     return fig, axes
 
-def get_pathway_violin_data(
-    adata: sc.AnnData,
-    interaction_df: pd.DataFrame,
-    triplet: Tuple[str, str, str]
-) -> pd.DataFrame:
-    
+def get_pathway_violin_data(adata, interaction_df, triplet, 
+                          coords_cols=('x_ffd', 'y_ffd'), 
+                          influence_radius=8.0):
     p_name, ct_a, ct_b = triplet
     pathway_genes = get_pathway_genes(p_name, interaction_df)
     if not pathway_genes: return pd.DataFrame()
 
     adata_var_upper = adata.var['gene_symbol'].str.upper()
-    available_genes = [
-        g for g in pathway_genes if g.upper() in adata_var_upper.values
-    ]
+    available_genes = [g for g in pathway_genes 
+                      if g.upper() in adata_var_upper.values]
     if not available_genes: return pd.DataFrame()
 
-    upper_to_symbol = pd.Series(
-        adata.var['gene_symbol'].values, index=adata_var_upper
-    )
-    genes_to_use = upper_to_symbol[
-        upper_to_symbol.index.isin([g.upper() for g in available_genes])
-    ].unique()
+    upper_to_symbol = pd.Series(adata.var['gene_symbol'].values, 
+                               index=adata_var_upper)
+    genes_to_use = upper_to_symbol[upper_to_symbol.index.isin(
+        [g.upper() for g in available_genes])].unique()
 
     pathway_expr = np.array(adata[:, genes_to_use].X.mean(axis=1)).flatten()
-    log_pathway_expr = np.log1p(pathway_expr) # Apply log1p transformation
+    log_pathway_expr = np.log1p(pathway_expr)
 
-    mask = adata.obs['subclass'].isin([ct_a, ct_b])
+    is_a = adata.obs['subclass'] == ct_a
+    is_b = adata.obs['subclass'] == ct_b
+    
+    if not (is_a.any() and is_b.any()): return pd.DataFrame()
+    
+    coords = adata.obs[list(coords_cols)].values
+    d_scale, _ = calculate_distance_scale(coords)
+    d_max = influence_radius * d_scale
+    
+    coords_a = coords[is_a]
+    coords_b = coords[is_b]
+    indices_a = adata.obs.index[is_a]
+    indices_b = adata.obs.index[is_b]
+    
+    tree_a = KDTree(coords_a)
+    tree_b = KDTree(coords_b)
+    
+    interacting_cells = []
+    for i, idx_a in enumerate(indices_a):
+        neighbors = tree_b.query_ball_point(coords_a[i], d_max)
+        if neighbors: interacting_cells.append(idx_a)
+    
+    for i, idx_b in enumerate(indices_b):
+        neighbors = tree_a.query_ball_point(coords_b[i], d_max)
+        if neighbors: interacting_cells.append(idx_b)
+    
+    if not interacting_cells: return pd.DataFrame()
+    
+    interacting_mask = adata.obs.index.isin(interacting_cells)
     df = pd.DataFrame({
-        'pathway_expr': log_pathway_expr[mask],
-        'condition': adata.obs['condition'][mask],
-        'cell_type': adata.obs['subclass'][mask]
+        'pathway_expr': log_pathway_expr[interacting_mask],
+        'condition': adata.obs['condition'][interacting_mask],
+        'cell_type': adata.obs['subclass'][interacting_mask]
     })
+    
+    df = df[df['pathway_expr'] > 0.1]
     return df
 
-def plot_pathway_violins(
-    adata: sc.AnnData,
-    interaction_df: pd.DataFrame,
-    interaction_triplets: List[Tuple[str, str, str]],
-    condition_palette: dict):
-    
+def plot_pathway_violins(adata, interaction_df, interaction_triplets, 
+                        condition_palette):
     n_rows = len(interaction_triplets)
-    fig, axes = plt.subplots(
-        n_rows, 2, figsize=(1.8, n_rows * 1.8), sharey='row'
-    )
-    if n_rows == 1: axes = axes.reshape(1, 2)
+    fig, axes = plt.subplots(n_rows, 1, figsize=(2, n_rows * 2.5), 
+                            squeeze=False)
+    axes = axes.flatten()
     
     comparisons = [['CTRL', 'PREG'], ['PREG', 'POSTPART']]
     pbar_desc = 'Plotting pathway violins'
@@ -2272,34 +2292,43 @@ def plot_pathway_violins(
         df = get_pathway_violin_data(adata, interaction_df, triplet)
 
         if df.empty:
-            for ax in axes[i]: ax.set_visible(False)
+            axes[i].set_visible(False)
             continue
         
-        df['x'] = ''
-        axes[i, 0].set_ylabel(
-            f'{triplet[0]}', fontsize=8, rotation=0,
-            ha='right', va='center', labelpad=25
-        )
-        for j, comp in enumerate(comparisons):
-            ax = axes[i, j]
-            sub_df = df[df['condition'].isin(comp)]
-            sns.violinplot(
-                data=sub_df, x='x', y='pathway_expr', hue='condition',
-                hue_order=comp, palette=condition_palette,
-                split=True, ax=ax, cut=0, width=0.6,
-                linewidth=1.0, inner=None
-            )
-            ax.get_legend().remove()
-            ax.set(ylabel='', xlabel='', yticklabels=[], yticks=[])
-            ax.spines[:].set_visible(False)
+        axes[i].set_title(f'{triplet[0]}\n{triplet[1]} ↔ {triplet[2]}',
+                         fontsize=10)
+        
+        ax = axes[i]
+        df_comp1 = df[df['condition'].isin(comparisons[0])].copy()
+        df_comp2 = df[df['condition'].isin(comparisons[1])].copy()
+        df_comp1['x'] = 'Control vs\nPregnancy'
+        df_comp2['x'] = 'Pregnancy vs\nPostpartum'
+        
+        if not df_comp1.empty:
+            sns.violinplot(data=df_comp1, x='x', y='pathway_expr',
+                          hue='condition', hue_order=comparisons[0], 
+                          palette=condition_palette, split=True, ax=ax, 
+                          cut=0, width=0.5, linewidth=1.0, inner=None)
+        
+        if not df_comp2.empty:
+            sns.violinplot(data=df_comp2, x='x', y='pathway_expr',
+                          hue='condition', hue_order=comparisons[1], 
+                          palette=condition_palette, split=True, ax=ax, 
+                          cut=0, width=0.5, linewidth=1.0, inner=None)
+        
+        ax.get_legend().remove()
+        ax.set(ylabel='', xlabel='', yticklabels=[], yticks=[])
+        ax.spines[:].set_visible(False)
+        
+        if i == n_rows - 1:
+            ax.tick_params(axis='x', rotation=45)
+        else:
             ax.set_xticks([])
+            ax.set_xticklabels([])
+        
+        ax.spines['bottom'].set_visible(True)
+        ax.spines['left'].set_visible(True)
 
-    legend_patches = [patches.Patch(color=c, label=l) for l, c in \
-               condition_palette.items()]
-    fig.legend(
-        handles=legend_patches, loc='lower center', ncol=3,
-        bbox_to_anchor=(0.5, -0.05), frameon=False, fontsize=8
-    )
     fig.tight_layout()
     return fig, axes
 
@@ -2326,8 +2355,8 @@ all_cell_type_pairs = [
     ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
     ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
     ('Pvalb Gaba', 'Oligo NN'),
-    ('Astro-NT NN', 'OPC NN'),
     ('STR D1 Gaba', 'OPC NN'),
+    ('Microglia NN', 'Oligo NN'),
 ]
 
 interaction_triplets_to_plot = [
@@ -2337,10 +2366,10 @@ interaction_triplets_to_plot = [
     ('GABA-A', 'SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
     # 3. Interneuron Trophic Support to Oligodendrocytes
     ('FGF', 'Pvalb Gaba', 'Oligo NN'),
-    # 4. Astrocyte-Driven Regulation of Glial Precursors
-    ('PTN', 'Astro-NT NN', 'OPC NN'),
-    # 5. Neuron-Glia Synaptic Adhesion in the Striatum
+    # 4. Neuron-Glia Synaptic Adhesion in the Striatum
     ('NRXN', 'STR D1 Gaba', 'OPC NN'),
+    # 5. Microglial support for postpartum oligodendrocytes
+    ('PSAP', 'Microglia NN', 'Oligo NN')
 ]
 
 #endregion
@@ -2555,6 +2584,7 @@ plt.savefig(
 plt.close(fig)
 
 cache_dir = f'{working_dir}/output/merfish/spatial_maps'
+
 for pair in tqdm(all_cell_type_pairs, desc='Preparing map data'):
     for contrast in contrasts:
         get_spatial_map_intermediate_data(
@@ -2592,7 +2622,11 @@ fig_violins, _ = plot_proximity_violins(
     condition_palette=condition_colors
 )
 fig_violins.savefig(
-    f'{working_dir}/figures/proximity_violins_final.svg',
+    f'{working_dir}/figures/proximity_violins.png',
+    bbox_inches='tight'
+)
+fig_violins.savefig(
+    f'{working_dir}/figures/proximity_violins.svg',
     bbox_inches='tight'
 )
 plt.close(fig_violins)
@@ -2859,17 +2893,20 @@ fig.savefig(
 plt.close(fig)
 
 fig_pathway_violins, _ = plot_pathway_violins(
-    adata=adata_curio,
+    adata=adata,
     interaction_df=cellchat_interaction_df,
     interaction_triplets=interaction_triplets_to_plot,
     condition_palette=condition_colors
 )
-if fig_pathway_violins:
-    fig_pathway_violins.savefig(
-        f'{working_dir}/figures/pathway_violins_final.svg',
-        bbox_inches='tight'
-    )
-    plt.close(fig_pathway_violins)
+fig_pathway_violins.savefig(
+    f'{working_dir}/figures/pathway_violins.png',
+    bbox_inches='tight'
+)
+fig_pathway_violins.savefig(
+    f'{working_dir}/figures/pathway_violins.svg',
+    bbox_inches='tight'
+)
+plt.close(fig_pathway_violins)
 
 #endregion
 
@@ -2933,5 +2970,107 @@ csv_df.to_csv(
     index=False
 )
 
+def compile_paper_statistics(spatial_diff, cellchat_weight_df, 
+                            cellchat_count_df, pathway_pair_diff_df,
+                            interaction_triplets, cell_type_pairs, output_path):
+    cp = {frozenset(pair): pair for pair in cell_type_pairs}
+    
+    ss = spatial_diff[spatial_diff.apply(lambda r: frozenset([
+        r['cell_type_a'], r['cell_type_b']]) in cp, axis=1)].copy()
+    ss['pair_label'] = ss.apply(lambda r: f"{r['cell_type_a']} → "
+                               f"{r['cell_type_b']}", axis=1)
+    se = ss[['pair_label','contrast','logFC','P.Value','adj.P.Val',
+             't_test_P.Value','cell_type_a','cell_type_b']].round(4)
+    
+    def filt(df, m):
+        f = df[df.apply(lambda r: frozenset([r['cell_type_a'], 
+               r['cell_type_b']]) in cp, axis=1)].copy()
+        f['pair_label'] = f.apply(lambda r: f"{r['cell_type_a']} → "
+                                 f"{r['cell_type_b']}", axis=1)
+        f['measure'] = m
+        return f[['pair_label','contrast','measure','logFC',
+                 'cell_type_a','cell_type_b']].round(4)
+    
+    we = filt(cellchat_weight_df, 'strength')
+    ce = filt(cellchat_count_df, 'count')
+    cce = pd.concat([we, ce])
+    
+    pe = []
+    for p, a, b in interaction_triplets:
+        pd_data = pathway_pair_diff_df[(pathway_pair_diff_df['pathway']==p)&
+            (((pathway_pair_diff_df['source']==a)&
+              (pathway_pair_diff_df['target']==b))|
+             ((pathway_pair_diff_df['source']==b)&
+              (pathway_pair_diff_df['target']==a)))].copy()
+        if not pd_data.empty:
+            pd_data['triplet_label'] = f"{p}: {a} ↔ {b}"
+            pe.append(pd_data[['triplet_label','pathway','contrast',
+                              'strength_diff','source','target']])
+    
+    ps = pd.concat(pe).round(4) if pe else pd.DataFrame()
+    
+    stats = []
+    for p, a, b in interaction_triplets:
+        for c in ['PREG_vs_CTRL', 'POSTPART_vs_PREG']:
+            sr = ss[(ss['contrast']==c)&(ss['cell_type_a']==a)&
+                    (ss['cell_type_b']==b)]
+            wr = we[(we['contrast']==c)&(we['cell_type_a']==a)&
+                    (we['cell_type_b']==b)]
+            pr = ps[(ps['contrast']==c)&(ps['pathway']==p)&
+                    (((ps['source']==a)&(ps['target']==b))|
+                     ((ps['source']==b)&(ps['target']==a)))]
+            
+            stats.append({
+                'interaction': f"{p}: {a} ↔ {b}", 'contrast': c,
+                'spatial_logFC': sr['logFC'].iloc[0] if not sr.empty else None,
+                'spatial_pval': sr['P.Value'].iloc[0] if not sr.empty else None,
+                'spatial_padj': sr['adj.P.Val'].iloc[0] if not sr.empty else None,
+                'signaling_logFC': wr['logFC'].iloc[0] if not wr.empty else None,
+                'pathway_strength_diff': pr['strength_diff'].iloc[0] 
+                    if not pr.empty else None,
+                'pathway': p, 'cell_type_a': a, 'cell_type_b': b
+            })
+    
+    sdf = pd.DataFrame(stats).round(4)
+    
+    with pd.ExcelWriter(output_path, engine='openpyxl') as w:
+        sdf.to_excel(w, sheet_name='Summary', index=False)
+        se.to_excel(w, sheet_name='Spatial_Proximity', index=False)
+        cce.to_excel(w, sheet_name='CellType_Signaling', index=False)
+        if not ps.empty:
+            ps.to_excel(w, sheet_name='Pathway_Signaling', index=False)
+        
+        md = pd.DataFrame({
+            'Analysis': ['Spatial Proximity','Cell-Type Signaling',
+                        'Pathway Signaling'],
+            'Method': ['crumblr + variancePartition','CellChat spatial',
+                      'CellChat pathway'],
+            'Data_Type': ['MERFISH spatial coordinates','Curio scRNA-seq',
+                         'Curio scRNA-seq'],
+            'Key_Statistic': ['logFC (CLR transformed)',
+                             'logFC (communication strength)',
+                             'strength_diff (pathway activity)']
+        })
+        md.to_excel(w, sheet_name='Methods', index=False)
+    
+    print(f"Stats exported: {output_path}")
+    print(f"Summary: {len(sdf)}, Spatial: {len(se)}, "
+          f"Signaling: {len(cce)}, Pathways: {len(ps)}")
+    return sdf
+
+ps = compile_paper_statistics(spatial_diff, cellchat_weight_df, 
+    cellchat_count_df, pathway_pair_diff_df, interaction_triplets_to_plot,
+    all_cell_type_pairs, f'{working_dir}/output/paper_statistics.xlsx')
+
+print("\n=== KEY PAPER STATISTICS ===")
+for _, r in ps.iterrows():
+    print(f"\n{r['interaction']} ({r['contrast']}):")
+    if pd.notna(r['spatial_logFC']):
+        print(f"  Spatial: logFC={r['spatial_logFC']:.3f}, "
+              f"p={r['spatial_pval']:.3e}")
+    if pd.notna(r['signaling_logFC']):
+        print(f"  Signaling: logFC={r['signaling_logFC']:.3f}")
+    if pd.notna(r['pathway_strength_diff']):
+        print(f"  Pathway: Δ={r['pathway_strength_diff']:.3f}")
 #endregion
 
