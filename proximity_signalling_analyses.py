@@ -83,26 +83,15 @@ def get_global_diff(
     norm_props_by_condition = list()
     for (cond in unique(meta$condition)) {
         samples = rownames(meta)[meta$condition == cond]
-        if (length(samples) > 1) {
-            means = rowMeans(norm_props[, samples, drop=FALSE])
-            ses = apply(norm_props[, samples, drop=FALSE], 1, sd) / 
-                    sqrt(length(samples))
-            norm_props_by_condition[[cond]] = data.frame(
-                cell_type = rownames(norm_props),
-                condition = cond,
-                mean = means,
-                se = ses
-            )
-        } else if (length(samples) == 1) {
-            means = norm_props[, samples, drop=FALSE]
-            ses = rep(0, length(means))
-            norm_props_by_condition[[cond]] = data.frame(
-                cell_type = rownames(norm_props),
-                condition = cond,
-                mean = means[,1],
-                se = ses
-            )
-        }
+        means = rowMeans(norm_props[, samples, drop=FALSE])
+        ses = apply(norm_props[, samples, drop=FALSE], 1, sd) / 
+                sqrt(length(samples))
+        norm_props_by_condition[[cond]] = data.frame(
+            cell_type = rownames(norm_props),
+            condition = cond,
+            mean = means,
+            se = ses
+        )
     }
     norm_props_summary = do.call(rbind, norm_props_by_condition)
     
@@ -490,6 +479,7 @@ def plot_spatial_diff_heatmap(
     df, 
     tested_pairs,
     sig=0.10, 
+    nominal_sig=0.05,
     figsize=(15, 15),
     cell_types_a=None, 
     cell_types_b=None,
@@ -532,7 +522,9 @@ def plot_spatial_diff_heatmap(
     for _, row in filtered_df.iterrows():
         i, j = row['cell_type_a'], row['cell_type_b']
         mat.loc[i, j] = row['logFC']
-        if row['adj.P.Val'] < sig: 
+        if row['P.Value'] < nominal_sig:
+            sigs.loc[i, j] = '•'
+        if row['adj.P.Val'] < sig:
             sigs.loc[i, j] = '*'
 
     if row_order is None and adata is not None:
@@ -618,8 +610,9 @@ def plot_spatial_diff_heatmap(
             if not is_tested:
                 ax.text(j + 0.5, i + 0.5, 'X', ha='center', va='center',
                         color='gray', size=10)
-            elif plot_sigs.iloc[i, j] == '*':
-                ax.text(j + 0.5, i + 0.5, '*', ha='center', va='center',
+            elif plot_sigs.iloc[i, j] != '':
+                ax.text(j + 0.5, i + 0.5, plot_sigs.iloc[i, j],
+                        ha='center', va='center',
                         color='black', size=14, weight='bold')
 
     ax.set_xlim(0, len(b_types))
@@ -2435,9 +2428,15 @@ selected_cell_types = [
     'Astro-NT NN', 'Astro-TE NN', 'Endo NN', 'Ependymal NN', 'Microglia NN',
     'Oligo NN', 'OPC NN', 'Peri NN', 'VLMC NN']
 
-tt_combined.sort_values('t_test_P.Value')
-tt_combined[tt_combined['cell_type'].eq('Endo NN')]\
-    .sort_values('t_test_P.Value')
+tt_combined[
+    # tt_combined['cell_type'].isin(selected_cell_types)  &
+    tt_combined['dataset'].eq('merfish')]\
+    .assign(adj_P_Val_filt=lambda df: 
+            df.groupby(['dataset', 'contrast'])['P.Value']
+            .transform(lambda x: fdrcorrection(x)[1]))\
+    .sort_values('P.Value')\
+    .to_csv(f'{working_dir}/output/merfish/cell_type_proportions_tt.csv',
+            index=False)
 
 fig = plot_cell_type_proportions(
     norm_props_combined,
@@ -2555,7 +2554,8 @@ for ax, contrast in zip(axes, contrasts):
     _, _, im, row_order = plot_spatial_diff_heatmap(
         contrast_data,
         pairs_tested,
-        sig=0.01,
+        sig=0.10, 
+        nominal_sig=0.05,
         cell_types_b=selected_cell_types,
         recompute_fdr=True,
         ax=ax,
@@ -2812,7 +2812,8 @@ for name, conditions in comparisons:
 
 exclude_pathways = [
     'CD39', 'CEACAM', 'DHEA', 'DHT', 'Ddc', 'Gjb6', 'PROS', 'TGFb', 'WNT',
-    'PSAP', 'SLITRK', 'Slc17a7', 'COLLAGEN', 'Signaling by Calsyntenin'
+    'SLITRK', 'Slc17a7', 'COLLAGEN', 'Signaling by Calsyntenin', 'ADGRB',
+    'CNTN', 'JAM', 'VISTA'
 ]
 include_pathways = []
 

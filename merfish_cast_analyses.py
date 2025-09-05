@@ -14,16 +14,15 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-sys.path.append('project/utils')
 from single_cell import SingleCell
 from utils import run
 
 # set paths
-working_dir = 'project/spatial-pregnancy-postpart'
+working_dir = 'spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-MARK', exist_ok=True)
 
 # load query data 
-query_dir = 'project/single-cell/Kalish/pregnancy-postpart/merfish/raw-anndata'
+query_dir = 'single-cell/Kalish/pregnancy-postpart/merfish/raw-anndata'
 samples_query = [file.replace('.h5ad', '') for file in os.listdir(query_dir)]
 samples_query = sorted(samples_query)
 
