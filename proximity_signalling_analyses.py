@@ -39,6 +39,48 @@ modality_colors = {
 
 #region functions #############################################################
 
+def _insert_gap(arr, indices, axis=0):
+    if isinstance(arr, pd.DataFrame):
+        for i in sorted(indices, reverse=True):
+            arr = pd.concat([
+                arr.iloc[:i],
+                pd.DataFrame([[np.nan]*arr.shape[1]], columns=arr.columns),
+                arr.iloc[i:]
+            ]).reset_index(drop=True)
+    elif isinstance(arr, pd.Series):
+        val = ''
+        if arr.dtype != object and arr.dtype.kind not in ['U', 'S']:
+            val = np.nan
+        for i in sorted(indices, reverse=True):
+            # Convert to list, insert, then back to Series
+            arr_list = arr.tolist()
+            arr_list.insert(i, val)
+            arr = pd.Series(arr_list, dtype=arr.dtype)
+    else:
+        val = np.nan
+        if arr.dtype == object or arr.dtype.kind in ['U', 'S']:
+            val = ''
+        for i in sorted(indices, reverse=True):
+            arr = np.insert(arr, i, val, axis=axis)
+    return arr
+
+def _segments(mask):
+    seg, s = [], None
+    for i, v in enumerate(mask):
+        if v and s is None:
+            s = i
+        elif not v and s is not None:
+            seg.append((s, i))
+            s = None
+    if s is not None:
+        seg.append((s, len(mask)))
+    return seg
+
+def calculate_distance_scale(coords: np.ndarray) -> float:
+    tree = KDTree(coords)
+    d_scale = np.median(tree.query(coords, k=2)[0][:, 1])
+    return d_scale, tree
+
 def get_global_diff(
     adata: sc.AnnData,
     dataset_name: str,
@@ -129,80 +171,7 @@ def get_global_diff(
     )
     norm_props_long['dataset'] = dataset_name
 
-    t_test_results = []
-    contrasts_map = {
-        'PREG_vs_CTRL': ('PREG', 'CTRL'),
-        'POSTPART_vs_PREG': ('POSTPART', 'PREG')
-    }
-
-    for cell_type_val in norm_props_long['cell_type'].unique():
-        ct_data = norm_props_long[
-            norm_props_long['cell_type'] == cell_type_val
-        ]
-        for contrast_name, (cond2_str, cond1_str) in contrasts_map.items():
-            group1_values = ct_data[
-                ct_data['condition'] == cond1_str
-            ]['normalized_proportion'].dropna()
-            group2_values = ct_data[
-                ct_data['condition'] == cond2_str
-            ]['normalized_proportion'].dropna()
-
-            t_stat, p_val = ttest_ind(
-                group1_values, 
-                group2_values, 
-                equal_var=True,  # Student's t-test
-                nan_policy='omit'
-            )
-            t_test_results.append({
-                'cell_type': cell_type_val,
-                'contrast': contrast_name,
-                't_test_P.Value': p_val
-            })
-    
-    t_test_df = pd.DataFrame(t_test_results)
-    result = result.merge(
-        t_test_df, 
-        on=['cell_type', 'contrast'], 
-        how='left'
-    )
     return result, norm_props_long
-
-def _insert_gap(arr, indices, axis=0):
-    if isinstance(arr, pd.DataFrame):
-        for i in sorted(indices, reverse=True):
-            arr = pd.concat([
-                arr.iloc[:i],
-                pd.DataFrame([[np.nan]*arr.shape[1]], columns=arr.columns),
-                arr.iloc[i:]
-            ]).reset_index(drop=True)
-    elif isinstance(arr, pd.Series):
-        val = ''
-        if arr.dtype != object and arr.dtype.kind not in ['U', 'S']:
-            val = np.nan
-        for i in sorted(indices, reverse=True):
-            # Convert to list, insert, then back to Series
-            arr_list = arr.tolist()
-            arr_list.insert(i, val)
-            arr = pd.Series(arr_list, dtype=arr.dtype)
-    else:
-        val = np.nan
-        if arr.dtype == object or arr.dtype.kind in ['U', 'S']:
-            val = ''
-        for i in sorted(indices, reverse=True):
-            arr = np.insert(arr, i, val, axis=axis)
-    return arr
-
-def _segments(mask):
-    seg, s = [], None
-    for i, v in enumerate(mask):
-        if v and s is None:
-            s = i
-        elif not v and s is not None:
-            seg.append((s, i))
-            s = None
-    if s is not None:
-        seg.append((s, len(mask)))
-    return seg
 
 def plot_cell_type_proportions(
     norm_props_df: pd.DataFrame,
@@ -214,7 +183,9 @@ def plot_cell_type_proportions(
     condition_order: List[str] = ['CTRL', 'PREG', 'POSTPART'],
     legend_position: Tuple[str, Tuple[float, float]] = (
         'center right', (1.10, 0.5)),
-    datasets_to_plot: List[str] = ['merfish']) -> plt.Figure:
+    datasets_to_plot: List[str] = ['merfish'],
+    sig: float = 0.10,
+    nominal_sig: float = 0.05) -> plt.Figure:
 
     if cell_types:
         cell_types = sorted(cell_types)
@@ -281,8 +252,15 @@ def plot_cell_type_proportions(
                         (tt_combined['contrast'] == f'{c2}_vs_{c1}')
                     ]
                     if sig_row.empty: continue
-                    p_val = sig_row['t_test_P.Value'].iloc[0]
-                    sig_str = '**' if p_val < 0.01 else '*' if p_val < 0.05 else ''
+                    
+                    sig_str = ''
+                    p_val = sig_row['P.Value'].iloc[0]
+                    adj_p_val = sig_row['adj.P.Val'].iloc[0]
+                    if p_val < nominal_sig:
+                        sig_str = '•'
+                    if adj_p_val < sig:
+                        sig_str = '*'
+
                     if sig_str:
                         conds = cond_data['condition'].tolist()
                         x_pos = (conds.index(c1) + conds.index(c2)) / 2.0
@@ -330,11 +308,6 @@ def plot_cell_type_proportions(
     fig.subplots_adjust(wspace=0.3, hspace=0.35)
 
     return fig
-
-def calculate_distance_scale(coords: np.ndarray) -> float:
-    tree = KDTree(coords)
-    d_scale = np.median(tree.query(coords, k=2)[0][:, 1])
-    return d_scale, tree
 
 def plot_spatial_diff_radii(
     spatial_data: pd.DataFrame, 
@@ -487,7 +460,8 @@ def plot_spatial_diff_heatmap(
     ax=None, 
     vmin=None, vmax=None,
     row_order=None, 
-    adata=None) -> Tuple[
+    adata=None,
+    global_props_df=None) -> Tuple[
         plt.Figure, plt.Axes, plt.cm.ScalarMappable, List[str]]:
     
     filtered_df = df.copy()
@@ -509,13 +483,17 @@ def plot_spatial_diff_heatmap(
     
     a_types = sorted(filtered_df['cell_type_a'].unique())
     b_types = sorted(filtered_df['cell_type_b'].unique())
+
+    b_types_with_global = b_types.copy()
+    if global_props_df is not None:
+        b_types_with_global.insert(0, 'Global')
     
     mat = pd.DataFrame(
-        index=a_types, columns=b_types, 
+        index=a_types, columns=b_types_with_global, 
         data=np.nan
     )
     sigs = pd.DataFrame(
-        index=a_types, columns=b_types,
+        index=a_types, columns=b_types_with_global,
         data=''
     )
     
@@ -526,6 +504,17 @@ def plot_spatial_diff_heatmap(
             sigs.loc[i, j] = '•'
         if row['adj.P.Val'] < sig:
             sigs.loc[i, j] = '*'
+
+    if global_props_df is not None:
+        props_df = global_props_df.set_index('cell_type')
+        for cell_type in a_types:
+            if cell_type in props_df.index:
+                row = props_df.loc[cell_type]
+                mat.loc[cell_type, 'Global'] = row['logFC']
+                if row['P.Value'] < nominal_sig:
+                    sigs.loc[cell_type, 'Global'] = '•'
+                if row['adj.P.Val'] < sig:
+                    sigs.loc[cell_type, 'Global'] = '*'
 
     if row_order is None and adata is not None:
         type_info = adata.obs[['subclass', 'type']]\
@@ -565,24 +554,36 @@ def plot_spatial_diff_heatmap(
     
     cmap = 'PRGn'
     
+    has_type_col = 'type' in mat.columns
+    plot_values = mat.drop('type', axis=1, errors='ignore').values
     if vmin is None or vmax is None:
-        mabs = np.nanmax(np.abs(mat.drop('type', axis=1).values))
+        mabs = np.nanmax(np.abs(plot_values))
         mabs = 1.0 if (np.isnan(mabs) or mabs == 0) else mabs
         if vmin is None: vmin = -mabs
         if vmax is None: vmax = mabs
     
-    plot_mat = mat.drop('type', axis=1)
-    type_boundaries = mat['type'].ne(mat['type'].shift()).cumsum()
-    gaps = np.where(type_boundaries.diff() > 0)[0]
-    plot_mat = _insert_gap(plot_mat, gaps, axis=0)
+    plot_mat = mat.drop('type', axis=1, errors='ignore')
+    if has_type_col:
+        type_boundaries = mat['type'].ne(mat['type'].shift()).cumsum()
+        gaps = np.where(type_boundaries.diff() > 0)[0]
+        plot_mat = _insert_gap(plot_mat, gaps, axis=0)
+    else:
+        gaps = []
 
     plot_sigs = sigs.reindex(mat.index)
-    plot_sigs = _insert_gap(plot_sigs, gaps, axis=0)
+    if has_type_col:
+        plot_sigs = _insert_gap(plot_sigs, gaps, axis=0)
     
     a_types_gapped = _insert_gap(
         pd.Series(a_types, dtype=object), gaps, axis=0
     )
 
+    b_types_gapped = b_types_with_global
+    if global_props_df is not None:
+        plot_mat.insert(1, 'gap', np.nan)
+        plot_sigs.insert(1, 'gap', '')
+        b_types_gapped.insert(1, '')
+    
     im = ax.pcolormesh(plot_mat.values, cmap=cmap, vmin=vmin, vmax=vmax,
                       rasterized=False)
     
@@ -590,7 +591,7 @@ def plot_spatial_diff_heatmap(
         spine.set_visible(False)
     
     row_seg = _segments(~plot_mat.isna().all(1))
-    col_seg = [(0, len(b_types))]
+    col_seg = _segments(~plot_mat.isna().all(0))
 
     for r0, r1 in row_seg:
         for c0, c1 in col_seg:
@@ -601,25 +602,29 @@ def plot_spatial_diff_heatmap(
                 )
             )
 
-    mask = pd.isna(mat)
     for i, a in enumerate(a_types_gapped):
         if a == '': continue
-        for j, b in enumerate(b_types):
-            is_tested = (a, b) in tested_pairs
+        for j, b in enumerate(b_types_gapped):
+            if b == '': continue
+
+            is_global_col = (b == 'Global')
+            original_b_types = b_types_with_global[1:] \
+                if global_props_df is not None else b_types_with_global
+            is_tested = (a, b) in tested_pairs or is_global_col
             
-            if not is_tested:
-                ax.text(j + 0.5, i + 0.5, 'X', ha='center', va='center',
+            if not is_tested and not pd.isna(plot_mat.iloc[i,j]):
+                 ax.text(j + 0.5, i + 0.5, 'X', ha='center', va='center',
                         color='gray', size=10)
             elif plot_sigs.iloc[i, j] != '':
                 ax.text(j + 0.5, i + 0.5, plot_sigs.iloc[i, j],
                         ha='center', va='center',
                         color='black', size=14, weight='bold')
 
-    ax.set_xlim(0, len(b_types))
+    ax.set_xlim(0, len(b_types_gapped))
     ax.set_ylim(len(a_types_gapped), 0)
-    ax.set_xticks(np.arange(len(b_types)) + 0.5)
+    ax.set_xticks(np.arange(len(b_types_gapped)) + 0.5)
     ax.set_yticks(np.arange(len(a_types_gapped)) + 0.5)
-    ax.set_xticklabels(b_types, rotation=45, ha='right')
+    ax.set_xticklabels(b_types_gapped, rotation=45, ha='right')
     ax.set_yticklabels(a_types_gapped)
     ax.tick_params(length=0)
 
@@ -2330,7 +2335,6 @@ def plot_pathway_violins(adata, interaction_df, interaction_triplets,
 #region analysis configuration #################################################
 
 working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
-
 cell_type_col = 'subclass'
 
 selected_cell_types = [
@@ -2431,9 +2435,6 @@ selected_cell_types = [
 tt_combined[
     # tt_combined['cell_type'].isin(selected_cell_types)  &
     tt_combined['dataset'].eq('merfish')]\
-    .assign(adj_P_Val_filt=lambda df: 
-            df.groupby(['dataset', 'contrast'])['P.Value']
-            .transform(lambda x: fdrcorrection(x)[1]))\
     .sort_values('P.Value')\
     .to_csv(f'{working_dir}/output/merfish/cell_type_proportions_tt.csv',
             index=False)
@@ -2442,6 +2443,8 @@ fig = plot_cell_type_proportions(
     norm_props_combined,
     tt_combined,
     selected_cell_types,
+    sig=0.10,
+    nominal_sig=0.06,
     datasets_to_plot=['merfish'],
     base_figsize=(2.1, 2.0),
     nrows=int(np.ceil(len(selected_cell_types)/2)),
@@ -2544,13 +2547,17 @@ spatial_diff.to_csv(
     index=False
 )
 
-fig, axes = plt.subplots(1, 2, figsize=(7.5, 11))
+fig, axes = plt.subplots(1, 2, figsize=(8.4, 11))
 all_logFC = spatial_diff[spatial_diff['contrast'].isin(contrasts)]['logFC']
 vmax = all_logFC.abs().max()
 vmin = -vmax
 
 for ax, contrast in zip(axes, contrasts):
     contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
+    global_props_contrast = tt_combined[
+        (tt_combined['contrast'] == contrast) &
+        (tt_combined['dataset'] == dataset_name)
+    ].copy()
     _, _, im, row_order = plot_spatial_diff_heatmap(
         contrast_data,
         pairs_tested,
@@ -2561,7 +2568,8 @@ for ax, contrast in zip(axes, contrasts):
         ax=ax,
         vmin=-0.45,
         vmax=0.45,
-        adata=adata_merfish
+        adata=adata_merfish,
+        global_props_df=global_props_contrast
     )
     ax.set_title('')
 
@@ -2913,8 +2921,28 @@ plt.close(fig_pathway_violins)
 
 #region scratchpad #############################################################
 
-df = pathway_pair_diff_df.copy()
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
 
+def get_median_nn_dist(coords):
+    if len(coords) < 2: return np.nan
+    nn = NearestNeighbors(n_neighbors=2).fit(coords)
+    # The first column of distances is 0 (distance to self)
+    distances = nn.kneighbors(coords)[0][:, 1]
+    return np.median(distances)
+
+# Calculate median nearest-neighbor distance per sample
+distance_scales = adata_curio.obs.groupby('sample')[['x', 'y']]\
+    .apply(get_median_nn_dist)*20
+
+# Get the mean and standard error of the scales
+mean_distance_scale = distance_scales.mean()
+se_distance_scale = distance_scales.sem()
+
+print(f"Mean Distance Scale: {mean_distance_scale:.2f}")
+print(f"SE of Distance Scale: {se_distance_scale:.2f}")
+
+df = pathway_pair_diff_df.copy()
 top_n_per_pair = 8
 pathways_to_include_from_plot = ['APP']
 cell_type_pairs_from_plot = all_cell_type_pairs
