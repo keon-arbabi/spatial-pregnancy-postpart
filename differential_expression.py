@@ -12,6 +12,10 @@ from single_cell import SingleCell, Pseudobulk
 from utils import print_df
 from ryp import r, to_r, to_py
 
+plt.rcParams['svg.fonttype'] = 'none'
+plt.rcParams['font.family'] = 'DejaVu Sans'
+plt.rcParams['figure.dpi'] = 400
+
 working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 cell_type_col = 'subclass'
 
@@ -208,11 +212,9 @@ for cell_type in de_results.select('cell_type').unique().to_series():
           .sort('PValue').head(15))
 
 import polars as pl
-import polars.selectors as cs
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, ListedColormap
 from matplotlib.cm import ScalarMappable
-from adjustText import adjust_text
 import matplotlib.gridspec as gridspec
 
 FDR_CUTOFF = 0.1
@@ -244,6 +246,8 @@ GENES_TO_LABEL = {
     ('POSTPART_vs_PREG', 'STR D2 Gaba'): ['Slit2', 'Nr4a3'],
     ('POSTPART_vs_PREG', 'Lamp5 Gaba'): ['Npas3', 'Schip1']
 }
+
+de_results = pl.read_csv(f'{working_dir}/output/data/de_results.csv')
 
 annot_df = pl.DataFrame(adata_curio.obs)\
     .select(cell_type_col, 'type').unique()\
@@ -279,7 +283,6 @@ fig = plt.figure(figsize=(9, 13))
 outer_gs = gridspec.GridSpec(
     len(major_types), 1, figure=fig, height_ratios=height_ratios, hspace=0.1
 )
-
 vmin, vmax = (df_plot['log10_fdr'].quantile(0.05), 
               df_plot['log10_fdr'].quantile(0.98))
 norm = Normalize(vmin=vmin, vmax=vmax)
@@ -297,7 +300,7 @@ for i, group_type in enumerate(major_types):
     
     inner_gs = gridspec.GridSpecFromSubplotSpec(
         1, 4, subplot_spec=outer_gs[i],
-        width_ratios=[10, 2, 10, 2], wspace=0.05
+        width_ratios=[10, 2.5, 10, 2.5], wspace=0.05
     )
     ax1 = fig.add_subplot(inner_gs[0])
     ax1_bar = fig.add_subplot(inner_gs[1])
@@ -310,7 +313,7 @@ for i, group_type in enumerate(major_types):
         (ax2, ax2_bar, 'POSTPART_vs_PREG', 'Postpartum vs Pregnant')
     ]
 
-    for ax_main, ax_bar, contrast_name, title in axes_config:
+    for j, (ax_main, ax_bar, contrast_name, title) in enumerate(axes_config):
         df_group = df_plot.filter(pl.col('cell_type').is_in(group_cell_types))
         contrast_df = df_group.filter(pl.col('contrast').eq(contrast_name))
         counts = deg_counts.filter(pl.col('contrast').eq(contrast_name))\
@@ -334,7 +337,7 @@ for i, group_type in enumerate(major_types):
         max_fc = (contrast_df['logFC'].abs().max() * 1.1 
                   if not contrast_df.is_empty() else 1)
         
-        label_offset = 0.25
+        label_offset = 0.18
         
         for ct_idx, ct in enumerate(group_cell_types):
             genes = GENES_TO_LABEL.get((contrast_name, ct), [])
@@ -343,17 +346,13 @@ for i, group_type in enumerate(major_types):
                     (pl.col('cell_type') == ct) & 
                     pl.col('gene').is_in(genes)
                 )
-                
                 if ct_df.height > 0:
                     ct_y = y_pos[ct]
                     label_y = ct_y - label_offset
-                    
                     ct_data = ct_df.to_dicts()
                     ct_data.sort(key=lambda x: x['logFC'])
-                    
                     gene_width = 0.12 * (max_fc * 2)
                     x_positions = [r['logFC'] for r in ct_data]
-                    
                     adjusted_x = []
                     if len(x_positions) == 1:
                         adjusted_x = x_positions
@@ -366,7 +365,7 @@ for i, group_type in enumerate(major_types):
                     
                     for i, r in enumerate(ct_data):
                         ax_main.text(adjusted_x[i], label_y, r['gene'], 
-                                    style='italic', fontsize=6,
+                                    style='italic', fontsize=7,
                                     ha='center', va='bottom', zorder=150)
                         
                         ax_main.plot([r['logFC'], adjusted_x[i]], 
@@ -374,9 +373,9 @@ for i, group_type in enumerate(major_types):
                                     'k-', lw=0.6, alpha=0.8, zorder=90)
 
         if contrast_name == 'PREG_vs_CTRL':
-            bar_xlim = 250
+            bar_xlim = 300
         else:
-            bar_xlim = 25
+            bar_xlim = 30
         
         ax_main.grid(True, 'major', 'y', ls='-', lw=0.5, c='lightgray', 
                      zorder=0)
@@ -384,6 +383,14 @@ for i, group_type in enumerate(major_types):
                         zorder=0)
         ax_main.set_xlim(-max_fc, max_fc)
         ax_bar.set_xlim(-bar_xlim, bar_xlim)
+        
+        for idx, ct in enumerate(group_cell_types):
+            if ct in counts.index:
+                total_degs = int(counts.loc[ct, 'up'] + counts.loc[ct, 'down'])
+                if total_degs > 0:
+                    ax_bar.text(bar_xlim * 0.95, idx, str(total_degs), 
+                               ha='right', va='center', fontsize=7,
+                               color='black', zorder=100)
         
         y_ticks = range(len(group_cell_types))
         ax_main.set_yticks(y_ticks)
@@ -393,14 +400,6 @@ for i, group_type in enumerate(major_types):
         ax_main.set_ylim(len(group_cell_types)-0.5, -0.5)
         ax_bar.set_ylim(len(group_cell_types)-0.5, -0.5)
         
-        if i == 0: ax_main.set_title(title, fontsize=14)
-        if i < len(major_types) - 1:
-            plt.setp(ax_main.get_xticklabels(), visible=False)
-            plt.setp(ax_bar.get_xticklabels(), visible=False)
-        else:
-            ax_main.set_xlabel('log2(Fold Change)', fontsize=12)
-            ax_bar.set_xlabel('# DEGs', fontsize=12)
-            
         for ax in [ax_main, ax_bar]: ax.tick_params(length=0)
             
 for i, (ax1, ax1_bar, ax2, ax2_bar) in enumerate(all_axes):
@@ -408,6 +407,21 @@ for i, (ax1, ax1_bar, ax2, ax2_bar) in enumerate(all_axes):
     plt.setp(ax2.get_yticklabels(), visible=False)
     plt.setp(ax2_bar.get_yticklabels(), visible=False)
     ax1.set_ylabel(None)
+    
+    if i == 0:
+        ax1.set_title('Pregnant vs Nulliparous', fontsize=14)
+        ax2.set_title('Postpartum vs Pregnant', fontsize=14)
+    
+    if i == len(all_axes) - 1:
+        ax1.set_xlabel('log2(Fold Change)', fontsize=12)
+        ax1_bar.set_xlabel('# DEGs', fontsize=12)
+        ax2.set_xlabel('log2(Fold Change)', fontsize=12)
+        ax2_bar.set_xlabel('# DEGs', fontsize=12)
+    else:
+        plt.setp(ax1.get_xticklabels(), visible=False)
+        plt.setp(ax1_bar.get_xticklabels(), visible=False)
+        plt.setp(ax2.get_xticklabels(), visible=False)
+        plt.setp(ax2_bar.get_xticklabels(), visible=False)
 
 cbar_ax = fig.add_axes([1.0, 0.65, 0.015, 0.2])
 cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=cbar_ax)
@@ -417,6 +431,9 @@ fig.tight_layout(rect=[0, 0, 0.98, 1])
 os.makedirs(f'{working_dir}/figures', exist_ok=True)
 plt.savefig(
     f'{working_dir}/figures/deg_landscape.png', dpi=300, bbox_inches='tight'
+)
+plt.savefig(
+    f'{working_dir}/figures/deg_landscape.svg', dpi=300, bbox_inches='tight'
 )
 plt.close()
 
