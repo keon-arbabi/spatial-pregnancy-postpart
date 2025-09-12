@@ -404,6 +404,8 @@ fig = plot_dual_axis_density(
 )
 plt.savefig(f'{working_dir}/figures/vascular_density_merfish.png',
             bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/vascular_density_merfish.svg',
+            bbox_inches='tight')
 plt.show()
 plt.close()
 
@@ -423,6 +425,8 @@ fig_uni = plot_mNND(
     datasets_to_plot=['merfish']
 )
 plt.savefig(f'{working_dir}/figures/vascular_uniformity_merfish.png',
+            bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/vascular_uniformity_merfish.svg',
             bbox_inches='tight')
 plt.show()
 plt.close()

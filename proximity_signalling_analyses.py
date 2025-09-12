@@ -460,9 +460,13 @@ def plot_spatial_diff_heatmap(
     ax=None, 
     vmin=None, vmax=None,
     row_order=None, 
+    col_order=None,
     adata=None,
-    global_props_df=None) -> Tuple[
-        plt.Figure, plt.Axes, plt.cm.ScalarMappable, List[str]]:
+    global_props_df=None,
+    contrast=None,
+    dataset_name=None,
+    all_cell_types_a=None) -> Tuple[
+        plt.Figure, plt.Axes, plt.cm.ScalarMappable, List[str], List[str]]:
     
     filtered_df = df.copy()
     if cell_types_a is not None:
@@ -485,69 +489,114 @@ def plot_spatial_diff_heatmap(
     b_types = sorted(filtered_df['cell_type_b'].unique())
 
     b_types_with_global = b_types.copy()
+    global_col_name = 'Global'
     if global_props_df is not None:
-        b_types_with_global.insert(0, 'Global')
-    
+        b_types_with_global.insert(0, global_col_name)
+
+    mat_index = all_cell_types_a if all_cell_types_a is not None else a_types
     mat = pd.DataFrame(
-        index=a_types, columns=b_types_with_global, 
+        index=mat_index, columns=b_types_with_global, 
         data=np.nan
     )
     sigs = pd.DataFrame(
-        index=a_types, columns=b_types_with_global,
+        index=mat_index, columns=b_types_with_global,
         data=''
     )
     
     for _, row in filtered_df.iterrows():
         i, j = row['cell_type_a'], row['cell_type_b']
-        mat.loc[i, j] = row['logFC']
-        if row['P.Value'] < nominal_sig:
-            sigs.loc[i, j] = '•'
-        if row['adj.P.Val'] < sig:
-            sigs.loc[i, j] = '*'
+        if i in mat.index:
+            mat.loc[i, j] = row['logFC']
+            if row['P.Value'] < nominal_sig:
+                sigs.loc[i, j] = '•'
+            if row['adj.P.Val'] < sig:
+                sigs.loc[i, j] = '*'
 
     if global_props_df is not None:
-        props_df = global_props_df.set_index('cell_type')
-        for cell_type in a_types:
+        props_df = global_props_df.copy()
+        if contrast is not None:
+            props_df = props_df[props_df['contrast'] == contrast]
+        if dataset_name is not None:
+            props_df = props_df[props_df['dataset'] == dataset_name]
+            
+        props_df = props_df.set_index('cell_type')
+        for cell_type in mat.index:
             if cell_type in props_df.index:
                 row = props_df.loc[cell_type]
-                mat.loc[cell_type, 'Global'] = row['logFC']
-                if row['P.Value'] < nominal_sig:
-                    sigs.loc[cell_type, 'Global'] = '•'
-                if row['adj.P.Val'] < sig:
-                    sigs.loc[cell_type, 'Global'] = '*'
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
 
-    if row_order is None and adata is not None:
+                mat.loc[cell_type, global_col_name] = row['logFC']
+                if row['P.Value'] < nominal_sig:
+                    sigs.loc[cell_type, global_col_name] = '•'
+                if row['adj.P.Val'] < sig:
+                    sigs.loc[cell_type, global_col_name] = '*'
+
+    # Hierarchical clustering and ordering
+    if adata is not None:
         type_info = adata.obs[['subclass', 'type']]\
             .drop_duplicates().set_index('subclass')
-        mat = mat.join(type_info)
         
-        type_order = ['Glut', 'Gaba', 'NN']
-        mat['type'] = pd.Categorical(
-            mat['type'], categories=type_order, ordered=True
-        )
-        mat = mat.sort_values('type')
+        # Determine row order from clustering if not provided
+        if row_order is None:
+            mat_for_clustering = mat.join(type_info)
+            type_order = ['Glut', 'Gaba', 'NN']
+            mat_for_clustering['type'] = pd.Categorical(
+                mat_for_clustering['type'], categories=type_order, ordered=True
+            )
+            mat_for_clustering = mat_for_clustering.sort_values('type')
+            
+            ordered_a_types = []
+            for type_name, group in mat_for_clustering.groupby('type'):
+                cluster_data = group.drop('type', axis=1).fillna(0)
+                if len(group) > 1:
+                    link = linkage(cluster_data.values, method='average')
+                    order = leaves_list(link)
+                    ordered_a_types.extend(cluster_data.index[order])
+                else:
+                    ordered_a_types.extend(cluster_data.index)
+            row_order = ordered_a_types
         
-        ordered_a_types = []
-        for type_name, group in mat.groupby('type'):
-            cluster_data = group.drop('type', axis=1).fillna(0)
-            if len(group) > 1:
-                link = linkage(cluster_data.values, method='average')
-                order = leaves_list(link)
-                ordered_a_types.extend(cluster_data.index[order])
-            else:
-                ordered_a_types.extend(cluster_data.index)
-        mat = mat.reindex(ordered_a_types)
-    elif row_order is not None:
-        mat = mat.reindex(row_order)
-        mat = mat.join(
-            adata.obs[['subclass', 'type']].drop_duplicates()
-            .set_index('subclass'))
-    else:
-        ordered_a_types = a_types
+        # Determine column order from clustering if not provided
+        if col_order is None:
+            col_info_df = pd.DataFrame(index=b_types).join(type_info)
+            type_order = ['Glut', 'Gaba', 'NN']
+            col_info_df['type'] = pd.Categorical(
+                col_info_df['type'], categories=type_order, ordered=True
+            )
+            col_info_df = col_info_df.sort_values('type')
 
-    row_order = mat.index.tolist()
-    a_types = row_order
+            ordered_b_types = []
+            mat_t = mat[b_types].T
+            for type_name, group in col_info_df.groupby('type'):
+                cluster_data = mat_t.loc[group.index].fillna(0)
+                if len(group) > 1:
+                    link = linkage(cluster_data.values, method='average')
+                    order = leaves_list(link)
+                    ordered_b_types.extend(cluster_data.index[order])
+                else:
+                    ordered_b_types.extend(cluster_data.index)
+            col_order = ordered_b_types
     
+    # Apply row and column order
+    mat = mat.reindex(row_order)
+    if adata is not None:
+        mat = mat.join(type_info)
+
+    final_b_types_ordered = b_types
+    if col_order is not None:
+        final_b_types_ordered = [c for c in col_order if c in b_types]
+    if global_props_df is not None:
+        final_b_types_ordered.insert(0, global_col_name)
+    
+    cols_to_reindex = final_b_types_ordered + \
+        (['type'] if 'type' in mat.columns else [])
+    mat = mat.reindex(columns=cols_to_reindex)
+    
+    final_row_order = mat.index.tolist()
+    final_col_order = [c for c in mat.columns if c not in ['type']]
+
+    # Plotting
     fig = None
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -563,22 +612,22 @@ def plot_spatial_diff_heatmap(
         if vmax is None: vmax = mabs
     
     plot_mat = mat.drop('type', axis=1, errors='ignore')
-    if has_type_col:
+    if has_type_col and len(plot_mat) > 0:
         type_boundaries = mat['type'].ne(mat['type'].shift()).cumsum()
         gaps = np.where(type_boundaries.diff() > 0)[0]
         plot_mat = _insert_gap(plot_mat, gaps, axis=0)
     else:
         gaps = []
 
-    plot_sigs = sigs.reindex(mat.index)
-    if has_type_col:
+    plot_sigs = sigs.reindex(index=mat.index, columns=plot_mat.columns)
+    if has_type_col and len(plot_mat) > 0:
         plot_sigs = _insert_gap(plot_sigs, gaps, axis=0)
     
     a_types_gapped = _insert_gap(
-        pd.Series(a_types, dtype=object), gaps, axis=0
+        pd.Series(final_row_order, dtype=object), gaps, axis=0
     )
 
-    b_types_gapped = b_types_with_global
+    b_types_gapped = final_col_order
     if global_props_df is not None:
         plot_mat.insert(1, 'gap', np.nan)
         plot_sigs.insert(1, 'gap', '')
@@ -607,35 +656,33 @@ def plot_spatial_diff_heatmap(
         for j, b in enumerate(b_types_gapped):
             if b == '': continue
 
-            is_global_col = (b == 'Global')
-            original_b_types = b_types_with_global[1:] \
-                if global_props_df is not None else b_types_with_global
+            is_global_col = (b == global_col_name)
             is_tested = (a, b) in tested_pairs or is_global_col
             
-            if not is_tested and not pd.isna(plot_mat.iloc[i,j]):
+            if not is_tested:
                  ax.text(j + 0.5, i + 0.5, 'X', ha='center', va='center',
                         color='gray', size=10)
             elif plot_sigs.iloc[i, j] != '':
                 ax.text(j + 0.5, i + 0.5, plot_sigs.iloc[i, j],
                         ha='center', va='center',
-                        color='black', size=14, weight='bold')
+                        color='white', size=16, weight='bold')
 
     ax.set_xlim(0, len(b_types_gapped))
     ax.set_ylim(len(a_types_gapped), 0)
     ax.set_xticks(np.arange(len(b_types_gapped)) + 0.5)
     ax.set_yticks(np.arange(len(a_types_gapped)) + 0.5)
-    ax.set_xticklabels(b_types_gapped, rotation=45, ha='right')
-    ax.set_yticklabels(a_types_gapped)
+    ax.set_xticklabels(b_types_gapped, rotation=45, ha='right', fontsize=12)
+    ax.set_yticklabels(a_types_gapped, fontsize=12)
     ax.tick_params(length=0)
 
-    ax.set_xlabel('Surround Cell Type')
-    ax.set_ylabel('Center Cell Type')
+    ax.set_xlabel('Surround Cell Type', fontsize=12)
+    ax.set_ylabel('Center Cell Type', fontsize=12)
     
     if fig is not None:
         cbar = fig.colorbar(im, ax=ax, shrink=0.2) 
         cbar.set_label('logFC')
         plt.tight_layout()    
-    return fig, ax, im, row_order
+    return fig, ax, im, final_row_order, final_col_order
 
 def get_spatial_map_intermediate_data(
     adata,
@@ -1401,6 +1448,7 @@ def plot_cellchat_cell_type_heatmap(
     title: str = '',
     x_axis_is_sender: bool = True,
     row_order: Optional[List[str]] = None,
+    col_order: Optional[List[str]] = None,
     adata: Optional[sc.AnnData] = None
 ) -> Optional[plt.cm.ScalarMappable]:
 
@@ -1413,18 +1461,23 @@ def plot_cellchat_cell_type_heatmap(
 
     heatmap_data = df_plot.pivot_table(
         index=receiver_col, columns=sender_col, values=value_col,
-        aggfunc='sum', fill_value=0
+        aggfunc='sum'
     )
     if heatmap_data.empty:
         return None
 
     y_types = [r for r in row_order if r in heatmap_data.index] if \
         row_order else sorted(heatmap_data.index)
-    x_types = [ct for ct in x_axis_cell_types if ct in heatmap_data.columns] \
-        if x_axis_cell_types else sorted(heatmap_data.columns)
+    
+    if col_order:
+        x_types = [ct for ct in col_order if ct in heatmap_data.columns]
+    elif x_axis_cell_types:
+        x_types = [ct for ct in x_axis_cell_types if ct in heatmap_data.columns]
+    else:
+        x_types = sorted(heatmap_data.columns)
 
     mat = heatmap_data.reindex(
-        index=y_types, columns=x_types, fill_value=0
+        index=y_types, columns=x_types
     ).values.astype(float)
     if not mat.size: return None
 
@@ -1472,12 +1525,12 @@ def plot_cellchat_cell_type_heatmap(
 
     ax.set_xticks(np.arange(len(x_types)) + 0.5)
     ax.set_yticks(np.arange(len(y_types_gapped)) + 0.5)
-    ax.set_xticklabels(x_types, rotation=45, ha='right')
-    ax.set_yticklabels(y_types_gapped)
+    ax.set_xticklabels(x_types, rotation=45, ha='right', fontsize=12)
+    ax.set_yticklabels(y_types_gapped, fontsize=12)
     ax.tick_params(length=0)
-    ax.set_xlabel('Sender' if x_axis_is_sender else 'Target')
-    ax.set_ylabel('Target' if x_axis_is_sender else 'Sender')
-    ax.set_title(title)
+    ax.set_xlabel('Sender' if x_axis_is_sender else 'Target', fontsize=12)
+    ax.set_ylabel('Target' if x_axis_is_sender else 'Sender', fontsize=12)
+    ax.set_title(title, fontsize=12)
     ax.set_xlim(0, len(x_types))
     ax.set_ylim(len(y_types_gapped), 0)
 
@@ -2334,7 +2387,7 @@ def plot_pathway_violins(adata, interaction_df, interaction_triplets,
 
 #region analysis configuration #################################################
 
-working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
+working_dir = 'spatial-pregnancy-postpart'
 cell_type_col = 'subclass'
 
 selected_cell_types = [
@@ -2350,23 +2403,22 @@ comparisons = [
 
 all_cell_type_pairs = [
     ('MPO-ADP Lhx8 Gaba', 'Endo NN'),
-    ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
+    # ('SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
+    ('LSX Nkx2-1 Gaba', 'Astro-NT NN'),
     ('Pvalb Gaba', 'Oligo NN'),
     ('STR D1 Gaba', 'OPC NN'),
-    ('Microglia NN', 'Oligo NN'),
+    # ('Microglia NN', 'Oligo NN'),
+    ('OPC NN', 'Oligo NN'),
 ]
 
 interaction_triplets_to_plot = [
-    # 1. Hypothalamic Neuro-Vascular Remodeling
     ('VEGF', 'MPO-ADP Lhx8 Gaba', 'Endo NN'),
-    # 2. Neurotransmitter-Based Neuro-Vascular Modulation
-    ('GABA-A', 'SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
-    # 3. Interneuron Trophic Support to Oligodendrocytes
+    # ('GABA-A', 'SI-MPO-LPO Lhx8 Gaba', 'Endo NN'),
+    ('Glutamate', 'LSX Nkx2-1 Gaba', 'Astro-NT NN'),
     ('FGF', 'Pvalb Gaba', 'Oligo NN'),
-    # 4. Neuron-Glia Synaptic Adhesion in the Striatum
     ('NRXN', 'STR D1 Gaba', 'OPC NN'),
-    # 5. Microglial support for postpartum oligodendrocytes
-    ('PSAP', 'Microglia NN', 'Oligo NN')
+    # ('PSAP', 'Microglia NN', 'Oligo NN')
+    ('NCAM', 'OPC NN', 'Oligo NN')
 ]
 
 #endregion
@@ -2552,13 +2604,12 @@ all_logFC = spatial_diff[spatial_diff['contrast'].isin(contrasts)]['logFC']
 vmax = all_logFC.abs().max()
 vmin = -vmax
 
+all_a_types = sorted(spatial_diff['cell_type_a'].unique())
+row_order = None
+col_order = None
 for ax, contrast in zip(axes, contrasts):
     contrast_data = spatial_diff[spatial_diff['contrast'] == contrast].copy()
-    global_props_contrast = tt_combined[
-        (tt_combined['contrast'] == contrast) &
-        (tt_combined['dataset'] == dataset_name)
-    ].copy()
-    _, _, im, row_order = plot_spatial_diff_heatmap(
+    _, _, im, new_row_order, new_col_order = plot_spatial_diff_heatmap(
         contrast_data,
         pairs_tested,
         sig=0.10, 
@@ -2569,8 +2620,17 @@ for ax, contrast in zip(axes, contrasts):
         vmin=-0.45,
         vmax=0.45,
         adata=adata_merfish,
-        global_props_df=global_props_contrast
+        global_props_df=tt_combined,
+        contrast=contrast,
+        dataset_name=dataset_name,
+        row_order=row_order,
+        col_order=col_order,
+        all_cell_types_a=all_a_types
     )
+    if row_order is None:
+        row_order = new_row_order
+    if col_order is None:
+        col_order = new_col_order
     ax.set_title('')
 
 axes[1].set_yticks([])
@@ -2746,24 +2806,8 @@ for x_axis_are_senders in [True, False]:
         (cellchat_count_df, 'count'), (cellchat_weight_df, 'weight')]:
         
         fig, axes = plt.subplots(1, 2, figsize=(7.5, 11))
-        row_order_contrast = {}
         for i, contrast in enumerate(contrasts):
             
-            spatial_fig, spatial_ax = plt.subplots()
-            _, _, _, row_order = plot_spatial_diff_heatmap(
-                spatial_diff[spatial_diff['contrast'] == contrast],
-                pairs_tested,
-                sig=0.01,
-                cell_types_b=selected_cell_types,
-                recompute_fdr=True,
-                ax=spatial_ax,
-                vmin=-0.45,
-                vmax=0.45,
-                adata=adata_merfish
-            )
-            plt.close(spatial_fig)
-            row_order_contrast[contrast] = row_order
-
             im = plot_cellchat_cell_type_heatmap(
                 df=df[df['contrast'] == contrast],
                 ax=axes[i],
@@ -2773,7 +2817,8 @@ for x_axis_are_senders in [True, False]:
                 x_axis_cell_types=selected_cell_types,
                 tested_pairs=pairs_tested,
                 title='',
-                row_order=row_order_contrast[contrast],
+                row_order=row_order,
+                col_order=col_order,
                 adata=adata_curio
             )
         
@@ -2826,6 +2871,10 @@ exclude_pathways = [
 include_pathways = []
 
 pathway_pair_diff_df = pd.concat(pathway_diffs.values())
+pathway_pair_diff_df.to_csv(
+    f'{working_dir}/output/curio/cellchat_pathway_pair_diff.csv',
+    index=False
+)
 
 fig = plot_pathway_diff_dotplot(
     pathway_pair_diff_df=pathway_pair_diff_df,
@@ -3001,105 +3050,83 @@ csv_df.to_csv(
 
 def compile_paper_statistics(spatial_diff, cellchat_weight_df, 
                             cellchat_count_df, pathway_pair_diff_df,
-                            interaction_triplets, cell_type_pairs, output_path):
-    cp = {frozenset(pair): pair for pair in cell_type_pairs}
+                            glial_cell_types, tt_combined, output_path):
     
-    ss = spatial_diff[spatial_diff.apply(lambda r: frozenset([
-        r['cell_type_a'], r['cell_type_b']]) in cp, axis=1)].copy()
-    ss['pair_label'] = ss.apply(lambda r: f"{r['cell_type_a']} → "
-                               f"{r['cell_type_b']}", axis=1)
-    se = ss[['pair_label','contrast','logFC','P.Value','adj.P.Val',
-             't_test_P.Value','cell_type_a','cell_type_b']].round(4)
+    # 1. Spatial Proximity: Glial surround, all cell types center
+    se = spatial_diff[spatial_diff['cell_type_b'].isin(glial_cell_types)].copy()
+    se = se[['cell_type_a', 'cell_type_b', 'contrast', 'logFC', 
+             'P.Value', 'adj.P.Val']].round(6)
+
+    # 2. Signaling Pair Diff: Glial senders, all cell types receiver
+    we = cellchat_weight_df[
+        cellchat_weight_df['cell_type_a'].isin(glial_cell_types)].copy()
+    we['measure'] = 'strength'
     
-    def filt(df, m):
-        f = df[df.apply(lambda r: frozenset([r['cell_type_a'], 
-               r['cell_type_b']]) in cp, axis=1)].copy()
-        f['pair_label'] = f.apply(lambda r: f"{r['cell_type_a']} → "
-                                 f"{r['cell_type_b']}", axis=1)
-        f['measure'] = m
-        return f[['pair_label','contrast','measure','logFC',
-                 'cell_type_a','cell_type_b']].round(4)
+    ce = cellchat_count_df[
+        cellchat_count_df['cell_type_a'].isin(glial_cell_types)].copy()
+    ce['measure'] = 'count'
     
-    we = filt(cellchat_weight_df, 'strength')
-    ce = filt(cellchat_count_df, 'count')
     cce = pd.concat([we, ce])
+    cce['logFC_zscore'] = cce.groupby('measure')['logFC'].transform(
+        lambda x: (x - x.mean()) / x.std())
+    cce = cce[['cell_type_a', 'cell_type_b', 'contrast', 
+               'measure', 'logFC', 'logFC_zscore']].round(6)
+
+    ps_all = pathway_pair_diff_df[pathway_pair_diff_df['strength_diff'] != 0]
     
-    pe = []
-    for p, a, b in interaction_triplets:
-        pd_data = pathway_pair_diff_df[(pathway_pair_diff_df['pathway']==p)&
-            (((pathway_pair_diff_df['source']==a)&
-              (pathway_pair_diff_df['target']==b))|
-             ((pathway_pair_diff_df['source']==b)&
-              (pathway_pair_diff_df['target']==a)))].copy()
-        if not pd_data.empty:
-            pd_data['triplet_label'] = f"{p}: {a} ↔ {b}"
-            pe.append(pd_data[['triplet_label','pathway','contrast',
-                              'strength_diff','source','target']])
+    is_neuronal = lambda ct: ct.endswith(('Gaba', 'Glut'))
+    is_glial = lambda ct: ct.endswith('NN')
     
-    ps = pd.concat(pe).round(4) if pe else pd.DataFrame()
+    glial_mask = ps_all.apply(
+        lambda r: is_glial(r['source']) or is_glial(r['target']), axis=1)
+    neuron_mask = ps_all.apply(
+        lambda r: is_neuronal(r['source']) and is_neuronal(r['target']), axis=1)
     
-    stats = []
-    for p, a, b in interaction_triplets:
-        for c in ['PREG_vs_CTRL', 'POSTPART_vs_PREG']:
-            sr = ss[(ss['contrast']==c)&(ss['cell_type_a']==a)&
-                    (ss['cell_type_b']==b)]
-            wr = we[(we['contrast']==c)&(we['cell_type_a']==a)&
-                    (we['cell_type_b']==b)]
-            pr = ps[(ps['contrast']==c)&(ps['pathway']==p)&
-                    (((ps['source']==a)&(ps['target']==b))|
-                     ((ps['source']==b)&(ps['target']==a)))]
-            
-            stats.append({
-                'interaction': f"{p}: {a} ↔ {b}", 'contrast': c,
-                'spatial_logFC': sr['logFC'].iloc[0] if not sr.empty else None,
-                'spatial_pval': sr['P.Value'].iloc[0] if not sr.empty else None,
-                'spatial_padj': sr['adj.P.Val'].iloc[0] if not sr.empty else None,
-                'signaling_logFC': wr['logFC'].iloc[0] if not wr.empty else None,
-                'pathway_strength_diff': pr['strength_diff'].iloc[0] 
-                    if not pr.empty else None,
-                'pathway': p, 'cell_type_a': a, 'cell_type_b': b
-            })
+    ps = pd.concat([
+        ps_all[glial_mask], 
+        ps_all[neuron_mask].nlargest(15, 'strength_diff')
+    ])
+    ps['strength_diff_zscore'] = ((ps['strength_diff'] - ps['strength_diff'].mean()) 
+                                  / ps['strength_diff'].std())
+    ps = ps[['source', 'target', 'pathway', 'contrast', 
+             'strength_diff', 'strength_diff_zscore']].round(6)
     
-    sdf = pd.DataFrame(stats).round(4)
+    gp = tt_combined[['cell_type', 'dataset', 'contrast', 'logFC', 
+                      'P.Value', 'adj.P.Val']].round(6)
     
-    with pd.ExcelWriter(output_path, engine='openpyxl') as w:
-        sdf.to_excel(w, sheet_name='Summary', index=False)
-        se.to_excel(w, sheet_name='Spatial_Proximity', index=False)
-        cce.to_excel(w, sheet_name='CellType_Signaling', index=False)
-        if not ps.empty:
-            ps.to_excel(w, sheet_name='Pathway_Signaling', index=False)
+    # Write to Excel
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        se.to_excel(writer, sheet_name='Spatial_Proximity', index=False)
+        cce.to_excel(writer, sheet_name='CellType_Signaling', index=False)
+        ps.to_excel(writer, sheet_name='Pathway_Signaling', index=False)
+        gp.to_excel(writer, sheet_name='Global_Proportions', index=False)
         
         md = pd.DataFrame({
             'Analysis': ['Spatial Proximity','Cell-Type Signaling',
-                        'Pathway Signaling'],
+                        'Pathway Signaling','Global Proportions'],
             'Method': ['crumblr + variancePartition','CellChat spatial',
-                      'CellChat pathway'],
+                      'CellChat pathway','crumblr + variancePartition'],
             'Data_Type': ['MERFISH spatial coordinates','Curio scRNA-seq',
-                         'Curio scRNA-seq'],
+                         'Curio scRNA-seq','Curio + MERFISH'],
             'Key_Statistic': ['logFC (CLR transformed)',
                              'logFC (communication strength)',
-                             'strength_diff (pathway activity)']
+                             'strength_diff (pathway activity)',
+                             'logFC (cell type proportion)']
         })
-        md.to_excel(w, sheet_name='Methods', index=False)
+        md.to_excel(writer, sheet_name='Methods', index=False)
     
-    print(f"Stats exported: {output_path}")
-    print(f"Summary: {len(sdf)}, Spatial: {len(se)}, "
-          f"Signaling: {len(cce)}, Pathways: {len(ps)}")
-    return sdf
+    print(f"Stats exported to: {output_path}")
+    print(f"  - Spatial Proximity rows: {len(se)}")
+    print(f"  - CellType Signaling rows: {len(cce)}")
+    print(f"  - Pathway Signaling rows: {len(ps)}")
+    print(f"  - Global Proportions rows: {len(gp)}")
 
-ps = compile_paper_statistics(spatial_diff, cellchat_weight_df, 
-    cellchat_count_df, pathway_pair_diff_df, interaction_triplets_to_plot,
-    all_cell_type_pairs, f'{working_dir}/output/paper_statistics.xlsx')
-
-print("\n=== KEY PAPER STATISTICS ===")
-for _, r in ps.iterrows():
-    print(f"\n{r['interaction']} ({r['contrast']}):")
-    if pd.notna(r['spatial_logFC']):
-        print(f"  Spatial: logFC={r['spatial_logFC']:.3f}, "
-              f"p={r['spatial_pval']:.3e}")
-    if pd.notna(r['signaling_logFC']):
-        print(f"  Signaling: logFC={r['signaling_logFC']:.3f}")
-    if pd.notna(r['pathway_strength_diff']):
-        print(f"  Pathway: Δ={r['pathway_strength_diff']:.3f}")
-#endregion
-
+compile_paper_statistics(
+    spatial_diff=spatial_diff,
+    cellchat_weight_df=cellchat_weight_df,
+    cellchat_count_df=cellchat_count_df,
+    pathway_pair_diff_df=pathway_pair_diff_df,
+    glial_cell_types=selected_cell_types,
+    tt_combined=tt_combined,
+    output_path=f'{working_dir}/output/paper_statistics_comprehensive.xlsx'
+)
