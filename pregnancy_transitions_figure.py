@@ -5,7 +5,7 @@ import numpy as np
 from matplotlib.patches import FancyBboxPatch as Box,PathPatch
 from matplotlib.path import Path
 fig,axs=plt.subplots(3,1,figsize=(14,12))
-wdir='projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
+wdir='/home/karbabi/spatial-pregnancy-postpart'
 df=pl.read_csv(f'{wdir}/output/data/de_results_sig.csv')
 df=df.filter(pl.col('FDR')<0.05)
 p1=df.filter(pl.col('contrast')=='PREG_vs_CTRL')
