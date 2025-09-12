@@ -1,6 +1,8 @@
 import os
 import gc
 import re
+import warnings
+import requests
 import pickle as pkl
 import numpy as np
 import pandas as pd
@@ -8,9 +10,17 @@ import polars as pl
 import scanpy as sc
 import seaborn as sns
 import matplotlib.pyplot as plt
-from single_cell import SingleCell, Pseudobulk
+import matplotlib.gridspec as gridspec
 from utils import print_df
 from ryp import r, to_r, to_py
+from collections import Counter
+from goatools.obo_parser import GODag
+from matplotlib.cm import ScalarMappable
+from single_cell import SingleCell
+from matplotlib.colors import Normalize, ListedColormap
+from scipy.cluster.hierarchy import linkage, leaves_list, dendrogram, fcluster
+
+warnings.filterwarnings('ignore')
 
 plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
@@ -18,6 +28,8 @@ plt.rcParams['figure.dpi'] = 400
 
 working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 cell_type_col = 'subclass'
+
+#region Load data ##############################################################
 
 file = f'{working_dir}/output/data/exp_gene_dict.pkl'
 if not os.path.exists(file):
@@ -131,6 +143,10 @@ def populate_r_list(pb_object, r_list_name, gene_dict):
 populate_r_list(pb_preg_ctrl, 'pseudobulks_preg_ctrl', gene_dict)
 populate_r_list(pb_postpart_preg, 'pseudobulks_postpart_preg', gene_dict)
 
+#endregion 
+
+#region DEG analysis ###########################################################
+
 r('''
 suppressPackageStartupMessages({
     library(edgeR)
@@ -198,6 +214,9 @@ if (nrow(de_results) > 0) {
 
 de_results = to_py('de_results')
 de_results.write_csv(f'{working_dir}/output/data/de_results.csv')
+de_results\
+    .filter(pl.col('FDR') < 0.10)\
+    .write_csv(f'{working_dir}/output/data/de_results_sig.csv')
 
 for cell_type in de_results.select('cell_type').unique().to_series():
     print(f'\n{cell_type} - PREG_vs_CTRL - de_results:')
@@ -211,27 +230,32 @@ for cell_type in de_results.select('cell_type').unique().to_series():
                   (pl.col('contrast').eq('POSTPART_vs_PREG')))
           .sort('PValue').head(15))
 
-import polars as pl
-import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize, ListedColormap
-from matplotlib.cm import ScalarMappable
-import matplotlib.gridspec as gridspec
+#endregion #####################################################################
+
+#region DEG landscape ##########################################################
 
 FDR_CUTOFF = 0.1
-
 GENES_TO_LABEL = {
     #--- PREG_vs_CTRL: Coordinated response to pregnancy ---
-    ('PREG_vs_CTRL', 'Oligo NN'): ['Sgk1', 'Fkbp5', 'Hif3a', 'Ptgds'],
-    ('PREG_vs_CTRL', 'Microglia NN'): ['Ncf1', 'Abi3', 'Fkbp5'],
-    ('PREG_vs_CTRL', 'Astro-TE NN'): ['Cnr1', 'Fabp7'],
-    ('PREG_vs_CTRL', 'L2/3 IT CTX Glut'): ['Zbtb18', 'Fkbp5'],
-    ('PREG_vs_CTRL', 'L4/5 IT CTX Glut'): ['Hmgcs1', 'Dbi'],
-    ('PREG_vs_CTRL', 'L5 IT CTX Glut'): ['Glul', 'Slc6a11'],
-    ('PREG_vs_CTRL', 'LSX Nkx2-1 Gaba'): ['Prkca', 'Nfia'],
-    ('PREG_vs_CTRL', 'LSX Prdm12 Zeb2 Gaba'): ['Npas4', 'Gfra1'],
-    ('PREG_vs_CTRL', 'STR D1 Gaba'): ['Cnr1', 'Drd3'],
-    ('PREG_vs_CTRL', 'Sst Chodl Gaba'): ['Nos1'],
+    ('PREG_vs_CTRL', 'Oligo NN'): ['Sgk1', 'Hif3a', 'Zbtb16'],
+    ('PREG_vs_CTRL', 'Microglia NN'): ['Ccnd3', 'Fkbp5'],
+    ('PREG_vs_CTRL', 'Astro-TE NN'): ['Phyhd1', 'Fkbp5', 'Cnr1'],
+    ('PREG_vs_CTRL', 'L2/3 IT CTX Glut'): ['Zbtb18', 'Glul', 'Ckb', 'Cox6c'],
+    ('PREG_vs_CTRL', 'L4/5 IT CTX Glut'): ['Glul', 'Aldoc', 'Cox6c', 'Dbi'],
+    ('PREG_vs_CTRL', 'L5 IT CTX Glut'): ['Tshz2'],
+    ('PREG_vs_CTRL', 'L6 CT CTX Glut'): ['Sdk1'],
+    ('PREG_vs_CTRL', 'L6b CTX Glut'): ['Tshz2'],
+    ('PREG_vs_CTRL', 'L6b EPd Glut'): ['Rnf121'],
+    ('PREG_vs_CTRL', 'LSX Nkx2-1 Gaba'): ['Prkca', 'Pld5', 'Dach2', 'Nfia'],
+    ('PREG_vs_CTRL', 'LSX Prdm12 Zeb2 Gaba'): ['Cpa6', 'Hs6st3'],
+    ('PREG_vs_CTRL', 'STR D1 Gaba'): ['Cnr1', 'Rgs4', 'Drd3'],
+    ('PREG_vs_CTRL', 'STR D2 Gaba'): ['Cnr1', 'Rgs4'],
+    ('PREG_vs_CTRL', 'STR Prox1 Lhx6 Gaba'): ['Adarb2'],
+    ('PREG_vs_CTRL', 'Sst Gaba'): ['Dbi', 'Camk2n1'],
+    ('PREG_vs_CTRL', 'Sst Chodl Gaba'): ['Sdk1', 'Sst'],
     ('PREG_vs_CTRL', 'Pvalb Gaba'): ['Zbtb18'],
+    ('PREG_vs_CTRL', 'Vip Gaba'): ['Col25a1'],
+    ('PREG_vs_CTRL', 'Ependymal NN'): ['Pcdh15'],
 
     #--- POSTPART_vs_PREG: Rebound and adaptation after birth ---
     ('POSTPART_vs_PREG', 'Oligo NN'): ['Man1a', 'Slc38a2'],
@@ -244,7 +268,8 @@ GENES_TO_LABEL = {
     ('POSTPART_vs_PREG', 'Sst Gaba'): ['Cartpt'],
     ('POSTPART_vs_PREG', 'Sst Chodl Gaba'): ['Vgf', 'Rnf220'],
     ('POSTPART_vs_PREG', 'STR D2 Gaba'): ['Slit2', 'Nr4a3'],
-    ('POSTPART_vs_PREG', 'Lamp5 Gaba'): ['Npas3', 'Schip1']
+    ('POSTPART_vs_PREG', 'Lamp5 Gaba'): ['Npas3', 'Schip1'],
+    ('POSTPART_vs_PREG', 'Ependymal NN'): ['Pcdh15']
 }
 
 de_results = pl.read_csv(f'{working_dir}/output/data/de_results.csv')
@@ -319,10 +344,10 @@ for i, group_type in enumerate(major_types):
         counts = deg_counts.filter(pl.col('contrast').eq(contrast_name))\
             .to_pandas().set_index('cell_type')\
             .reindex(group_cell_types).fillna(0)
-        
+            
         y_pos = {ct: i for i, ct in enumerate(group_cell_types)}
         contrast_y = [y_pos[ct] for ct in contrast_df['cell_type']]
-        
+
         facecolors = cmap(norm(contrast_df['log10_fdr']))
         scatter = ax_main.scatter(
             x=contrast_df['logFC'], y=contrast_y, s=15,
@@ -363,12 +388,12 @@ for i, group_type in enumerate(major_types):
                             min_x = adjusted_x[-1] + gene_width
                             adjusted_x.append(max(ideal_x, min_x))
                     
-                    for i, r in enumerate(ct_data):
-                        ax_main.text(adjusted_x[i], label_y, r['gene'], 
+                    for i, record in enumerate(ct_data):
+                        ax_main.text(adjusted_x[i], label_y, record['gene'], 
                                     style='italic', fontsize=7,
                                     ha='center', va='bottom', zorder=150)
                         
-                        ax_main.plot([r['logFC'], adjusted_x[i]], 
+                        ax_main.plot([record['logFC'], adjusted_x[i]], 
                                     [ct_y, label_y],
                                     'k-', lw=0.6, alpha=0.8, zorder=90)
 
@@ -399,7 +424,7 @@ for i, group_type in enumerate(major_types):
         ax_bar.set_yticklabels(group_cell_types)
         ax_main.set_ylim(len(group_cell_types)-0.5, -0.5)
         ax_bar.set_ylim(len(group_cell_types)-0.5, -0.5)
-        
+            
         for ax in [ax_main, ax_bar]: ax.tick_params(length=0)
             
 for i, (ax1, ax1_bar, ax2, ax2_bar) in enumerate(all_axes):
@@ -437,201 +462,628 @@ plt.savefig(
 )
 plt.close()
 
+#endregion 
+
+#region Pathway analysis #######################################################
+
+de_results = pl.read_csv(f'{working_dir}/output/data/de_results.csv')
+to_r(de_results, 'de_results_r')
+to_r(working_dir, 'working_dir')
+
+r('''
+suppressPackageStartupMessages({
+    library(fgsea)
+    library(msigdbr)
+    library(dplyr)
+    library(tibble)
+})
+
+cache_file <- paste0(working_dir, "/output/data/m_df_themed.rds")
+if (!file.exists(cache_file)) {
+    m_df <- msigdbr(species = "Mus musculus", category = "C5")
+    theme_keywords <- list(
+        'Neuronal' = c(
+            'NEURO', 'SYNAP', 'AXON', 'DENDRITE', 'GLUTAMATE', 'GABA',
+            'CHOLINERGIC', 'DOPAMINERGIC', 'SEROTONERGIC', 'ADRENERGIC',
+            'ACTION_POTENTIAL', 'REGULATION_NEUROTRANSMITTER_LEVELS',
+            'REGULATION_SYNAPTIC_PLASTICITY', 'EXCITATORY_POSTSYNAPTIC',
+            'INHIBITORY_POSTSYNAPTIC'
+        ),
+        'Glial' = c(
+            'GLIA', 'MYELIN', 'ASTROCYTE', 'OLIGODENDROCYTE', 'MICROGLIA',
+            'REACTIVE_GLIOSIS', 'REGULATION_NEURON_GLIAL_COMMUNICATION',
+            'CNS_MYELIN_MAINTENANCE', 'GLIAL_CELL_MIGRATION', 'GLIOGENESIS'
+        ),
+        'Immune' = c(
+            'IMMUNE', 'INFLAMMATORY', 'CYTOKINE', 'INTERFERON',
+            'NEUROINFLAMMATORY', 'MICROGLIAL_CELL_MIGRATION',
+            'REGULATION_CYTOKINE_MEDIATED_SIGNALING', 'INNATE_IMMUNE'
+        ),
+        'Hormonal' = c(
+            'HORMONE', 'STEROID', 'ESTROGEN', 'PROGESTERONE', 'OXYTOCIN',
+            'CORTISOL', 'GLUCOCORTICOID', 'MINERALOCORTICOID',
+            'STEROID_HORMONE_BIOSYNTHETIC', 'REGULATION_HORMONE_SECRETION',
+            'CELLULAR_RESPONSE_HORMONE_STIMULUS'
+        ),
+        'Metabolic' = c(
+            'METABOLIC', 'LIPID', 'CHOLESTEROL', 'GLUCOSE_METABOLIC',
+            'ATP_METABOLIC', 'CELLULAR_RESPIRATION'
+        ),
+        'Plasticity_Dev' = c(
+            'NEUROGENESIS', 'PROLIFERATION', 'DENDRITIC_SPINE',
+            'DIFFERENTIATION', 'MIGRATION', 'APOPTOSIS',
+            'ADULT_NEUROGENESIS', 'AXON_GUIDANCE', 'SYNAPSE_ORGANIZATION',
+            'NEURON_PROJECTION_DEVELOPMENT'
+        ),
+        'Reproductive' = c(
+            'PROLACTIN', 'GALANIN', 'VASOPRESSIN', 'RELAXIN', 'KISSPEPTIN',
+            'GONADOTROPIN', 'LUTEINIZING', 'FOLLICLE_STIMULATING',
+            'GONADOTROPIN_RELEASING_HORMONE', 'REGULATION_OVULATION_CYCLE',
+            'PARTURITION', 'LACTATION'
+        ),
+        'Maternal_Social' = c(
+            'MATERNAL', 'PARENTAL', 'SOCIAL', 'OXYTOCIN_SIGNALING',
+            'SOCIAL_RECOGNITION', 'MATERNAL_AGGRESSIVE',
+            'RESPONSE_PHEROMONE'
+        ),
+        'Stress_Adaptation' = c(
+            'STRESS', 'CORTICOSTERONE', 'ADRENERGIC',
+            'REGULATION_HPA_AXIS', 'CELLULAR_RESPONSE_STRESS',
+            'GENERAL_ADAPTATION_SYNDROME'
+        ),
+        'Neurotransmitter' = c(
+            'DOPAMINE', 'SEROTONIN', 'ACETYLCHOLINE', 'NOREPINEPHRINE',
+            'NEUROTRANSMITTER_SECRETION', 'REGULATION_SYNAPTIC_VESICLE',
+            'NEUROTRANSMITTER_UPTAKE'
+        ),
+        'Growth_Factors' = c(
+            'GROWTH_FACTOR', 'NEUROTROPHIC', 'BDNF', 'NGF', 'IGF',
+            'INSULIN_LIKE', 'EPIDERMAL_GROWTH', 'FIBROBLAST_GROWTH',
+            'REGULATION_CELL_GROWTH', 'POSITIVE_REGULATION_NEURON_PROJECTION',
+            'CELLULAR_RESPONSE_GROWTH_FACTOR'
+        ),
+        'Cell_Cycle' = c(
+            'CELL_CYCLE', 'MITOTIC', 'DNA_REPLICATION', 'CHROMOSOME',
+            'SPINDLE', 'CYTOKINESIS', 'CELL_CYCLE_CHECKPOINT',
+            'REGULATION_CELL_CYCLE_PHASE_TRANSITION', 'DNA_REPAIR'
+        ),
+        'Vascular' = c(
+            'VASCULAR', 'VASCULATURE', 'ANGIOGENESIS', 'ENDOTHELIAL', 
+            'BLOOD_BRAIN_BARRIER', 'CAPILLARY', 'BLOOD_VESSEL', 
+            'VASOCONSTRICTION', 'ENDOTHELIAL_CELL_MIGRATION', 
+            'BRAIN_ANGIOGENESIS'
+        ),
+        'Circadian_Sleep' = c(
+            'CIRCADIAN', 'SLEEP', 'WAKE', 'MELATONIN', 'CLOCK',
+            'ENTRAINMENT_CIRCADIAN_CLOCK', 'REGULATION_SLEEP_CYCLE',
+            'RHYTHMIC_PROCESS'
+        ),
+        'Hypothalamic_Pituitary' = c(
+            'RELEASING_HORMONE', 'NEUROSECRETORY_SYSTEM_DEVELOPMENT',
+            'REGULATION_HORMONE_SECRETION', 'NEUROPEPTIDE_SIGNALING'
+        ),
+        'Ion_Transport' = c(
+            'CALCIUM', 'SODIUM', 'POTASSIUM', 'TRANSPORT',
+            'MEMBRANE_POTENTIAL', 'SYNAPTIC_VESICLE_EXOCYTOSIS',
+            'CALCIUM_MEDIATED_SIGNALING', 'ION_HOMEOSTASIS'
+        ),
+        'Epigenetic' = c(
+            'EPIGENETIC', 'METHYLATION', 'HISTONE', 'CHROMATIN',
+            'TRANSCRIPTIONAL', 'CHROMATIN_REMODELING',
+            'HISTONE_ACETYLATION', 'REGULATION_GENE_EXPRESSION_EPIGENETIC'
+        ),
+        'Protein_Dynamics' = c(
+            'PROTEIN_SYNTHESIS', 'TRANSLATION', 'RIBOSOMAL', 'PROTEASOME',
+            'UBIQUITIN', 'AUTOPHAGY', 'PROTEIN_FOLDING',
+            'REGULATION_TRANSLATION', 'ER_ASSOCIATED_PROTEIN_CATABOLIC'
+        ),
+        'Structural_ECM' = c(
+            'ADHESION', 'EXTRACELLULAR'
+        )
+    )
+    
+    all_keywords <- unlist(theme_keywords)
+    regex_pattern <- paste(all_keywords, collapse = "|")
+    
+    get_theme <- function(gs_name, themes) {
+        for (theme_name in names(themes)) {
+            if (any(sapply(themes[[theme_name]], grepl, gs_name, 
+                          ignore.case=TRUE))) {
+                return(theme_name)
+            }
+        }
+        return(NA_character_)
+    }
+    
+    m_df_themed <- m_df %>%
+        filter(grepl(regex_pattern, gs_name, ignore.case = TRUE)) %>%
+        rowwise() %>%
+        mutate(theme = get_theme(gs_name, theme_keywords)) %>%
+        ungroup() %>%
+        filter(!is.na(theme))
+    
+    saveRDS(m_df_themed, cache_file)
+} else {
+    m_df_themed <- readRDS(cache_file)
+}
+
+filtered_pathways <- m_df_themed %>% 
+    split(x = .$gene_symbol, f = .$gs_name)
+
+pathway_theme_lookup <- m_df_themed %>%
+    select(gs_name, theme) %>% 
+    distinct() %>% 
+    rename(pathway = gs_name)
+
+fgsea_results <- de_results_r %>%
+    group_by(cell_type, contrast) %>%
+    group_map(~ {
+        ranks <- .x %>%
+            mutate(rank = -log10(PValue) * sign(logFC)) %>%
+            arrange(desc(rank)) %>%
+            select(gene, rank) %>%
+            tibble::deframe()
+        
+        res <- fgsea(pathways = filtered_pathways, stats = ranks, 
+                    minSize=15)
+        
+        if (nrow(res) > 0) {
+            res %>% 
+                as_tibble() %>%
+                mutate(cell_type = .y$cell_type, contrast = .y$contrast) %>%
+                left_join(pathway_theme_lookup, by = "pathway")
+        } else {
+            tibble()
+        }
+    }) %>%
+    bind_rows()
+''')
+
+pathway_de_results_gsea = to_py('fgsea_results')
+
+pathway_de_results_gsea\
+    .write_parquet(f'{working_dir}/output/data/pathway_results_gsea.parquet')
+pathway_de_results_gsea\
+    .drop('leadingEdge')\
+    .filter(pl.col('padj') < 0.01)\
+    .write_csv(f'{working_dir}/output/data/pathway_results_gsea_sig.csv')
+
+
+pathway_de_results_gsea = pl.read_parquet(
+    f'{working_dir}/output/data/pathway_results_gsea.parquet')
+
+datasets = [
+    {
+        'name': 'glut',
+        'cell_types': ['L2/3 IT CTX Glut', 'L4/5 IT CTX Glut', 'L5 IT CTX Glut', 
+                       'L6 IT CTX Glut', 'L6 CT CTX Glut'],
+        'pathways': ['GOBP_SYNAPSE_ORGANIZATION',
+                     'GOBP_REGULATION_OF_TRANS_SYNAPTIC_SIGNALING',
+                     'GOBP_CHAPERONE_MEDIATED_PROTEIN_FOLDING',
+                     'GOBP_STEROID_METABOLIC_PROCESS',
+                     'GOBP_CELLULAR_RESPIRATION'],
+        'labels': ['Synapse Organization', 
+                   'Regulation of Trans-Synaptic Signaling',
+                   'Chaperone Mediated Protein Folding',
+                   'Steroid Metabolic Process',
+                   'Cellular Respiration']
+    },
+    {
+        'name': 'gaba',
+        'cell_types': ['Sst Gaba', 'Pvalb Gaba', 'Vip Gaba', 
+                       'Lamp5 Gaba', 'LSX Nkx2-1 Gaba'],
+        'pathways': ['GOBP_CELLULAR_RESPIRATION',
+                     'GOBP_GLIOGENESIS',
+                     'GOBP_REGULATION_OF_SYNAPTIC_PLASTICITY',
+                     'GOBP_CELL_CELL_ADHESION_VIA_PLASMA_MEMBRANE_ADHESION_MOLECULES',
+                     'GOBP_PROTON_TRANSMEMBRANE_TRANSPORT',
+                     'GOBP_NEURON_PROJECTION_ORGANIZATION'],
+        'labels': ['Cellular Respiration',
+                   'Gliogenesis',
+                   'Regulation of Synaptic Plasticity',
+                   'Cell-Cell Adhesion via PM Molecules',
+                   'Proton Transmembrane Transport',
+                   'Neuron Projection Organization']
+    },
+    {
+        'name': 'nn',
+        'cell_types': ['Endo NN', 'Astro-TE NN', 'Microglia NN', 
+                       'OPC NN', 'VLMC NN', 'Oligo NN'],
+        'pathways': ['GOBP_VASCULATURE_DEVELOPMENT',
+                     'GOBP_CELL_ADHESION',
+                     'GOBP_RESPONSE_TO_HORMONE',
+                     'GOBP_ATP_SYNTHESIS_COUPLED_ELECTRON_TRANSPORT',
+                     'GOBP_ENDOTHELIAL_CELL_MIGRATION'],
+        'labels': ['Vasculature Development', 'Cell Adhesion', 
+                   'Response to Hormone', 'ATP Synthesis Electron Transport',
+                   'Endothelial Cell Migration']
+    }
+]
+
+fig = plt.figure(figsize=(7, 14))
+gs = fig.add_gridspec(3, 2, hspace=0.60, wspace=0.15, 
+                      left=0.05, right=0.85, top=0.96, bottom=0.16)
+
+from matplotlib.colors import LinearSegmentedColormap
+seismic = plt.cm.get_cmap('seismic')
+n_colors = 256
+colors = seismic(np.linspace(0, 1, n_colors))
+white_range = 0.50
+center = n_colors // 2
+spread = int(n_colors * white_range)
+for i in range(center - spread, center + spread):
+    weight = 1 - abs(i - center) / spread
+    colors[i] = (1-weight) * colors[i] + weight * np.array([1, 1, 1, 1])
+custom_seismic = LinearSegmentedColormap.from_list('custom_seismic', colors)
+
+from scipy.cluster import hierarchy
+from scipy.spatial.distance import pdist
+
+all_matrices = []
+vmin_global = np.inf
+vmax_global = -np.inf
+
+for row_idx, ds in enumerate(datasets):
+    cell_types = ds['cell_types']
+    pathways = ds['pathways']
+    labels = ds['labels']
+    
+    es_matrix1 = np.full((len(pathways), len(cell_types)), np.nan)
+    sig_matrix1 = np.full((len(pathways), len(cell_types)), False)
+    es_matrix2 = np.full((len(pathways), len(cell_types)), np.nan)
+    sig_matrix2 = np.full((len(pathways), len(cell_types)), False)
+    
+    for contrast_idx, (contrast, es_mat, sig_mat) in enumerate([
+        ('PREG_vs_CTRL', es_matrix1, sig_matrix1),
+        ('POSTPART_vs_PREG', es_matrix2, sig_matrix2)
+    ]):
+        df = pathway_de_results_gsea.filter(
+            pl.col('cell_type').is_in(cell_types) & 
+            pl.col('pathway').is_in(pathways) &
+            pl.col('contrast').eq(contrast)
+        )
+        
+        for i, pathway in enumerate(pathways):
+            for j, cell_type in enumerate(cell_types):
+                data = df.filter(
+                    (pl.col('pathway') == pathway) & 
+                    (pl.col('cell_type') == cell_type)
+                )
+                if data.height > 0:
+                    row = data.row(0, named=True)
+                    es_mat[i, j] = row['ES']
+                    sig_mat[i, j] = row['padj'] < 0.01
+    
+    vmin_local = np.nanmin([np.nanmin(es_matrix1), np.nanmin(es_matrix2)])
+    vmax_local = np.nanmax([np.nanmax(es_matrix1), np.nanmax(es_matrix2)])
+    if not np.isnan(vmin_local):
+        vmin_global = min(vmin_global, vmin_local)
+    if not np.isnan(vmax_local):
+        vmax_global = max(vmax_global, vmax_local)
+    
+    avg_matrix = np.nanmean([es_matrix1, es_matrix2], axis=0)
+    avg_filled = np.where(~np.isnan(avg_matrix), avg_matrix, 0)
+    
+    row_order = list(range(avg_filled.shape[0]))
+    col_order = list(range(avg_filled.shape[1]))
+    
+    if avg_filled.shape[0] > 1:
+        row_linkage = hierarchy.linkage(pdist(avg_filled), method='average')
+        row_order = hierarchy.leaves_list(row_linkage)
+    if avg_filled.shape[1] > 1:
+        col_linkage = hierarchy.linkage(pdist(avg_filled.T), method='average')
+        col_order = hierarchy.leaves_list(col_linkage)
+    
+    es_matrix1 = es_matrix1[row_order, :][:, col_order]
+    es_matrix2 = es_matrix2[row_order, :][:, col_order]
+    sig_matrix1 = sig_matrix1[row_order, :][:, col_order]
+    sig_matrix2 = sig_matrix2[row_order, :][:, col_order]
+    
+    cell_types_ordered = [cell_types[i] for i in col_order]
+    labels_ordered = [labels[i] for i in row_order]
+    
+    ax1 = fig.add_subplot(gs[row_idx, 0])
+    ax2 = fig.add_subplot(gs[row_idx, 1])
+    
+    im1 = ax1.imshow(es_matrix1, cmap=custom_seismic, aspect='auto')
+    im2 = ax2.imshow(es_matrix2, cmap=custom_seismic, aspect='auto')
+    
+    for i in range(es_matrix1.shape[0]):
+        for j in range(es_matrix1.shape[1]):
+            if sig_matrix1[i, j]:
+                ax1.text(j, i, '*', ha='center', va='center', 
+                        fontsize=16, color='white', weight='bold')
+            if sig_matrix2[i, j]:
+                ax2.text(j, i, '*', ha='center', va='center', 
+                        fontsize=16, color='white', weight='bold')
+    
+    ax1.set_xticks(range(len(cell_types_ordered)))
+    ax1.set_xticklabels(cell_types_ordered, rotation=45, ha='right', fontsize=12)
+    ax2.set_xticks(range(len(cell_types_ordered)))
+    ax2.set_xticklabels(cell_types_ordered, rotation=45, ha='right', fontsize=12)
+    
+    ax1.set_yticks(range(len(labels_ordered)))
+    ax2.set_yticks(range(len(labels_ordered)))
+    
+    if row_idx == 0:
+        ax1.set_title('Pregnant vs Nulliparous', fontsize=14, pad=10)
+        ax2.set_title('Postpartum vs Pregnant', fontsize=14, pad=10)
+    
+    ax1.set_yticklabels([])
+    ax1.tick_params(axis='y', left=False)
+    ax1.tick_params(axis='x', labelrotation=45, pad=5)
+    
+    ax2.set_yticklabels(labels_ordered, fontsize=12)
+    ax2.tick_params(axis='y', labelright=True, labelleft=False, 
+                    right=True, left=False)
+    ax2.tick_params(axis='x', labelrotation=45, pad=5)
+    
+    all_matrices.append((im1, im2))
+
+vmax_global = max(abs(vmin_global), abs(vmax_global)) if vmax_global != -np.inf else 1
+
+for (im1, im2) in all_matrices:
+    im1.set_clim(-vmax_global, vmax_global)
+    im2.set_clim(-vmax_global, vmax_global)
+
+cax = fig.add_axes([0.25, 0.04, 0.4, 0.02])
+cbar = fig.colorbar(im2, cax=cax, orientation='horizontal')
+cbar.set_label('Enrichment Score', fontsize=10)
+cbar.ax.tick_params(labelsize=9)
+
+plt.savefig(f'{working_dir}/figures/dotplot_hybrid.png', 
+            dpi=300, bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/dotplot_hybrid.svg',
+            bbox_inches='tight')
+plt.close()
+
+#endregion
 
 
 
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+to_r(working_dir, 'working_dir')
 r('''
 suppressPackageStartupMessages({
     library(msigdbr)
     library(GSVA)
     library(limma)
+    library(edgeR)
     library(dplyr)
     library(purrr)
     library(tibble)
 })
-m_df <- msigdbr(
-    species = "Mus musculus", 
-    collection = "C5", 
-    subcategory = "GO:BP"
-)
-gobp_gene_sets <- m_df %>% 
+
+cache_file <- paste0(working_dir, "/output/data/m_df_themed.rds")
+if (!file.exists(cache_file)) {
+    m_df <- msigdbr(
+        species = "Mus musculus", category = "C5", subcategory = "GO:BP")
+    
+    theme_keywords <- list(
+        'Neuronal' = c(
+            'NEURO', 'SYNAP', 'AXON', 'DENDRITE', 'GLUTAMATE', 'GABA',
+            'CHOLINERGIC', 'DOPAMINERGIC', 'SEROTONERGIC', 'ADRENERGIC',
+            'ACTION_POTENTIAL', 'REGULATION_NEUROTRANSMITTER_LEVELS',
+            'REGULATION_SYNAPTIC_PLASTICITY', 'EXCITATORY_POSTSYNAPTIC',
+            'INHIBITORY_POSTSYNAPTIC'
+        ),
+        'Glial' = c(
+            'GLIA', 'MYELIN', 'ASTROCYTE', 'OLIGODENDROCYTE', 'MICROGLIA',
+            'REACTIVE_GLIOSIS', 'REGULATION_NEURON_GLIAL_COMMUNICATION',
+            'CNS_MYELIN_MAINTENANCE', 'GLIAL_CELL_MIGRATION', 'GLIOGENESIS'
+        ),
+        'Immune' = c(
+            'IMMUNE', 'INFLAMMATORY', 'CYTOKINE', 'INTERFERON',
+            'NEUROINFLAMMATORY', 'MICROGLIAL_CELL_MIGRATION',
+            'REGULATION_CYTOKINE_MEDIATED_SIGNALING', 'INNATE_IMMUNE'
+        ),
+        'Hormonal' = c(
+            'HORMONE', 'STEROID', 'ESTROGEN', 'PROGESTERONE', 'OXYTOCIN',
+            'CORTISOL', 'GLUCOCORTICOID', 'MINERALOCORTICOID',
+            'STEROID_HORMONE_BIOSYNTHETIC', 'REGULATION_HORMONE_SECRETION',
+            'CELLULAR_RESPONSE_HORMONE_STIMULUS'
+        ),
+        'Metabolic' = c(
+            'METABOLIC', 'LIPID', 'CHOLESTEROL', 'GLUCOSE_METABOLIC',
+            'ATP_METABOLIC', 'CELLULAR_RESPIRATION'
+        ),
+        'Plasticity_Dev' = c(
+            'NEUROGENESIS', 'PROLIFERATION', 'DENDRITIC_SPINE',
+            'DIFFERENTIATION', 'MIGRATION', 'APOPTOSIS',
+            'ADULT_NEUROGENESIS', 'AXON_GUIDANCE', 'SYNAPSE_ORGANIZATION',
+            'NEURON_PROJECTION_DEVELOPMENT'
+        ),
+        'Reproductive' = c(
+            'PROLACTIN', 'GALANIN', 'VASOPRESSIN', 'RELAXIN', 'KISSPEPTIN',
+            'GONADOTROPIN', 'LUTEINIZING', 'FOLLICLE_STIMULATING',
+            'GONADOTROPIN_RELEASING_HORMONE', 'REGULATION_OVULATION_CYCLE',
+            'PARTURITION', 'LACTATION'
+        ),
+        'Maternal_Social' = c(
+            'MATERNAL', 'PARENTAL', 'SOCIAL', 'OXYTOCIN_SIGNALING',
+            'SOCIAL_RECOGNITION', 'MATERNAL_AGGRESSIVE',
+            'RESPONSE_PHEROMONE'
+        ),
+        'Stress_Adaptation' = c(
+            'STRESS', 'CORTICOSTERONE', 'ADRENERGIC',
+            'REGULATION_HPA_AXIS', 'CELLULAR_RESPONSE_STRESS',
+            'GENERAL_ADAPTATION_SYNDROME'
+        ),
+        'Neurotransmitter' = c(
+            'DOPAMINE', 'SEROTONIN', 'ACETYLCHOLINE', 'NOREPINEPHRINE',
+            'NEUROTRANSMITTER_SECRETION', 'REGULATION_SYNAPTIC_VESICLE',
+            'NEUROTRANSMITTER_UPTAKE'
+        ),
+        'Growth_Factors' = c(
+            'GROWTH_FACTOR', 'NEUROTROPHIC', 'BDNF', 'NGF', 'IGF',
+            'INSULIN_LIKE', 'EPIDERMAL_GROWTH', 'FIBROBLAST_GROWTH',
+            'REGULATION_CELL_GROWTH', 'POSITIVE_REGULATION_NEURON_PROJECTION',
+            'CELLULAR_RESPONSE_GROWTH_FACTOR'
+        ),
+        'Cell_Cycle' = c(
+            'CELL_CYCLE', 'MITOTIC', 'DNA_REPLICATION', 'CHROMOSOME',
+            'SPINDLE', 'CYTOKINESIS', 'CELL_CYCLE_CHECKPOINT',
+            'REGULATION_CELL_CYCLE_PHASE_TRANSITION', 'DNA_REPAIR'
+        ),
+        'Vascular' = c(
+            'VASCULAR', 'VASCULATURE', 'ANGIOGENESIS', 'ENDOTHELIAL', 
+            'BLOOD_BRAIN_BARRIER', 'CAPILLARY', 'BLOOD_VESSEL', 
+            'VASOCONSTRICTION', 'ENDOTHELIAL_CELL_MIGRATION', 
+            'BRAIN_ANGIOGENESIS'
+        ),
+        'Circadian_Sleep' = c(
+            'CIRCADIAN', 'SLEEP', 'WAKE', 'MELATONIN', 'CLOCK',
+            'ENTRAINMENT_CIRCADIAN_CLOCK', 'REGULATION_SLEEP_CYCLE',
+            'RHYTHMIC_PROCESS'
+        ),
+        'Hypothalamic_Pituitary' = c(
+            'RELEASING_HORMONE', 'NEUROSECRETORY_SYSTEM_DEVELOPMENT',
+            'REGULATION_HORMONE_SECRETION', 'NEUROPEPTIDE_SIGNALING'
+        ),
+        'Ion_Transport' = c(
+            'CALCIUM', 'SODIUM', 'POTASSIUM', 'TRANSPORT',
+            'MEMBRANE_POTENTIAL', 'SYNAPTIC_VESICLE_EXOCYTOSIS',
+            'CALCIUM_MEDIATED_SIGNALING', 'ION_HOMEOSTASIS'
+        ),
+        'Epigenetic' = c(
+            'EPIGENETIC', 'METHYLATION', 'HISTONE', 'CHROMATIN',
+            'TRANSCRIPTIONAL', 'CHROMATIN_REMODELING',
+            'HISTONE_ACETYLATION', 'REGULATION_GENE_EXPRESSION_EPIGENETIC'
+        ),
+        'Protein_Dynamics' = c(
+            'PROTEIN_SYNTHESIS', 'TRANSLATION', 'RIBOSOMAL', 'PROTEASOME',
+            'UBIQUITIN', 'AUTOPHAGY', 'PROTEIN_FOLDING',
+            'REGULATION_TRANSLATION', 'ER_ASSOCIATED_PROTEIN_CATABOLIC'
+        ),
+        'Structural_ECM' = c(
+            'ADHESION', 'EXTRACELLULAR'
+        )
+    )
+    
+    get_theme <- function(gs_name, themes) {
+        for (theme_name in names(themes)) {
+            if (any(sapply(themes[[theme_name]], grepl, gs_name, 
+                          ignore.case=TRUE))) {
+                return(theme_name)
+            }
+        }
+        return(NA_character_)
+    }
+    
+    m_df_themed <- m_df %>%
+        rowwise() %>%
+        mutate(theme = get_theme(gs_name, theme_keywords)) %>%
+        ungroup() %>%
+        filter(!is.na(theme))
+    
+    saveRDS(m_df_themed, cache_file)
+} else {
+    m_df_themed <- readRDS(cache_file)
+}
+
+gobp_gene_sets <- m_df_themed %>% 
     split(x = .$gene_symbol, f = .$gs_name)
+
+pathway_theme_lookup <- m_df_themed %>%
+    select(gs_name, theme) %>% distinct() %>% rename(pathway = gs_name)
 
 run_differential_pathways <- function(
     pseudobulks, gene_sets, ref_level, contrast_str
 ) {
     imap_dfr(pseudobulks, function(element, cell_type_name) {
         tryCatch({
-            gsvapar <- gsvaParam(
-                element$counts, 
-                gene_sets, 
-                minSize = 10,
-            )
-            es <- gsva(gsvapar, verbose = FALSE)
+            y <- DGEList(counts = element$counts)
+            y <- calcNormFactors(y, method = 'TMM')
+            log_cpm <- cpm(y, log = TRUE, prior.count = 1)
             
+            gsvapar <- gsvaParam(log_cpm, gene_sets, minSize=10)
+            es <- gsva(gsvapar, verbose=FALSE)
+  
             targets <- element$obs
             all_levels <- unique(as.character(targets$condition))
             other_level <- all_levels[all_levels != ref_level]
             targets$group <- factor(
-                targets$condition, levels = c(ref_level, other_level)
-            )
+                targets$condition, levels = c(ref_level, other_level))
             if (n_distinct(targets$group) < 2) return(NULL)
-
+  
             design <- model.matrix(~ group, data = targets)
+  
             fit <- lmFit(es, design)
             fit <- eBayes(fit)
-            
-            topTable(fit, coef = 2, number = Inf, sort.by = "p") %>%
+            topTable(fit, coef=2, n=Inf, sort.by="p") %>%
                 as.data.frame() %>%
                 rownames_to_column("pathway") %>%
-                mutate(contrast = contrast_str)
-        }, error = function(e) {
-            warning(paste("Error in", cell_type_name, ":", e$message))
-            return(NULL)
-        })
+                mutate(contrast = contrast_str) %>%
+                left_join(pathway_theme_lookup, by = "pathway")
+        }, error = function(e) { NULL })
     }, .id = "cell_type")
 }
 
 pathway_de_preg_ctrl <- run_differential_pathways(
-    pseudobulks_preg_ctrl, gobp_gene_sets, "CTRL", "PREG_vs_CTRL"
-)
+    pseudobulks_preg_ctrl, gobp_gene_sets, "CTRL", "PREG_vs_CTRL")
 pathway_de_postpart_preg <- run_differential_pathways(
-    pseudobulks_postpart_preg, gobp_gene_sets, "PREG", "POSTPART_vs_PREG"
-)
+    pseudobulks_postpart_preg, gobp_gene_sets, "PREG", "POSTPART_vs_PREG")
+
 pathway_de_results <- bind_rows(
     pathway_de_preg_ctrl, pathway_de_postpart_preg) %>%
-    select(pathway, cell_type, contrast, logFC, P.Value, adj.P.Val)
+    select(pathway, theme, cell_type, contrast, logFC, P.Value, adj.P.Val)
 ''')
 
 pathway_de_results = to_py('pathway_de_results')
 
-import seaborn as sns
-import matplotlib.pyplot as plt
-import polars as pl
-from scipy.cluster.hierarchy import linkage, leaves_list
-import pandas as pd
-import numpy as np
+pathway_de_results\
+    .write_csv(f'{working_dir}/output/data/pathway_results_gsva.csv')
 
-df_filtered = pathway_de_results.clone()\
-    .with_columns(
-        pl.col('pathway').str.replace('GOBP_', '', literal=True),
-        pl.col('adj.P.Val').add(1e-300).log10()
-        .mul(pl.col('logFC').sign()).neg().alias('score'))\
-    .filter(
-        pl.col('adj.P.Val').lt(0.05).any().over('pathway'))
-
-pivot_preg_ctrl = df_filtered\
-    .filter(pl.col('contrast') == 'PREG_vs_CTRL')\
-    .pivot(index='cell_type', on='pathway', values='score')\
-    .to_pandas().set_index('cell_type').fillna(0)
-
-pivot_postpart_preg = df_filtered\
-    .filter(pl.col('contrast') == 'POSTPART_vs_PREG')\
-    .pivot(index='cell_type', on='pathway', values='score')\
-    .to_pandas().set_index('cell_type').fillna(0)
-
-annot_df = adata.obs[[cell_type_col, 'type']]\
-    .drop_duplicates()\
-    .rename(columns={cell_type_col: 'cell_type', 'type': 'Major Type'})\
-    .set_index('cell_type')
-
-type_order = ['Glut', 'Gaba', 'NN']
-final_row_order = []
-for t in type_order:
-    all_types_in_group = annot_df[annot_df['Major Type'] == t].index
-    existing_types = pivot_preg_ctrl.index.intersection(all_types_in_group)
-    if len(existing_types) == 0: continue
+for cell_type in pathway_de_results.select('cell_type').unique().to_series():
+    print(f'\n{cell_type} - PREG_vs_CTRL - pathway_de_results:')
+    filtered_df = pathway_de_results\
+        .filter((pl.col('cell_type').eq(cell_type)) & 
+                (pl.col('contrast').eq('PREG_vs_CTRL')))\
+        .sort('P.Value').head(15)
+    with pl.Config(fmt_str_lengths=1000):
+        print(filtered_df)
     
-    group_data = pivot_preg_ctrl.loc[existing_types]
-    if len(existing_types) > 1:
-        link = linkage(group_data.fillna(0), method='average')
-        order = leaves_list(link)
-        final_row_order.extend(group_data.index[order])
-    else:
-        final_row_order.extend(existing_types)
-
-combined_pivot = pivot_preg_ctrl.add(pivot_postpart_preg, fill_value=0)
-col_link = linkage(combined_pivot.T.fillna(0), method='average')
-final_col_order = combined_pivot.columns[leaves_list(col_link)]
-
-mat1 = pivot_preg_ctrl.reindex(index=final_row_order, columns=final_col_order)
-mat2 = pivot_postpart_preg.reindex(index=final_row_order, columns=final_col_order)
-
-type_boundaries = annot_df.loc[final_row_order, 'Major Type']\
-    .ne(annot_df.loc[final_row_order, 'Major Type'].shift()).cumsum()
-gap_indices = np.where(type_boundaries.diff() > 0)[0]
-
-def insert_gaps(df, indices):
-    for i in sorted(indices, reverse=True):
-        gap_row = [[np.nan] * df.shape[1]]
-        df = pd.concat([
-            df.iloc[:i],
-            pd.DataFrame(gap_row, columns=df.columns, index=['']),
-            df.iloc[i:]
-        ])
-    return df
-
-mat1_gapped = insert_gaps(mat1, gap_indices)
-mat2_gapped = insert_gaps(mat2, gap_indices)
-
-fig, axes = plt.subplots(
-    1, 2, figsize=(8, 12), sharey=True,
-    gridspec_kw={'width_ratios': [1, 1], 'wspace': 0.05}
-)
-max_val = 2
-
-sns.heatmap(
-    mat1_gapped, ax=axes[0], cmap='seismic', center=0,
-    vmin=-max_val, vmax=max_val, xticklabels=False, cbar=False
-)
-axes[0].tick_params(left=False, right=False)
-axes[0].set_title('PREG vs CTRL', fontsize=16)
-axes[0].set_ylabel('Cell Type', fontsize=14)
-
-sns.heatmap(
-    mat2_gapped, ax=axes[1], cmap='seismic', center=0,
-    vmin=-max_val, vmax=max_val, xticklabels=False, cbar=False
-)
-axes[1].tick_params(left=False, right=False)
-axes[1].set_title('POSTPART vs PREG', fontsize=16)
-axes[1].set_ylabel('')
-
-norm = plt.Normalize(vmin=-max_val, vmax=max_val)
-sm = plt.cm.ScalarMappable(cmap="seismic", norm=norm)
-sm.set_array([])
-
-cbar_ax = fig.add_axes([0.92, 0.6, 0.02, 0.2])
-cbar = fig.colorbar(sm, cax=cbar_ax)
-cbar.set_label('Significance Score', size=12)
-
-os.makedirs(f'{working_dir}/figures', exist_ok=True)
-plt.savefig(
-    f'{working_dir}/figures/tmp.png', dpi=300, bbox_inches='tight')
-
-plt.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    print(f'\n{cell_type} - POSTPART_vs_PREG - pathway_de_results:')
+    filtered_df = pathway_de_results\
+        .filter((pl.col('cell_type').eq(cell_type)) & 
+                (pl.col('contrast').eq('POSTPART_vs_PREG')))\
+        .sort('P.Value').head(15)
+    with pl.Config(fmt_str_lengths=1000):
+        print(filtered_df)
 
 
 
@@ -704,3 +1156,5 @@ for cell_type, (X, obs, var) in pb_curio.items():
     ''')
 
 de_table = pl.read_csv('DE_results_EdgeR.csv')
+
+
