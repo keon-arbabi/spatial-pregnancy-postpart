@@ -883,8 +883,7 @@ plot_trait_ranking(output_dir, figures_dir, conditions)
 plot_gwas_heatmap(adata, output_dir, figures_dir, conditions, traits)
 
 results = analyze_trait_associations(output_dir, conditions, ['MDD'])
-
-results.to_csv(f'{figures_dir}/MDD_association_summary.csv', index=False)
+# results.to_csv(f'{working_dir}/output/data/curio/MDD_association_summary.csv', index=False)
 print(f'\nKruskal-Wallis test results:')
 kruskal_results = results[['trait', 'annotation', 'kruskal_p']]\
     .drop_duplicates().sort_values('kruskal_p')

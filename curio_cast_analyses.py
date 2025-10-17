@@ -631,12 +631,19 @@ for _, (source_sample, target_sample) in source_target_list.items():
     print(list_ts[target_sample])
     del adata_subset; gc.collect()
 
+adata_ref = sc.read_h5ad(
+    f'{working_dir}/output/data/adata_ref_zeng_raw.h5ad')
+adata_comb.obs['parcellation_division'] = adata_comb.obs.index.map(
+    adata_ref.obs['parcellation_division']).fillna(None)
+
 # transfer cell type
 new_obs_list = []
 for sample, (source_sample, target_sample) in source_target_list.items():
     project_ind, project_weight, cdists, physical_dist = list_ts[sample]
-    source_obs = adata_comb.obs[adata_comb.obs[batch_key] == source_sample].copy()
-    target_obs = adata_comb.obs[adata_comb.obs[batch_key] == target_sample].copy()
+    source_obs = adata_comb.obs[
+        adata_comb.obs[batch_key] == source_sample].copy()
+    target_obs = adata_comb.obs[
+        adata_comb.obs[batch_key] == target_sample].copy()
     target_index = target_obs.index
     target_obs = target_obs.reset_index(drop=True)
     
@@ -649,7 +656,7 @@ for sample, (source_sample, target_sample) in source_target_list.items():
         target_obs.loc[i, 'avg_cdist'] = np.mean(cdists[i][:k])
         target_obs.loc[i, 'avg_pdist'] = np.mean(physical_dist[i][:k])
     
-    for col in ['class', 'subclass']:
+    for col in ['class', 'subclass', 'parcellation_division']:
         source_labels = source_obs[col].to_numpy()
         neighbor_labels = source_labels[project_ind]
         cell_types = []
@@ -664,12 +671,9 @@ for sample, (source_sample, target_sample) in source_target_list.items():
                                          for l in winners])])
             confidences.append(np.sum(top_k == cell_type) / k)
             cell_types.append(cell_type)
-        
+
         target_obs[col] = cell_types
         target_obs[f'{col}_confidence'] = confidences
-        target_obs[f'{col}_color'] = target_obs[col].map(
-            dict(zip(source_obs[col], source_obs[f'{col}_color']))
-        )
     
     new_obs_list.append(target_obs.set_index(target_index))
 
@@ -687,6 +691,24 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
+
+cells_joined = pd.read_csv(
+  'projects/rrg-wainberg/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/'
+  '20231215/views/cells_joined.csv')
+color_mappings = {
+   'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
+                     cells_joined['class_color'])),
+   'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+       cells_joined['subclass'].str.replace('/', '_'), 
+       cells_joined['subclass_color'])).items()},
+   'parcellation_division': {
+       **dict(zip(
+           cells_joined['parcellation_division'], 
+           cells_joined['parcellation_division_color'])),
+       'fiber tracts ': '#CCCCCC',
+       'ventricular systems': '#AAAAAA'
+   }
+}
 
 # add new obs columns
 adata_query = sc.read_h5ad(
@@ -893,10 +915,7 @@ obs_index = adata_i.obs.index
 
 # perform corrections for both levels
 for level in ['class', 'subclass']:
-    # store original labels
     adata_i.obs[f'original_{level}'] = adata_i.obs[level].copy()
-    
-    # add boolean column to track corrections
     adata_i.obs[f'{level}_corrected'] = False
     
     # recalculate local confidence with new neighbors
@@ -952,6 +971,139 @@ print(f'dropped {cells_dropped} cells ({cells_dropped/connectivity_before*100:.1
       f'poorly connected')
 print(f'final cells after all filtering: {len(adata_i)}')
 
+# plot umaps 
+fig, axes = plt.subplots(5, 2, figsize=(20, 40))
+size = 8
+sc.pl.umap(adata_i, color='original_class', size=size, ax=axes[0,0], 
+           show=False, legend_loc='none', title='original class')
+sc.pl.umap(adata_i, color='class', size=size, ax=axes[0,1], 
+           show=False, title='corrected class')
+sc.pl.umap(adata_i, color='original_subclass', size=size, ax=axes[1,0], 
+           show=False, legend_loc='none', title='original subclass')
+sc.pl.umap(adata_i, color='subclass', size=size, ax=axes[1,1], 
+           show=False, title='corrected subclass')
+sc.pl.umap(adata_i, color='class_corrected', size=size, ax=axes[2,0], 
+           show=False, title='class corrected cells', 
+           color_map='RdBu_r')
+sc.pl.umap(adata_i, color='subclass_corrected', size=size, ax=axes[2,1], 
+           show=False, title='subclass corrected cells', 
+           color_map='RdBu_r')
+sc.pl.umap(adata_i, color='global_conf', size=size, ax=axes[3,0], 
+           show=False, title='global confidence')
+sc.pl.umap(adata_i, color='class_local_conf', size=size, ax=axes[3,1], 
+           show=False, title='class local confidence')
+sc.pl.umap(adata_i, color='subclass_local_conf', size=size, ax=axes[4,0], 
+           show=False, title='subclass local confidence')
+plt.savefig(f'{working_dir}/figures/curio/umap_correction.png', dpi=200)
+
+# correct parcellation division
+from sklearn.neighbors import NearestNeighbors
+
+adata_ii = adata_i.copy()
+coords = adata_ii.obs[['x_ffd', 'y_ffd']].values
+nbrs = NearestNeighbors(n_neighbors=11, algorithm='ball_tree').fit(coords)
+_, indices = nbrs.kneighbors(coords)
+indices = indices[:, 1:]
+
+parcel_labels = adata_ii.obs['parcellation_division'].values
+spatial_coherence = np.zeros(len(adata_ii))
+
+for i in range(len(adata_ii)):
+    neighbor_labels = parcel_labels[indices[i]]
+    spatial_coherence[i] = np.mean(neighbor_labels == parcel_labels[i])
+
+adata_ii.obs['parcellation_spatial_coherence'] = spatial_coherence
+adata_ii.obs['parcellation_corrected'] = False
+
+region_mapping = {
+    'Isocortex': 'Isocortex', 'STR': 'STR', 'OLF': 'OLF', 
+    'HY': 'HY', 'PAL': 'PAL',
+    'CTXsp': 'Isocortex', 'TH': 'OLF', 'HPF': 'STR',
+    'lfbs': 'fiber tracts ', 'mfbs': 'fiber tracts ',
+    'cm': 'fiber tracts ', 'scwm': 'fiber tracts ',
+    'VL': 'ventricular systems', 'V3': 'ventricular systems',
+}
+
+corrections = 0
+for i in range(len(adata_ii)):
+    coherence_threshold = 0.75
+    majority_threshold = 0.45
+    
+    if str(parcel_labels[i]) in ['VL', 'lfbs']:
+        coherence_threshold = 0.3
+        majority_threshold = 0.7
+    
+    if spatial_coherence[i] < coherence_threshold:
+        neighbor_labels = parcel_labels[indices[i]]
+        unique_labels, counts = np.unique(neighbor_labels, return_counts=True)
+        majority_label = unique_labels[np.argmax(counts)]
+        majority_fraction = counts[np.argmax(counts)] / len(neighbor_labels)
+        
+        if (majority_fraction > majority_threshold and 
+            majority_label != parcel_labels[i]):
+            
+            mapped_label = region_mapping.get(majority_label, majority_label)
+            cell_broad = adata_ii.obs.iloc[i]['broad']
+            cell_subclass = adata_ii.obs.iloc[i]['subclass']
+            
+            valid = True
+            if mapped_label == 'fiber tracts ':
+                valid = (cell_broad == 'non-neuronal' or 
+                        cell_subclass == '045 OB-STR-CTX Inh IMN')
+            elif mapped_label == 'ventricular systems':
+                valid = (cell_subclass in ['045 OB-STR-CTX Inh IMN', 
+                                          '111 TRS-BAC Sln Glut'] or
+                        cell_broad == 'non-neuronal')
+            
+            if valid:
+                adata_ii.obs.iloc[i, adata_ii.obs.columns.get_loc(
+                    'parcellation_division')] = majority_label
+                adata_ii.obs.iloc[i, adata_ii.obs.columns.get_loc(
+                    'parcellation_corrected')] = True
+                corrections += 1
+
+adata_ii.obs['parcellation_division'] = (
+    adata_ii.obs['parcellation_division'].map(region_mapping))
+adata_i.obs['parcellation_division'] = (
+    adata_i.obs['parcellation_division'].map(region_mapping))
+
+print(f'\nparcellation corrections: {corrections} '
+      f'({corrections/len(adata_ii)*100:.1f}% of cells)')
+print('\ncells per region:')
+for region, count in adata_ii.obs['parcellation_division']\
+    .value_counts().items():
+    print(f'{region}: {count:,}')
+
+# plot parcellation division
+regions_sorted = adata_ii.obs['parcellation_division'].value_counts().index
+parcel_colors = color_mappings['parcellation_division']
+
+samples = ['CTRL_1', 'CTRL_2', 'CTRL_3', 'PREG_1', 'PREG_2', 'PREG_3',
+           'POSTPART_1', 'POSTPART_2']
+fig, axes = plt.subplots(2, 4, figsize=(22, 10))
+axes = axes.flatten()
+
+for idx, sample in enumerate(samples):
+    obs = adata_ii.obs[adata_ii.obs['sample'] == sample]
+    colors = [parcel_colors.get(p, '#000000') for p in 
+              obs['parcellation_division']]
+    axes[idx].scatter(obs['x_ffd'], obs['y_ffd'], c=colors, s=8, 
+                     linewidths=0, rasterized=True)
+    axes[idx].set_title(sample, fontsize=14)
+    axes[idx].set_aspect('equal')
+    axes[idx].axis('off')
+
+from matplotlib.patches import Patch
+legend_elements = [Patch(facecolor=parcel_colors.get(r, '#000000'), label=r) 
+                  for r in regions_sorted]
+fig.legend(handles=legend_elements, loc='center left', 
+          bbox_to_anchor=(1, 0.5), fontsize=11, frameon=False)
+
+plt.tight_layout(rect=[0, 0, 0.95, 1])
+plt.savefig(f'{working_dir}/figures/curio/parcellation_division_all.png',
+            dpi=300, bbox_inches='tight')
+plt.close()
+
 '''
 total cells dropped: 21629 (18.8%)
 cells after filtering: 93217
@@ -967,43 +1119,23 @@ total subclass corrections: 8744 (11.2% of cells)
 
 dropped 1618 cells (2.1%) poorly connected
 final cells after all filtering: 76108
+
+parcellation corrections: 10177 (13.4% of cells)
+cells per region:
+Isocortex: 33,213
+STR: 29,047
+PAL: 4,490
+OLF: 4,151
+HY: 1,878
+
 '''
-
-# plot results for both levels
-fig, axes = plt.subplots(5, 2, figsize=(20, 40))
-size = 8
-sc.pl.umap(adata_i, color='original_class', size=size, ax=axes[0,0], 
-           show=False, legend_loc='none', title='original class')
-sc.pl.umap(adata_i, color='class', size=size, ax=axes[0,1], 
-           show=False, title='corrected class')
-sc.pl.umap(adata_i, color='original_subclass', size=size, ax=axes[1,0], 
-           show=False, legend_loc='none', title='original subclass')
-sc.pl.umap(adata_i, color='subclass', size=size, ax=axes[1,1], 
-           show=False, title='corrected subclass')
-
-# add plots to show which cells were corrected
-sc.pl.umap(adata_i, color='class_corrected', size=size, ax=axes[2,0], 
-           show=False, title='class corrected cells', 
-           color_map='RdBu_r')
-sc.pl.umap(adata_i, color='subclass_corrected', size=size, ax=axes[2,1], 
-           show=False, title='subclass corrected cells', 
-           color_map='RdBu_r')
-
-# confidence plots
-sc.pl.umap(adata_i, color='global_conf', size=size, ax=axes[3,0], 
-           show=False, title='global confidence')
-sc.pl.umap(adata_i, color='class_local_conf', size=size, ax=axes[3,1], 
-           show=False, title='class local confidence')
-sc.pl.umap(adata_i, color='subclass_local_conf', size=size, ax=axes[4,0], 
-           show=False, title='subclass local confidence')
-plt.savefig(f'{working_dir}/figures/curio/umap_correction.png', dpi=200)
-
 # update original adata
 adata_query = adata_query[adata_i.obs.index].copy()
 adata_query.obs['class'] = adata_i.obs['class']
 adata_query.obs['subclass'] = adata_i.obs['subclass']
 adata_query.obs['class_corrected'] = adata_i.obs['class_corrected']
 adata_query.obs['subclass_corrected'] = adata_i.obs['subclass_corrected']
+adata_query.obs['parcellation_division'] = adata_ii.obs['parcellation_division']
 
 # keep cell types with at least 5 cells in at least 2 samples per condition
 min_cells, min_samples = 5, 2
@@ -1066,9 +1198,11 @@ import pandas as pd
 import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.patches import Patch
 
 plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
+plt.rcParams['figure.dpi'] = 400
 
 working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 
@@ -1080,15 +1214,22 @@ color_mappings = {
                      cells_joined['class_color'])),
    'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
        cells_joined['subclass'].str.replace('/', '_'), 
-       cells_joined['subclass_color'])).items()}
+       cells_joined['subclass_color'])).items()},
+   'parcellation_division': {
+       **dict(zip(
+           cells_joined['parcellation_division'], 
+           cells_joined['parcellation_division_color'])),
+       'fiber tracts ': '#CCCCCC',
+       'ventricular systems': '#AAAAAA'
+   }
 }
 
 adata_query = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_curio_final.h5ad')
 
-for level in ['class', 'subclass']:
+for level in ['class', 'subclass', 'parcellation_division']:
     # umap
-    fig, ax = plt.subplots(figsize=(10, 10))
+    fig, ax = plt.subplots(figsize=(8, 10))
     scatter = ax.scatter(
         adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
         c=[color_mappings[level][c] for c in adata_query.obs[level]],
@@ -1107,11 +1248,11 @@ for level in ['class', 'subclass']:
     # spatial exemplar 
     sample = 'CTRL_2'
     plot_color = adata_query[(adata_query.obs['sample'] == sample)].obs
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(8, 10))
     scatter = ax.scatter(
         plot_color['x_ffd'], plot_color['y_ffd'],
         c=[color_mappings[level][c] for c in plot_color[level]], 
-        s=16, linewidths=0, rasterized=True)
+        s=24, linewidths=0, rasterized=True)
     ax.set_aspect('equal')
     ax.axis('off')
     plt.tight_layout()
@@ -1119,9 +1260,24 @@ for level in ['class', 'subclass']:
                 dpi=300, bbox_inches='tight')
     plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.svg',
                 format='svg', bbox_inches='tight')
-    plt.savefig(f'{working_dir}/figures/curio/spatial_example_{level}.pdf',
-                bbox_inches='tight')
     plt.close()
+
+parcel_regions = ['Isocortex', 'STR', 'PAL', 'OLF', 'HY', 
+                  'fiber tracts ', 'ventricular systems']
+parcel_colors_leg = color_mappings['parcellation_division']
+
+fig, ax = plt.subplots(figsize=(1, 10))
+ax.axis('off')
+legend_elements = [Patch(facecolor=parcel_colors_leg.get(r, '#000000'), 
+                        label=r.strip()) for r in parcel_regions]
+ax.legend(handles=legend_elements, loc='center right', ncol=1, frameon=False, 
+         fontsize=12, markerfirst=False)
+plt.tight_layout()
+plt.savefig(f'{working_dir}/figures/curio/parcellation_division_legend.png',
+            bbox_inches='tight', dpi=300)
+plt.savefig(f'{working_dir}/figures/curio/parcellation_division_legend.svg',
+            format='svg', bbox_inches='tight')
+plt.close()
 
 # create multi-sample plots
 adata_comb = sc.read_h5ad(

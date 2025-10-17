@@ -2,7 +2,6 @@ import os
 import gc
 import re
 import warnings
-import requests
 import pickle as pkl
 import numpy as np
 import pandas as pd
@@ -13,8 +12,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from utils import print_df
 from ryp import r, to_r, to_py
-from collections import Counter
-from goatools.obo_parser import GODag
 from matplotlib.cm import ScalarMappable
 from single_cell import SingleCell
 from matplotlib.colors import Normalize, ListedColormap
@@ -26,7 +23,7 @@ plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
 plt.rcParams['figure.dpi'] = 400
 
-working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
+working_dir = '/home/karbabi/spatial-pregnancy-postpart'
 cell_type_col = 'subclass'
 
 #region Load data ##############################################################
@@ -119,21 +116,17 @@ pb_postpart_preg = pb_curio.filter_obs(
 def populate_r_list(pb_object, r_list_name, gene_dict):
     r(f'{r_list_name} <- list()')
     for cell_type, (X, obs, var) in pb_object.items():
-        genes_to_keep = gene_dict.get(cell_type)
+        genes_to_keep = gene_dict.get(cell_type) 
         if not genes_to_keep:
-            continue
-        
+            print(f'no genes filtered for {cell_type}')
+            genes_to_keep = var['gene_symbol'].to_list()
         var_mask = var['gene_symbol'].is_in(genes_to_keep)
         var_filtered = var.filter(var_mask)
-        if var_filtered.height == 0:
-            continue
-        
         gene_indices = var.with_row_index().filter(var_mask)['index']
         X_filtered = X[:, gene_indices]
-        
+        to_r(obs, 'obs')
         to_r(cell_type, 'cell_type')
         to_r(X_filtered, 'X', colnames=var_filtered['gene_symbol'])
-        to_r(obs, 'obs')
         r(f'''
         counts <- t(X)
         element <- list(counts = counts, obs = obs)
@@ -213,6 +206,7 @@ if (nrow(de_results) > 0) {
 ''')
 
 de_results = to_py('de_results')
+
 de_results.write_csv(f'{working_dir}/output/data/de_results.csv')
 de_results\
     .filter(pl.col('FDR') < 0.10)\
@@ -236,40 +230,45 @@ for cell_type in de_results.select('cell_type').unique().to_series():
 
 FDR_CUTOFF = 0.1
 GENES_TO_LABEL = {
-    #--- PREG_vs_CTRL: Coordinated response to pregnancy ---
-    ('PREG_vs_CTRL', 'Oligo NN'): ['Sgk1', 'Hif3a', 'Zbtb16'],
-    ('PREG_vs_CTRL', 'Microglia NN'): ['Ccnd3', 'Fkbp5'],
-    ('PREG_vs_CTRL', 'Astro-TE NN'): ['Phyhd1', 'Fkbp5', 'Cnr1'],
-    ('PREG_vs_CTRL', 'L2/3 IT CTX Glut'): ['Zbtb18', 'Glul', 'Ckb', 'Cox6c'],
-    ('PREG_vs_CTRL', 'L4/5 IT CTX Glut'): ['Glul', 'Aldoc', 'Cox6c', 'Dbi'],
-    ('PREG_vs_CTRL', 'L5 IT CTX Glut'): ['Tshz2'],
-    ('PREG_vs_CTRL', 'L6 CT CTX Glut'): ['Sdk1'],
-    ('PREG_vs_CTRL', 'L6b CTX Glut'): ['Tshz2'],
-    ('PREG_vs_CTRL', 'L6b EPd Glut'): ['Rnf121'],
-    ('PREG_vs_CTRL', 'LSX Nkx2-1 Gaba'): ['Prkca', 'Pld5', 'Dach2', 'Nfia'],
-    ('PREG_vs_CTRL', 'LSX Prdm12 Zeb2 Gaba'): ['Cpa6', 'Hs6st3'],
-    ('PREG_vs_CTRL', 'STR D1 Gaba'): ['Cnr1', 'Rgs4', 'Drd3'],
-    ('PREG_vs_CTRL', 'STR D2 Gaba'): ['Cnr1', 'Rgs4'],
-    ('PREG_vs_CTRL', 'STR Prox1 Lhx6 Gaba'): ['Adarb2'],
-    ('PREG_vs_CTRL', 'Sst Gaba'): ['Dbi', 'Camk2n1'],
-    ('PREG_vs_CTRL', 'Sst Chodl Gaba'): ['Sdk1', 'Sst'],
-    ('PREG_vs_CTRL', 'Pvalb Gaba'): ['Zbtb18'],
-    ('PREG_vs_CTRL', 'Vip Gaba'): ['Col25a1'],
+    # Contrast: Pregnant vs. Nulliparous
+    ('PREG_vs_CTRL', 'Oligo NN'): ['Sgk1', 'Hif3a', 'Fkbp5', 'Hccs'],
+    ('PREG_vs_CTRL', 'Microglia NN'): ['Ccnd3', 'Fkbp5', 'Ndufa5'],
+    ('PREG_vs_CTRL', 'Astro-TE NN'): ['Mfsd2a', 'Fkbp5', 'Cnr1'],
+    ('PREG_vs_CTRL', 'Endo NN'): ['Kdr', 'Ccn2', 'Igfbp3', 'Zbtb16'],
     ('PREG_vs_CTRL', 'Ependymal NN'): ['Pcdh15'],
+    ('PREG_vs_CTRL', 'OPC NN'): ['Cox6c'],
+    ('PREG_vs_CTRL', 'L2/3 IT CTX Glut'): ['Zbtb18', 'Ckb', 'Cox6c', 'Hspa9'],
+    ('PREG_vs_CTRL', 'L4/5 IT CTX Glut'): ['Hmgcs1'],
+    ('PREG_vs_CTRL', 'L5 IT CTX Glut'): ['Tshz2', 'Glul'],
+    ('PREG_vs_CTRL', 'L6 CT CTX Glut'): ['Sdk1'],
+    ('PREG_vs_CTRL', 'L6 IT CTX Glut'): ['Lsamp'],
+    ('PREG_vs_CTRL', 'CLA-EPd-CTX Car3 Glut'): ['Ckb', 'Atp1a2', 'Cox6c', 'Glul'],
+    ('PREG_vs_CTRL', 'Pvalb Gaba'): ['Aldoc'],
+    ('PREG_vs_CTRL', 'Sst Gaba'): ['Hmgcs1'],
+    ('PREG_vs_CTRL', 'Vip Gaba'): ['Cnr1'],
+    ('PREG_vs_CTRL', 'LSX Nkx2-1 Gaba'): ['Prkca', 'Slc1a2', 'Slc4a4'],
+    ('PREG_vs_CTRL', 'NDB-SI-MA-STRv Lhx8 Gaba'): ['Slc6a11', 'Slc1a2'],
+    ('PREG_vs_CTRL', 'Sst Chodl Gaba'): ['Sdk1', 'Gabrg3'],
+    ('PREG_vs_CTRL', 'STR D1 Gaba'): ['Cnr1', 'Ckb'],
+    ('PREG_vs_CTRL', 'STR D2 Gaba'): ['Cnr1'],
 
-    #--- POSTPART_vs_PREG: Rebound and adaptation after birth ---
+    # Contrast: Postpartum vs. Pregnant
     ('POSTPART_vs_PREG', 'Oligo NN'): ['Man1a', 'Slc38a2'],
-    ('POSTPART_vs_PREG', 'Endo NN'): ['Dbp', 'Nr1d1'],
-    ('POSTPART_vs_PREG', 'L2/3 IT CTX Glut'): ['Gpc5', 'Dhcr24'],
-    ('POSTPART_vs_PREG', 'L4/5 IT CTX Glut'): ['Insig1', 'Adamtsl1'],
-    ('POSTPART_vs_PREG', 'L5 IT CTX Glut'): ['Tshz2', 'Nrp1'],
-    ('POSTPART_vs_PREG', 'L6b EPd Glut'): ['Tafa1', 'Car10'],
+    ('POSTPART_vs_PREG', 'Microglia NN'): ['Atp5b'],
+    ('POSTPART_vs_PREG', 'Astro-TE NN'): ['Vegfa'],
+    ('POSTPART_vs_PREG', 'Endo NN'): ['Ankrd37', 'Edn1', 'Dbp'],
+    ('POSTPART_vs_PREG', 'Ependymal NN'): ['Pcdh15', 'Galntl6'],
+    ('POSTPART_vs_PREG', 'L2/3 IT CTX Glut'): ['Ckb', 'Ubc', 'Tshz2'],
+    ('POSTPART_vs_PREG', 'L4/5 IT CTX Glut'): ['Insig1', 'Hmgcs1'],
+    ('POSTPART_vs_PREG', 'L5 IT CTX Glut'): ['Tshz2', 'Lsamp'],
+    ('POSTPART_vs_PREG', 'L6b CTX Glut'): ['Tshz2', 'Il1rapl2'],
+    ('POSTPART_vs_PREG', 'L6b EPd Glut'): ['Tafa1'],
+    ('POSTPART_vs_PREG', 'Sst Gaba'): ['Ckb'],
+    ('POSTPART_vs_PREG', 'Sst Chodl Gaba'): ['Rnf220', 'Gpc5'],
+    ('POSTPART_vs_PREG', 'Lamp5 Gaba'): ['Schip1', 'Npas3'],
     ('POSTPART_vs_PREG', 'LSX Nkx2-1 Gaba'): ['Kcnip4', 'Kcnc2'],
-    ('POSTPART_vs_PREG', 'Sst Gaba'): ['Cartpt'],
-    ('POSTPART_vs_PREG', 'Sst Chodl Gaba'): ['Vgf', 'Rnf220'],
+    ('POSTPART_vs_PREG', 'STR D1 Gaba'): ['Stard5'],
     ('POSTPART_vs_PREG', 'STR D2 Gaba'): ['Slit2', 'Nr4a3'],
-    ('POSTPART_vs_PREG', 'Lamp5 Gaba'): ['Npas3', 'Schip1'],
-    ('POSTPART_vs_PREG', 'Ependymal NN'): ['Pcdh15']
 }
 
 de_results = pl.read_csv(f'{working_dir}/output/data/de_results.csv')
@@ -341,10 +340,18 @@ for i, group_type in enumerate(major_types):
     for j, (ax_main, ax_bar, contrast_name, title) in enumerate(axes_config):
         df_group = df_plot.filter(pl.col('cell_type').is_in(group_cell_types))
         contrast_df = df_group.filter(pl.col('contrast').eq(contrast_name))
-        counts = deg_counts.filter(pl.col('contrast').eq(contrast_name))\
-            .to_pandas().set_index('cell_type')\
-            .reindex(group_cell_types).fillna(0)
-            
+        counts_data = deg_counts.filter(pl.col('contrast').eq(contrast_name))\
+            .select(['cell_type', 'up', 'down'])\
+            .to_dicts()
+        
+        counts_dict = {row['cell_type']: {'up': row['up'], 'down': row['down']} 
+                       for row in counts_data}
+        
+        up_counts = [counts_dict.get(ct, {'up': 0})['up'] 
+                    for ct in group_cell_types]
+        down_counts = [counts_dict.get(ct, {'down': 0})['down'] 
+                    for ct in group_cell_types]
+        
         y_pos = {ct: i for i, ct in enumerate(group_cell_types)}
         contrast_y = [y_pos[ct] for ct in contrast_df['cell_type']]
 
@@ -353,10 +360,11 @@ for i, group_type in enumerate(major_types):
             x=contrast_df['logFC'], y=contrast_y, s=15,
             facecolors=facecolors, edgecolors='gray', linewidth=0.5, zorder=10
         )
-        ax_bar.barh(range(len(group_cell_types)), counts['up'], left=0,
+        
+        ax_bar.barh(range(len(group_cell_types)), up_counts, left=0,
                     color=up_color, alpha=0.8)
-        ax_bar.barh(range(len(group_cell_types)), counts['down'],
-                    left=-counts['down'], color=down_color, alpha=0.8)
+        ax_bar.barh(range(len(group_cell_types)), down_counts,
+                    left=[-x for x in down_counts], color=down_color, alpha=0.8)
         ax_bar.axvline(0, color='grey', linestyle='-', linewidth=0.5)
         
         max_fc = (contrast_df['logFC'].abs().max() * 1.1 
@@ -407,11 +415,12 @@ for i, group_type in enumerate(major_types):
         ax_main.axvline(0, color='lightgray', linestyle='-', linewidth=0.5, 
                         zorder=0)
         ax_main.set_xlim(-max_fc, max_fc)
+        # ax_bar.set_xscale('symlog', linthresh=1)
         ax_bar.set_xlim(-bar_xlim, bar_xlim)
         
         for idx, ct in enumerate(group_cell_types):
-            if ct in counts.index:
-                total_degs = int(counts.loc[ct, 'up'] + counts.loc[ct, 'down'])
+            if ct in counts_dict:
+                total_degs = int(counts_dict[ct]['up'] + counts_dict[ct]['down'])
                 if total_degs > 0:
                     ax_bar.text(bar_xlim * 0.95, idx, str(total_degs), 
                                ha='right', va='center', fontsize=7,
@@ -464,6 +473,13 @@ plt.close()
 
 #endregion 
 
+#region DEG exemplars ##########################################################
+
+
+
+
+#endregion
+
 #region Pathway analysis #######################################################
 
 de_results = pl.read_csv(f'{working_dir}/output/data/de_results.csv')
@@ -480,7 +496,8 @@ suppressPackageStartupMessages({
 
 cache_file <- paste0(working_dir, "/output/data/m_df_themed.rds")
 if (!file.exists(cache_file)) {
-    m_df <- msigdbr(species = "Mus musculus", category = "C5")
+    m_df <- msigdbr(
+        species = "Mus musculus", category = "C5", subcategory = "GO:BP")
     theme_keywords <- list(
         'Neuronal' = c(
             'NEURO', 'SYNAP', 'AXON', 'DENDRITE', 'GLUTAMATE', 'GABA',
@@ -643,11 +660,35 @@ pathway_de_results_gsea = to_py('fgsea_results')
 
 pathway_de_results_gsea\
     .write_parquet(f'{working_dir}/output/data/pathway_results_gsea.parquet')
-pathway_de_results_gsea\
-    .drop('leadingEdge')\
-    .filter(pl.col('padj') < 0.01)\
-    .write_csv(f'{working_dir}/output/data/pathway_results_gsea_sig.csv')
 
+available_genes = de_results\
+    .filter(pl.col('FDR') < 0.10)\
+    .group_by(['cell_type', 'contrast'])\
+    .agg(pl.col('gene').unique().alias('available_genes'))
+
+pathway_de_results_gsea_sig = pathway_de_results_gsea\
+    .filter(pl.col('padj') < 0.01)\
+    .join(available_genes, on=['cell_type', 'contrast'], how='left')\
+    .with_columns(
+        pl.struct(['leadingEdge', 'available_genes']).map_elements(
+            lambda x: [gene for gene in x['leadingEdge'] 
+                       if x['available_genes'] is not None 
+                       and gene in x['available_genes']] 
+                       if x['available_genes'] is not None else [],
+            return_dtype=pl.List(pl.Utf8)
+        ).alias('leadingEdge_filtered')
+    )\
+    .with_columns(
+        pl.col('leadingEdge_filtered').list.join(", ")
+        .alias('leadingEdge_genes'))\
+    .drop(['leadingEdge', 'leadingEdge_filtered', 'available_genes'])
+
+pathway_de_results_gsea_sig.write_csv(
+    f'{working_dir}/output/data/pathway_results_gsea_sig.csv')
+
+#endregion 
+
+#region Pathway heatmaps #######################################################
 
 pathway_de_results_gsea = pl.read_parquet(
     f'{working_dir}/output/data/pathway_results_gsea.parquet')
@@ -671,15 +712,15 @@ datasets = [
     {
         'name': 'gaba',
         'cell_types': ['Sst Gaba', 'Pvalb Gaba', 'Vip Gaba', 
-                       'Lamp5 Gaba', 'LSX Nkx2-1 Gaba'],
+                       'STR D1 Gaba', 'LSX Nkx2-1 Gaba'],
         'pathways': ['GOBP_CELLULAR_RESPIRATION',
-                     'GOBP_GLIOGENESIS',
+                     'GOBP_STEROID_METABOLIC_PROCESS',
                      'GOBP_REGULATION_OF_SYNAPTIC_PLASTICITY',
                      'GOBP_CELL_CELL_ADHESION_VIA_PLASMA_MEMBRANE_ADHESION_MOLECULES',
                      'GOBP_PROTON_TRANSMEMBRANE_TRANSPORT',
                      'GOBP_NEURON_PROJECTION_ORGANIZATION'],
         'labels': ['Cellular Respiration',
-                   'Gliogenesis',
+                   'Steroid Metabolic Process',
                    'Regulation of Synaptic Plasticity',
                    'Cell-Cell Adhesion via PM Molecules',
                    'Proton Transmembrane Transport',
@@ -700,7 +741,7 @@ datasets = [
     }
 ]
 
-fig = plt.figure(figsize=(7, 14))
+fig = plt.figure(figsize=(7, 13))
 gs = fig.add_gridspec(3, 2, hspace=0.60, wspace=0.15, 
                       left=0.05, right=0.85, top=0.96, bottom=0.16)
 
@@ -751,7 +792,7 @@ for row_idx, ds in enumerate(datasets):
                 )
                 if data.height > 0:
                     row = data.row(0, named=True)
-                    es_mat[i, j] = row['ES']
+                    es_mat[i, j] = row['NES']
                     sig_mat[i, j] = row['padj'] < 0.01
     
     vmin_local = np.nanmin([np.nanmin(es_matrix1), np.nanmin(es_matrix2)])
@@ -828,53 +869,122 @@ for (im1, im2) in all_matrices:
 
 cax = fig.add_axes([0.25, 0.04, 0.4, 0.02])
 cbar = fig.colorbar(im2, cax=cax, orientation='horizontal')
-cbar.set_label('Enrichment Score', fontsize=10)
+cbar.set_label('Normalized Enrichment Score', fontsize=12)
 cbar.ax.tick_params(labelsize=9)
 
-plt.savefig(f'{working_dir}/figures/dotplot_hybrid.png', 
+plt.savefig(f'{working_dir}/figures/go_heatmaps.png', 
             dpi=300, bbox_inches='tight')
-plt.savefig(f'{working_dir}/figures/dotplot_hybrid.svg',
+plt.savefig(f'{working_dir}/figures/go_heatmaps.svg',
             bbox_inches='tight')
 plt.close()
 
 #endregion
 
+#region Key gene expression patterns ###########################################
 
+genes_cells = [
+    # Glutamatergic Neurons (4)
+    ('Tshz2', 'L5 IT CTX Glut'),
+    ('Ckb', 'L2/3 IT CTX Glut'),
+    ('Rxfp1', 'CLA-EPd-CTX Car3 Glut'),
+    ('Fkbp5', 'L2/3 IT CTX Glut'),
 
+    # GABAergic Neurons (4)
+    ('Prlr', 'LSX Nkx2-1 Gaba'),
+    ('Cnr1', 'STR D1 Gaba'),
+    ('Gabrg3', 'Sst Chodl Gaba'),
+    ('Npy', 'LSX Nkx2-1 Gaba'),
 
+    # Non-Neuronal Cells (4)
+    ('Sgk1', 'Oligo NN'),
+    ('Pcdh15', 'Ependymal NN'),
+    ('Ptgds', 'Astro-TE NN'),
+    ('Ccnd3', 'Microglia NN')
+]
 
+condition_colors = {
+    'CTRL': '#7209b7',
+    'PREG': '#b5179e',
+    'POSTPART': '#f72585'
+}
 
+adata_norm = adata_curio.copy()
+sc.pp.normalize_total(adata_norm, target_sum=1e4)
+sc.pp.log1p(adata_norm)
 
+fig, axes = plt.subplots(6, 2, figsize=(4.5, 13))
+axes = axes.flatten()
 
+for idx, (gene, cell_type) in enumerate(genes_cells):
+    ax = axes[idx]
+    
+    cell_mask = adata_curio.obs['subclass'] == cell_type
+    raw_subset = adata_curio[cell_mask, gene]
+    norm_subset = adata_norm[cell_mask, gene]
+    
+    expr_data = []
+    positions = []
+    colors = []
+    
+    for pos, cond in enumerate(['CTRL', 'PREG', 'POSTPART']):
+        cond_mask = raw_subset.obs['condition'] == cond
+        raw_expr = raw_subset[cond_mask].X.toarray().flatten()
+        norm_expr = norm_subset[cond_mask].X.toarray().flatten()
+        
+        nonzero_mask = raw_expr > 0
+        expr_filtered = norm_expr[nonzero_mask]
+        
+        expr_data.append(expr_filtered)
+        positions.append(pos)
+        colors.append(condition_colors[cond])
+    
+    parts = ax.violinplot(expr_data, positions=positions, 
+                         widths=0.5, showmeans=False, showextrema=False)
+    
+    for i, pc in enumerate(parts['bodies']):
+        pc.set_facecolor(colors[i])
+        pc.set_alpha(0.8)
+        pc.set_edgecolor('black')
+        pc.set_linewidth(1)
+    
+    for i, expr in enumerate(expr_data):
+        ax.plot(i, np.median(expr), 'o', color='white', 
+               markersize=6, markeredgecolor='black', markeredgewidth=1.5)
+    
+    ax.set_title(f'{gene}\n{cell_type}', fontsize=10, pad=8)
+    
+    if idx >= 10:
+        ax.set_xticks([0, 1, 2])
+        ax.set_xticklabels(['Nulliparous', 'Pregnant', 'Postpartum'], 
+                          fontsize=12, rotation=45, ha='right')
+    else:
+        ax.set_xticks([])
+        ax.set_xticklabels([])
+    
+    # ax.set_yscale('log')
+    
+    if idx % 2 == 0:
+        ax.set_ylabel('')
+    else:
+        ax.set_ylabel('')
+    
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(0.8)
 
+fig.text(0.02, 0.5, 'Normalized expression', va='center', rotation='vertical', 
+         fontsize=12)
 
+plt.tight_layout(rect=[0.03, 0, 1, 1])
+plt.savefig(f'{working_dir}/figures/key_gene_patterns.png', 
+            dpi=300, bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/key_gene_patterns.svg', 
+            bbox_inches='tight')
+plt.close()
 
+#endregion
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+#region scratchpad #############################################################
 
 to_r(working_dir, 'working_dir')
 r('''
@@ -889,132 +999,7 @@ suppressPackageStartupMessages({
 })
 
 cache_file <- paste0(working_dir, "/output/data/m_df_themed.rds")
-if (!file.exists(cache_file)) {
-    m_df <- msigdbr(
-        species = "Mus musculus", category = "C5", subcategory = "GO:BP")
-    
-    theme_keywords <- list(
-        'Neuronal' = c(
-            'NEURO', 'SYNAP', 'AXON', 'DENDRITE', 'GLUTAMATE', 'GABA',
-            'CHOLINERGIC', 'DOPAMINERGIC', 'SEROTONERGIC', 'ADRENERGIC',
-            'ACTION_POTENTIAL', 'REGULATION_NEUROTRANSMITTER_LEVELS',
-            'REGULATION_SYNAPTIC_PLASTICITY', 'EXCITATORY_POSTSYNAPTIC',
-            'INHIBITORY_POSTSYNAPTIC'
-        ),
-        'Glial' = c(
-            'GLIA', 'MYELIN', 'ASTROCYTE', 'OLIGODENDROCYTE', 'MICROGLIA',
-            'REACTIVE_GLIOSIS', 'REGULATION_NEURON_GLIAL_COMMUNICATION',
-            'CNS_MYELIN_MAINTENANCE', 'GLIAL_CELL_MIGRATION', 'GLIOGENESIS'
-        ),
-        'Immune' = c(
-            'IMMUNE', 'INFLAMMATORY', 'CYTOKINE', 'INTERFERON',
-            'NEUROINFLAMMATORY', 'MICROGLIAL_CELL_MIGRATION',
-            'REGULATION_CYTOKINE_MEDIATED_SIGNALING', 'INNATE_IMMUNE'
-        ),
-        'Hormonal' = c(
-            'HORMONE', 'STEROID', 'ESTROGEN', 'PROGESTERONE', 'OXYTOCIN',
-            'CORTISOL', 'GLUCOCORTICOID', 'MINERALOCORTICOID',
-            'STEROID_HORMONE_BIOSYNTHETIC', 'REGULATION_HORMONE_SECRETION',
-            'CELLULAR_RESPONSE_HORMONE_STIMULUS'
-        ),
-        'Metabolic' = c(
-            'METABOLIC', 'LIPID', 'CHOLESTEROL', 'GLUCOSE_METABOLIC',
-            'ATP_METABOLIC', 'CELLULAR_RESPIRATION'
-        ),
-        'Plasticity_Dev' = c(
-            'NEUROGENESIS', 'PROLIFERATION', 'DENDRITIC_SPINE',
-            'DIFFERENTIATION', 'MIGRATION', 'APOPTOSIS',
-            'ADULT_NEUROGENESIS', 'AXON_GUIDANCE', 'SYNAPSE_ORGANIZATION',
-            'NEURON_PROJECTION_DEVELOPMENT'
-        ),
-        'Reproductive' = c(
-            'PROLACTIN', 'GALANIN', 'VASOPRESSIN', 'RELAXIN', 'KISSPEPTIN',
-            'GONADOTROPIN', 'LUTEINIZING', 'FOLLICLE_STIMULATING',
-            'GONADOTROPIN_RELEASING_HORMONE', 'REGULATION_OVULATION_CYCLE',
-            'PARTURITION', 'LACTATION'
-        ),
-        'Maternal_Social' = c(
-            'MATERNAL', 'PARENTAL', 'SOCIAL', 'OXYTOCIN_SIGNALING',
-            'SOCIAL_RECOGNITION', 'MATERNAL_AGGRESSIVE',
-            'RESPONSE_PHEROMONE'
-        ),
-        'Stress_Adaptation' = c(
-            'STRESS', 'CORTICOSTERONE', 'ADRENERGIC',
-            'REGULATION_HPA_AXIS', 'CELLULAR_RESPONSE_STRESS',
-            'GENERAL_ADAPTATION_SYNDROME'
-        ),
-        'Neurotransmitter' = c(
-            'DOPAMINE', 'SEROTONIN', 'ACETYLCHOLINE', 'NOREPINEPHRINE',
-            'NEUROTRANSMITTER_SECRETION', 'REGULATION_SYNAPTIC_VESICLE',
-            'NEUROTRANSMITTER_UPTAKE'
-        ),
-        'Growth_Factors' = c(
-            'GROWTH_FACTOR', 'NEUROTROPHIC', 'BDNF', 'NGF', 'IGF',
-            'INSULIN_LIKE', 'EPIDERMAL_GROWTH', 'FIBROBLAST_GROWTH',
-            'REGULATION_CELL_GROWTH', 'POSITIVE_REGULATION_NEURON_PROJECTION',
-            'CELLULAR_RESPONSE_GROWTH_FACTOR'
-        ),
-        'Cell_Cycle' = c(
-            'CELL_CYCLE', 'MITOTIC', 'DNA_REPLICATION', 'CHROMOSOME',
-            'SPINDLE', 'CYTOKINESIS', 'CELL_CYCLE_CHECKPOINT',
-            'REGULATION_CELL_CYCLE_PHASE_TRANSITION', 'DNA_REPAIR'
-        ),
-        'Vascular' = c(
-            'VASCULAR', 'VASCULATURE', 'ANGIOGENESIS', 'ENDOTHELIAL', 
-            'BLOOD_BRAIN_BARRIER', 'CAPILLARY', 'BLOOD_VESSEL', 
-            'VASOCONSTRICTION', 'ENDOTHELIAL_CELL_MIGRATION', 
-            'BRAIN_ANGIOGENESIS'
-        ),
-        'Circadian_Sleep' = c(
-            'CIRCADIAN', 'SLEEP', 'WAKE', 'MELATONIN', 'CLOCK',
-            'ENTRAINMENT_CIRCADIAN_CLOCK', 'REGULATION_SLEEP_CYCLE',
-            'RHYTHMIC_PROCESS'
-        ),
-        'Hypothalamic_Pituitary' = c(
-            'RELEASING_HORMONE', 'NEUROSECRETORY_SYSTEM_DEVELOPMENT',
-            'REGULATION_HORMONE_SECRETION', 'NEUROPEPTIDE_SIGNALING'
-        ),
-        'Ion_Transport' = c(
-            'CALCIUM', 'SODIUM', 'POTASSIUM', 'TRANSPORT',
-            'MEMBRANE_POTENTIAL', 'SYNAPTIC_VESICLE_EXOCYTOSIS',
-            'CALCIUM_MEDIATED_SIGNALING', 'ION_HOMEOSTASIS'
-        ),
-        'Epigenetic' = c(
-            'EPIGENETIC', 'METHYLATION', 'HISTONE', 'CHROMATIN',
-            'TRANSCRIPTIONAL', 'CHROMATIN_REMODELING',
-            'HISTONE_ACETYLATION', 'REGULATION_GENE_EXPRESSION_EPIGENETIC'
-        ),
-        'Protein_Dynamics' = c(
-            'PROTEIN_SYNTHESIS', 'TRANSLATION', 'RIBOSOMAL', 'PROTEASOME',
-            'UBIQUITIN', 'AUTOPHAGY', 'PROTEIN_FOLDING',
-            'REGULATION_TRANSLATION', 'ER_ASSOCIATED_PROTEIN_CATABOLIC'
-        ),
-        'Structural_ECM' = c(
-            'ADHESION', 'EXTRACELLULAR'
-        )
-    )
-    
-    get_theme <- function(gs_name, themes) {
-        for (theme_name in names(themes)) {
-            if (any(sapply(themes[[theme_name]], grepl, gs_name, 
-                          ignore.case=TRUE))) {
-                return(theme_name)
-            }
-        }
-        return(NA_character_)
-    }
-    
-    m_df_themed <- m_df %>%
-        rowwise() %>%
-        mutate(theme = get_theme(gs_name, theme_keywords)) %>%
-        ungroup() %>%
-        filter(!is.na(theme))
-    
-    saveRDS(m_df_themed, cache_file)
-} else {
-    m_df_themed <- readRDS(cache_file)
-}
-
+m_df_themed <- readRDS(cache_file)
 gobp_gene_sets <- m_df_themed %>% 
     split(x = .$gene_symbol, f = .$gs_name)
 
@@ -1068,6 +1053,157 @@ pathway_de_results = to_py('pathway_de_results')
 pathway_de_results\
     .write_csv(f'{working_dir}/output/data/pathway_results_gsva.csv')
 
+
+
+cells_joined = pd.read_csv(
+    'projects/rrg-wainberg/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/'
+    '20231215/views/cells_joined.csv')
+color_mappings = {
+    'class': dict(zip(
+        cells_joined['class'].str.replace('/', '_'), 
+        cells_joined['class_color'])),
+    'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+        cells_joined['subclass'].str.replace('/', '_'), 
+        cells_joined['subclass_color'])).items()}
+}
+
+de_results = pl.read_csv(f'{working_dir}/output/data/de_results.csv')
+
+preg_genes = de_results\
+    .filter((pl.col('contrast') == 'PREG_vs_CTRL') & 
+            (pl.col('PValue') < 0.05))\
+    .select(['gene', 'cell_type', 'logFC'])\
+    .rename({'logFC': 'preg_logFC'})
+
+post_genes = de_results\
+    .filter((pl.col('contrast') == 'POSTPART_vs_PREG') & 
+            (pl.col('PValue') < 0.05))\
+    .select(['gene', 'cell_type', 'logFC'])\
+    .rename({'logFC': 'post_logFC'})
+
+gene_patterns = preg_genes\
+    .join(post_genes, on=['gene', 'cell_type'], how='full')\
+    .filter(pl.col('cell_type').is_not_null())\
+    .with_columns([
+        pl.when(pl.col('preg_logFC') > 0.25).then(pl.lit('U'))
+          .when(pl.col('preg_logFC') < -0.25).then(pl.lit('D'))
+          .otherwise(pl.lit('='))
+          .alias('preg_dir'),
+        pl.when(pl.col('post_logFC') > 0.25).then(pl.lit('U'))
+          .when(pl.col('post_logFC') < -0.25).then(pl.lit('D'))
+          .otherwise(pl.lit('-'))
+          .alias('post_dir')
+    ])\
+    .with_columns(
+        (pl.col('preg_dir') + pl.col('post_dir')).alias('pattern')
+    )\
+    .filter(pl.col('pattern').is_in(['UD', 'DU', '=U', '=D', 'U-', 'D-']))
+
+pattern_counts = gene_patterns\
+    .group_by(['cell_type', 'pattern'])\
+    .agg(pl.len().alias('n_genes'))
+
+print(f"Final pattern distribution after filtering:")
+print(gene_patterns['pattern'].value_counts().sort('pattern'))
+
+sankey_data = pattern_counts\
+    .with_columns([
+        pl.col('pattern').alias('source'),
+        pl.col('cell_type').alias('target'),
+        pl.col('n_genes').alias('value'),
+        pl.when(pl.col('cell_type').str.contains('Glut'))
+          .then(pl.lit('Glutamatergic neurons'))
+          .when(pl.col('cell_type').str.contains('Gaba'))
+          .then(pl.lit('GABAergic neurons'))
+          .when(pl.col('cell_type').str.contains('NN'))
+          .then(pl.lit('Non-neuronal cells'))
+          .otherwise(pl.lit('Other'))
+          .alias('panel')
+    ])
+
+to_r(sankey_data, 'sankey_data')
+to_r(working_dir, 'working_dir')
+to_r(color_mappings['subclass'], 'subclass_colors')
+
+r('''
+suppressPackageStartupMessages({
+    library(ggplot2)
+    library(dplyr)
+    library(ggsankey)
+    library(patchwork)
+})
+
+sankey_data <- sankey_data %>%
+    mutate(
+        target_label = gsub(' Glut| Gaba| NN', '', target),
+        # Strip numbers and cell type suffixes to match color mapping keys
+        target_base = gsub(' Glut$| Gaba$| NN$', '', gsub('^[0-9]+ ', '', target))
+    )
+
+pattern_colors <- c(
+    'UD' = '#E74C3C', 'DU' = '#3498DB', '=U' = '#E67E22',
+    '=D' = '#9B59B6', 'U-' = '#F39C12', 'D-' = '#2ECC71'
+)
+
+pattern_order <- c('UD', 'DU', '=U', '=D', 'U-', 'D-')
+sankey_data$source <- factor(sankey_data$source, levels = pattern_order)
+
+make_panel_plot <- function(panel_name) {
+    panel_data <- sankey_data %>% 
+        filter(panel == panel_name)
+    
+    if (nrow(panel_data) == 0) return(NULL)
+    
+
+    
+    # Get cell type colors
+    cell_type_colors <- character()
+    for (i in 1:nrow(panel_data)) {
+        ct <- panel_data$target_base[i]
+        label <- panel_data$target_label[i]
+        if (ct %in% names(subclass_colors)) {
+            cell_type_colors[label] <- subclass_colors[[ct]]
+        } else {
+            cell_type_colors[label] <- '#CCCCCC'
+        }
+    }
+    
+    # Use ggalluvial instead of ggsankey for proper value weighting
+    library(ggalluvial)
+    
+    # All colors combined
+    all_colors <- c(pattern_colors, cell_type_colors)
+    
+    p <- ggplot(panel_data, aes(axis1 = source, axis2 = target_label, y = value)) +
+        geom_alluvium(aes(fill = source), alpha = 0.5, width = 1/12) +
+        geom_stratum(aes(fill = after_stat(stratum)), width = 1/12, color = "black") +
+        geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+        scale_fill_manual(values = all_colors) +
+        scale_x_discrete(limits = c("Pattern", "Cell Type"), expand = c(0.15, 0.05)) +
+        theme_void() +
+        theme(
+            legend.position = "none",
+            plot.title = element_text(size = 14, face = 'bold', hjust = 0.5)
+        ) +
+        ggtitle(panel_name)
+    
+    return(p)
+}
+
+p1 <- make_panel_plot('Glutamatergic neurons')
+p2 <- make_panel_plot('GABAergic neurons')
+p3 <- make_panel_plot('Non-neuronal cells')
+
+combined_plot <- p1 / p2 / p3 + 
+    plot_layout(heights = c(1, 1, 1))
+
+ggsave(paste0(working_dir, '/figures/pregnancy_transitions_sankey.png'),
+       plot = combined_plot, width = 12, height = 15, dpi = 300)
+ggsave(paste0(working_dir, '/figures/pregnancy_transitions_sankey.svg'),
+       plot = combined_plot, width = 12, height = 15)
+''')
+
+
 for cell_type in pathway_de_results.select('cell_type').unique().to_series():
     print(f'\n{cell_type} - PREG_vs_CTRL - pathway_de_results:')
     filtered_df = pathway_de_results\
@@ -1084,9 +1220,6 @@ for cell_type in pathway_de_results.select('cell_type').unique().to_series():
         .sort('P.Value').head(15)
     with pl.Config(fmt_str_lengths=1000):
         print(filtered_df)
-
-
-
 
 pb_curio = SingleCell(adata_curio)\
     .qc(allow_float=True)\
@@ -1139,22 +1272,7 @@ for cell_type in de_table.select('cell_type').unique().to_series():
     print(f"\n{cell_type} - de_table:")
     print(de_table.filter((pl.col('cell_type') == cell_type) & (pl.col('contrast') == 'PREG_vs_CTRL')).sort('p').head(10))
 
+#endregion
 
-
-
-for cell_type, (X, obs, var) in pb_curio.items():
-    to_r(cell_type, 'cell_type')
-    to_r(X, 'X', colnames=var['gene_symbol'], rownames=obs['sample'])
-    to_r(obs, 'obs', rownames=obs['sample'])
-    to_r(var, 'var')
-
-    r('''
-    print(cell_type)
-    head(obs, 10)
-    head(var, 10)
-    head(X, 10)
-    ''')
-
-de_table = pl.read_csv('DE_results_EdgeR.csv')
 
 

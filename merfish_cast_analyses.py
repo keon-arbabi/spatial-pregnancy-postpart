@@ -526,13 +526,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 warnings.filterwarnings('ignore')
 
-# modified CAST_Projection.py 
-sys.path.insert(0, 'project/CAST')
-import CAST
-print(CAST.__file__)
+# # modified CAST_Projection.py 
+# sys.path.insert(0, 'project/CAST')
+# import CAST
+# print(CAST.__file__)
 
 # set paths 
-working_dir = 'project/spatial-pregnancy-postpart'
+working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 os.makedirs(f'{working_dir}/output/merfish/CAST-PROJECT', exist_ok=True)
 
 # load data
@@ -565,16 +565,18 @@ color_dict['Unknown'] = '#A9A9A9'
 list_ts = {}
 for _, (source_sample, target_sample) in source_target_list.items():
     print(f'Processing {target_sample}')
-    output_dir_t = f'{working_dir}/output/merfish/CAST-PROJECT/{source_sample}_to_{target_sample}'
+    output_dir_t = f'{working_dir}/output/merfish/CAST-PROJECT/' \
+        f'{source_sample}_to_{target_sample}'
     os.makedirs(output_dir_t, exist_ok=True)
     
     list_ts_file = f'{output_dir_t}/list_ts_{target_sample}.pt'
     if os.path.exists(list_ts_file):
         print(f'Loading cached list_ts for {target_sample}')
-        list_ts[target_sample] = torch.load(list_ts_file)
+        list_ts[target_sample] = torch.load(list_ts_file, weights_only=False)
         continue
         
-    harmony_file = f'{output_dir_t}/X_harmony_{source_sample}_to_{target_sample}.h5ad'
+    harmony_file = f'{output_dir_t}/' \
+        f'X_harmony_{source_sample}_to_{target_sample}.h5ad'
     if os.path.exists(harmony_file):
         print(f'Loading precomputed harmony from {harmony_file}')
         adata_subset = ad.read_h5ad(harmony_file)
@@ -622,7 +624,7 @@ for _, (source_sample, target_sample) in source_target_list.items():
         umap_feature='X_umap',
         pc_feature='X_pca_harmony',
         integration_strategy=None, 
-        ave_dist_fold=30,
+        ave_dist_fold=20,
         alignment_shift_adjustment=0,
         color_dict=color_dict,
         adjust_shift=False,
@@ -637,8 +639,10 @@ for _, (source_sample, target_sample) in source_target_list.items():
 new_obs_list = []
 for sample, (source_sample, target_sample) in source_target_list.items():
     project_ind, project_weight, cdists, physical_dist = list_ts[sample]
-    source_obs = adata_comb.obs[adata_comb.obs[batch_key] == source_sample].copy()
-    target_obs = adata_comb.obs[adata_comb.obs[batch_key] == target_sample].copy()
+    source_obs = adata_comb.obs[
+        adata_comb.obs[batch_key] == source_sample].copy()
+    target_obs = adata_comb.obs[
+        adata_comb.obs[batch_key] == target_sample].copy()
     target_index = target_obs.index
     target_obs = target_obs.reset_index(drop=True)
     
@@ -651,97 +655,45 @@ for sample, (source_sample, target_sample) in source_target_list.items():
         target_obs.loc[i, 'avg_cdist'] = np.mean(cdists[i][:k])
         target_obs.loc[i, 'avg_pdist'] = np.mean(physical_dist[i][:k])
     
-    for col in ['class', 'subclass']:
+    for col in ['class', 'subclass', 'parcellation_division']:
         source_labels = source_obs[col].to_numpy()
         neighbor_labels = source_labels[project_ind]
         cell_types = []
         confidences = []
-        
+
         for i in range(len(target_obs)):
             top_k = neighbor_labels[i][:k]
-            labels, counts = np.unique(top_k, return_counts=True)
-            winners = labels[counts == counts.max()]
-            cell_type = (winners[0] if len(winners) == 1 else
-                        winners[np.argmax([np.sum(source_labels == l)
-                                         for l in winners])])
-            confidences.append(np.sum(top_k == cell_type) / k)
+            
+            if col == 'parcellation_division' and \
+                target_obs.loc[i, 'class'] == '31 OPC-Oligo':
+                fiber_types = ['lfbs', 'mfbs', 'scwm', 'cm']
+                fiber_neighbors = [l for l in top_k if l in fiber_types]
+                if len(fiber_neighbors) >= 2:
+                    cell_type = max(set(fiber_neighbors), 
+                        key=fiber_neighbors.count)
+                    confidences.append(len(fiber_neighbors) / k)
+                else:
+                    labels, counts = np.unique(top_k, return_counts=True)
+                    cell_type = labels[np.argmax(counts)]
+                    confidences.append(counts.max() / k)
+            else:
+                labels, counts = np.unique(top_k, return_counts=True)
+                winners = labels[counts == counts.max()]
+                cell_type = (winners[0] if len(winners) == 1 else
+                            winners[np.argmax([np.sum(source_labels == l)
+                                             for l in winners])])
+                confidences.append(np.sum(top_k == cell_type) / k)
+            
             cell_types.append(cell_type)
-        
+
         target_obs[col] = cell_types
         target_obs[f'{col}_confidence'] = confidences
-        target_obs[f'{col}_color'] = target_obs[col].map(
-            dict(zip(source_obs[col], source_obs[f'{col}_color'])))
-
+    
     new_obs_list.append(target_obs.set_index(target_index))
 
 new_obs = pd.concat(new_obs_list)
-new_obs.to_csv(f'{working_dir}/output/merfish/new_obs.csv', index_label='cell_id')
-
-# plot cast metrics
-metrics = ['subclass_confidence', 'avg_cdist', 'avg_pdist']
-titles = ['Subclass Assignment Confidence', 'Average Cosine Distance',
-          'Average Physical Distance']
-y_labels = ['Confidence Score', 'Cosine Distance', 'Physical Distance (μm)']
-
-sample_order = [
-    'CTRL1', 'CTRL2', 'CTRL3', 
-    'PREG1', 'PREG2', 'PREG3',
-    'POSTPART1', 'POSTPART2', 'POSTPART3']
-sample_labels = [
-    'Control 1', 'Control 2', 'Control 3',
-    'Pregnant 1', 'Pregnant 2', 'Pregnant 3',
-    'Postpartum 1', 'Postpartum 2', 'Postpartum 3']
-
-configs = {
-    'subclass_confidence': dict(
-        log=False, lines=(0.7, None),
-        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0]),
-    'avg_cdist': dict(
-        log=False, lines=(0.7, None),
-        ticks=[0, 0.2, 0.4, 0.6, 0.8, 1.0], invert=True),
-    'avg_pdist': dict(
-        log=False, lines=(None, None),
-        ticks=[0, 1], invert=True)
-}
-
-pink = sns.color_palette("PiYG")[0]
-fig, axes = plt.subplots(len(metrics), 1, figsize=(6, 3*len(metrics)))
-
-for i, (m, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
-    cfg = configs[m]  
-    plot_data = pd.concat(new_obs_list)
-    plot_data = plot_data[~np.isinf(plot_data[m])]
-    sns.violinplot(
-        data=plot_data, x='sample', y=m, ax=axes[i],
-        color=pink, alpha=0.5, linewidth=1, linecolor=pink,
-        order=sample_order)
-    if cfg['log']:
-        axes[i].set_yscale('log')
-        axes[i].set_yticks(cfg['ticks'])
-        axes[i].set_yticklabels([str(x) for x in cfg['ticks']])
-    if cfg.get('invert', False):
-        axes[i].invert_yaxis()
-    for val in cfg['lines']:
-        if val is not None:
-            axes[i].axhline(y=val, ls='--', color=pink, alpha=0.5)
-            axes[i].text(1.02, val, f'{val:.1f}', va='center', 
-                        transform=axes[i].get_yaxis_transform())
-    if i < len(metrics) - 1:
-        axes[i].set_xticklabels([])
-        axes[i].set_xlabel('')
-        axes[i].set_xticks([])
-    else:
-        axes[i].set_xticklabels(sample_labels, rotation=45, ha='right', va='top')
-        axes[i].set_xlabel('Sample', fontsize=11, fontweight='bold')
-    
-    axes[i].set_title(title, fontsize=12, fontweight='bold')
-    axes[i].set_ylabel(ylabel, fontsize=11, fontweight='bold')
-
-plt.tight_layout()
-plt.savefig(f'{working_dir}/figures/merfish/cast_metrics_violin.svg',
-            bbox_inches='tight')
-plt.savefig(f'{working_dir}/figures/merfish/cast_metrics_violin.png',
-            dpi=150, bbox_inches='tight')
+new_obs.to_csv(f'{working_dir}/output/merfish/new_obs.csv', 
+               index_label='cell_id')
 
 #endregion 
 
@@ -752,14 +704,34 @@ import pandas as pd
 import scanpy as sc
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.neighbors import NearestNeighbors
+from matplotlib.patches import Patch
 
-working_dir = 'project/spatial-pregnancy-postpart'
+working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 
-# add new obs columns
+cells_joined = pd.read_csv(
+  'projects/rrg-wainberg/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/'
+  '20231215/views/cells_joined.csv')
+color_mappings = {
+   'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
+                     cells_joined['class_color'])),
+   'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
+       cells_joined['subclass'].str.replace('/', '_'), 
+       cells_joined['subclass_color'])).items()},
+   'parcellation_division': {
+       **dict(zip(
+           cells_joined['parcellation_division'], 
+           cells_joined['parcellation_division_color'])),
+       'fiber tracts ': '#CCCCCC',
+       'ventricular systems': '#AAAAAA'
+   }
+}
+
 adata_query = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish.h5ad')
 adata_query.obs = adata_query.obs.drop(columns=[
-    'class', 'subclass', 'class_color', 'subclass_color'])
+    'class', 'subclass', 'class_color', 'subclass_color',
+    'parcellation_division', 'parcellation_division_color'])
 
 new_obs = pd.read_csv(
     f'{working_dir}/output/merfish/new_obs.csv',index_col='cell_id')
@@ -767,10 +739,9 @@ for col in new_obs.columns:
     if col not in adata_query.obs.columns:
         adata_query.obs[col] = new_obs[col]
 
-# filter cells 
 total = len(adata_query)
 for name, mask in {
-    'low subclass confidence': adata_query.obs['subclass_confidence'] <= 0.7,
+    'low subclass confidence': adata_query.obs['class_confidence'] <= 0.7,
     'high expression dist': adata_query.obs['avg_cdist'] >= 0.7
 }.items():
     print(f'{name}: {mask.sum()} ({mask.sum()/total*100:.1f}%) cells dropped')
@@ -779,37 +750,19 @@ mask = ((adata_query.obs['class_confidence'] >= 0.7) &
         (adata_query.obs['avg_cdist'] <= 0.7))
         
 cells_dropped = total - mask.sum()
-print(f'\nTotal cells dropped: {cells_dropped} '
+print(f'\ntotal cells dropped: {cells_dropped} '
       f'({cells_dropped/total*100:.1f}%)')
+
+adata_query = adata_query[mask].copy()
 
 '''
 low subclass confidence: 276418 (23.6%) cells dropped
 high expression dist: 42198 (3.6%) cells dropped
-Total cells dropped: 115347 (9.8%)
+
+total cells dropped: 225191 (19.2%)
 '''
 
-adata_query = adata_query[mask].copy()
-
-# remove noise cells
-mapping_group_1 = {
-   '01 IT-ET Glut': 'neuronal',
-   '02 NP-CT-L6b Glut': 'neuronal', 
-   '05 OB-IMN GABA': 'neuronal',
-   '06 CTX-CGE GABA': 'neuronal',
-   '07 CTX-MGE GABA': 'neuronal',
-   '08 CNU-MGE GABA': 'neuronal',
-   '09 CNU-LGE GABA': 'neuronal',
-   '10 LSX GABA': 'neuronal',
-   '11 CNU-HYa GABA': 'neuronal',
-   '12 HY GABA': 'neuronal',
-   '13 CNU-HYa Glut': 'neuronal',
-   '14 HY Glut': 'neuronal',
-   '30 Astro-Epen': 'non-neuronal',
-   '31 OPC-Oligo': 'non-neuronal',
-   '33 Vascular': 'non-neuronal',
-   '34 Immune': 'non-neuronal'
-}
-mapping_group_2 = {
+mapping_group = {
    '01 IT-ET Glut': 'Glut',
    '02 NP-CT-L6b Glut': 'Glut', 
    '05 OB-IMN GABA': 'GABA',
@@ -827,41 +780,142 @@ mapping_group_2 = {
    '33 Vascular': 'Glia',
    '34 Immune': 'Glia'
 }
-adata_query = adata_query.copy()
-adata_query.obs['group_1'] = adata_query.obs['class'].map(mapping_group_1)
-adata_query.obs['group_2'] = adata_query.obs['class'].map(mapping_group_2)
+adata_query.obs['broad'] = adata_query.obs['class'].map(mapping_group)
 
 adata_query.X = adata_query.layers['volume_log1p']
-sc.pp.highly_variable_genes(adata_query, n_top_genes=2000, batch_key='sample')
 sc.tl.pca(adata_query)
-sc.pp.neighbors(adata_query)
+sc.pp.neighbors(adata_query, n_neighbors=30)
 
 nn_mat = adata_query.obsp['distances'].astype(bool)
-labels = adata_query.obs['group_2'].values
-confidences = []
-for i in range(len(labels)):
+labels = adata_query.obs['broad'].values
+global_conf = np.zeros(len(adata_query))
+
+for i in range(len(adata_query)):
     neighbor_idx = nn_mat[i].indices
-    confidence = np.mean(labels[neighbor_idx] == labels[i])
-    confidences.append(confidence)
-adata_query.obs['group_2_confidence'] = confidences
+    global_conf[i] = np.mean(labels[neighbor_idx] == labels[i])
 
-sns.ecdfplot(data=adata_query.obs, x='group_2_confidence')
-plt.savefig(f'{working_dir}/figures/merfish/broad_class_confidence_ecdf.png',
-            dpi=200, bbox_inches='tight')
+adata_query.obs['global_conf'] = global_conf
+n_cells_before = len(adata_query)
+adata_query = adata_query[adata_query.obs['global_conf'] > 0.8].copy()
+n_cells_after = len(adata_query)
+cells_dropped = n_cells_before - n_cells_after
+print(f'dropped {cells_dropped} cells '
+      f'({cells_dropped/n_cells_before*100:.1f}%) with low global confidence')
 
-mask = adata_query.obs['group_2_confidence'] < 0.8
-print(sum(mask))
-# 151541
+coords = adata_query.obs[['x_ffd', 'y_ffd']].values
+nbrs = NearestNeighbors(n_neighbors=11, algorithm='ball_tree').fit(coords)
+_, indices = nbrs.kneighbors(coords)
+indices = indices[:, 1:]
 
-sc.tl.umap(adata_query)
-sc.pl.umap(adata_query, color=['group_2', 'group_2_confidence'])
-plt.savefig(f'{working_dir}/figures/merfish/broad_class_confidence_umap.png',
-           dpi=200, bbox_inches='tight')
+parcel_labels = adata_query.obs['parcellation_division'].values
+spatial_coherence = np.zeros(len(adata_query))
+
+for i in range(len(adata_query)):
+    neighbor_labels = parcel_labels[indices[i]]
+    spatial_coherence[i] = np.mean(neighbor_labels == parcel_labels[i])
+
+adata_query.obs['parcellation_spatial_coherence'] = spatial_coherence
+adata_query.obs['parcellation_corrected'] = False
+
+region_mapping = {
+    'Isocortex': 'Isocortex', 'STR': 'STR', 'OLF': 'OLF', 
+    'HY': 'HY', 'PAL': 'PAL',
+    'CTXsp': 'Isocortex', 'TH': 'OLF', 'HPF': 'STR',
+    'lfbs': 'fiber tracts ', 'mfbs': 'fiber tracts ',
+    'cm': 'fiber tracts ', 'scwm': 'fiber tracts ',
+    'VL': 'ventricular systems', 'V3': 'ventricular systems',
+}
+
+corrections = 0
+for i in range(len(adata_query)):
+    current_parcel = parcel_labels[i]
+    coherence_threshold = 0.7
+    majority_threshold = 0.4
+    
+    if current_parcel in ['lfbs', 'mfbs', 'scwm', 'cm']:
+        coherence_threshold = 0.4
+        majority_threshold = 0.6
+    
+    if spatial_coherence[i] < coherence_threshold:
+        neighbor_labels = parcel_labels[indices[i]]
+        unique_labels, counts = np.unique(neighbor_labels, return_counts=True)
+        majority_label = unique_labels[np.argmax(counts)]
+        majority_fraction = counts[np.argmax(counts)] / len(neighbor_labels)
+        
+        if (majority_fraction > majority_threshold and 
+            majority_label != parcel_labels[i]):
+            
+            mapped_label = region_mapping.get(majority_label, majority_label)
+            cell_broad = adata_query.obs.iloc[i]['broad']
+            cell_subclass = adata_query.obs.iloc[i]['subclass']
+            
+            valid = True
+            if mapped_label == 'fiber tracts ':
+                valid = (cell_broad == 'Glia' or 
+                        cell_subclass == '045 OB-STR-CTX Inh IMN')
+            elif mapped_label == 'ventricular systems':
+                valid = (cell_subclass in ['045 OB-STR-CTX Inh IMN', 
+                                          '111 TRS-BAC Sln Glut'] or
+                        cell_broad == 'Glia')
+            
+            if valid:
+                adata_query.obs.iloc[i, adata_query.obs.columns.get_loc(
+                    'parcellation_division')] = majority_label
+                adata_query.obs.iloc[i, adata_query.obs.columns.get_loc(
+                    'parcellation_corrected')] = True
+                corrections += 1
+
+adata_query.obs['parcellation_division'] = (
+    adata_query.obs['parcellation_division'].map(region_mapping))
+
+print(f'\nparcellation corrections: {corrections} '
+      f'({corrections/len(adata_query)*100:.1f}% of cells)')
+print('\ncells per region:')
+for region, count in adata_query.obs['parcellation_division']\
+    .value_counts().items():
+    print(f'{region}: {count:,}')
+
+fig, axes = plt.subplots(3, 3, figsize=(24, 24))
+axes = axes.flatten()
+
+regions_sorted = adata_query.obs['parcellation_division'].value_counts().index
+parcel_colors = color_mappings['parcellation_division']
+samples = ['CTRL1', 'CTRL2', 'CTRL3', 'PREG1', 'PREG2', 'PREG3',
+           'POSTPART1', 'POSTPART2', 'POSTPART3']
+
+for idx, sample in enumerate(samples):
+    obs = adata_query.obs[adata_query.obs['sample'] == sample]
+    colors = [parcel_colors.get(p, '#000000') for p in 
+              obs['parcellation_division']]
+    axes[idx].scatter(obs['x_ffd'], obs['y_ffd'], c=colors, s=2, 
+                     linewidths=0, rasterized=True)
+    axes[idx].set_title(sample, fontsize=14)
+    axes[idx].set_aspect('equal')
+    axes[idx].axis('off')
+
+legend_elements = [Patch(facecolor=parcel_colors.get(r, '#000000'), label=r) 
+                  for r in regions_sorted]
+fig.legend(handles=legend_elements, loc='center left', 
+          bbox_to_anchor=(1, 0.5), fontsize=11, frameon=False)
+
+plt.tight_layout(rect=[0, 0, 0.95, 1])
+plt.savefig(f'{working_dir}/figures/merfish/parcellation_division_all.png',
+            dpi=300, bbox_inches='tight')
 plt.close()
 
-adata_query = adata_query[~mask]
+'''
+dropped 243435 cells (23.0%) with low global confidence
+parcellation corrections: 133803 (16.5% of cells)
+cells per region:
+STR: 300,193
+Isocortex: 267,185
+PAL: 129,923
+OLF: 48,117
+HY: 35,020
+fiber tracts : 19,918
+ventricular systems: 12,387
+'''
 
-# keep cell types with at least 5 cells in at least 3 samples per condition
 min_cells, min_samples = 5, 3
 conditions = ['CTRL', 'PREG', 'POSTPART']
 
@@ -886,12 +940,10 @@ for level in ['class', 'subclass']:
     for k in sorted(kept, key=lambda x: int(x.split()[0])):
         print(f'  {k}')
 
-# umap
 seed = 0
 sc.pp.neighbors(adata_query, metric='cosine', random_state=seed)
 sc.tl.umap(adata_query, min_dist=0.4, spread=1.0, random_state=seed)
 
-# save
 adata_query.X = adata_query.layers['counts']
 adata_query.write(
     f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
@@ -911,42 +963,55 @@ plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
 plt.rcParams['figure.dpi'] = 400
 
-working_dir = 'project/spatial-pregnancy-postpart'
+working_dir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
 
 cells_joined = pd.read_csv(
-  'project/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/20231215/'
-  'views/cells_joined.csv')
+  'projects/rrg-wainberg/single-cell/ABC/metadata/MERFISH-C57BL6J-638850/'
+  '20231215/views/cells_joined.csv')
 color_mappings = {
    'class': dict(zip(cells_joined['class'].str.replace('/', '_'), 
                      cells_joined['class_color'])),
    'subclass': {k.replace('_', '/'): v for k,v in dict(zip(
        cells_joined['subclass'].str.replace('/', '_'), 
-       cells_joined['subclass_color'])).items()}
+       cells_joined['subclass_color'])).items()},
+   'parcellation_division': {
+       **dict(zip(
+           cells_joined['parcellation_division'], 
+           cells_joined['parcellation_division_color'])),
+       'fiber tracts ': '#CCCCCC',
+       'ventricular systems': '#AAAAAA'
+   }
 }
 
 adata_query = sc.read_h5ad(
     f'{working_dir}/output/data/adata_query_merfish_final.h5ad')
 
-for level in ['class', 'subclass']:
-
+for level in ['class', 'subclass', 'parcellation_division']:
+    # umap
+    fig, ax = plt.subplots(figsize=(8, 10))
+    scatter = ax.scatter(
+        adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
+        c=[color_mappings[level][c] for c in adata_query.obs[level]],
+        s=1, linewidths=0, rasterized=True)
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    plt.tight_layout()
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(2)
+    plt.savefig(f'{working_dir}/figures/merfish/umap_{level}.png', dpi=400)
+    plt.savefig(f'{working_dir}/figures/merfish/umap_{level}.svg', format='svg')
+    plt.close()
+    
     # spatial exemplar 
     sample = 'PREG1'
     plot_color = adata_query[(adata_query.obs['sample'] == sample)].obs
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(8, 10))
     scatter = ax.scatter(
         plot_color['x_ffd'], plot_color['y_ffd'],
         c=[color_mappings[level][c] for c in plot_color[level]], 
-        s=1, linewidths=0,
-        rasterized=True)
-    unique_classes = sorted(plot_color[level].unique(),
-                        key=lambda x: int(x.split()[0]))
-    legend_elements = [plt.Line2D(
-        [0], [0], marker='o', color='w',
-        markerfacecolor=color_mappings[level][class_],
-        label=class_, markersize=8)
-        for class_ in unique_classes]
-    # ax.legend(handles=legend_elements, loc='center left',
-    #         bbox_to_anchor=(1, 0.5), frameon=False)
+        s=2, linewidths=0, rasterized=True)
     ax.set_aspect('equal')
     ax.axis('off')
     plt.tight_layout()
@@ -954,24 +1019,7 @@ for level in ['class', 'subclass']:
                 dpi=300, bbox_inches='tight')
     plt.savefig(f'{working_dir}/figures/merfish/spatial_example_{level}.svg',
                 format='svg', bbox_inches='tight')
-
-    # umap
-    fig, ax = plt.subplots(figsize=(10, 8))
-    scatter = ax.scatter(
-        adata_query.obsm['X_umap'][:, 0], adata_query.obsm['X_umap'][:, 1],
-        c=[color_mappings[level][c] for c in adata_query.obs[level]],
-        s=1, linewidths=0,
-        rasterized=True)
-    ax.set_aspect('equal')
-    ax.spines[['top', 'right', 'bottom', 'left']].set_visible(True)
-    ax.spines[['top', 'right', 'bottom', 'left']].set_linewidth(2)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    plt.tight_layout()
-    plt.savefig(f'{working_dir}/figures/merfish/umap_{level}.png', dpi=300,
-            bbox_inches='tight')
-    plt.savefig(f'{working_dir}/figures/merfish/umap_{level}.svg',
-                format='svg', bbox_inches='tight')
+    plt.close()
 
 
 # create multi-sample plots

@@ -50,7 +50,7 @@ adata_merfish.var.index = adata_merfish.var['gene_symbol']
 # adata_merfish.X = adata_merfish.layers['volume_log1p'].copy()
 
 common_subclasses_numbered = (
-    set(adata_curio.obs[adata_curio.obs['subclass_keep']]['subclass'])
+    set(adata_curio.obs['subclass'])
     & set(adata_merfish.obs[adata_merfish.obs['subclass_keep']]['subclass']))
 
 subclass_map = {}
@@ -70,7 +70,7 @@ for level in color_mappings:
     }
 
 common_subclasses = (
-    set(adata_curio.obs[adata_curio.obs['subclass_keep']]['subclass'])
+    set(adata_curio.obs['subclass'])
     & set(adata_merfish.obs[adata_merfish.obs['subclass_keep']]['subclass']))
 
 #region marker dotplot #########################################################
@@ -393,9 +393,6 @@ plt.savefig(f'{working_dir}/figures/marker_plot.png',
             bbox_extra_artists=[size_legend])
 plt.savefig(f'{working_dir}/figures/marker_plot.svg', 
             format='svg', bbox_inches='tight',
-            bbox_extra_artists=[size_legend])
-plt.savefig(f'{working_dir}/figures/marker_plot.pdf', 
-            bbox_inches='tight',
             bbox_extra_artists=[size_legend])
 
 #endregion 

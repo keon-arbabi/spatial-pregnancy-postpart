@@ -72,22 +72,22 @@ for data_type, input_path, output_filename in data_types:
     adata_combined.write(f'{working_dir}/output/data/{output_filename}')
     print(f'Saved {data_type} data to {output_filename}')
 
-    # plot each slice 
-    for selection in [
-        'class_color', 'subclass_color', 'supertype_color',
-        'parcellation_division_color', 'parcellation_structure_color',
-        'parcellation_substructure']:
-        fig, axes = plt.subplots(1, 4, figsize=(25, 7))
-        fig.suptitle('Zeng ABCA Reference', fontsize=16)
-        for ax, (sample, data) in zip(axes, adata_combined.obs.groupby('sample')):
-            ax.scatter(data['x'], data['y'], s=0.8, c=data[selection])
-            ax.set_title(sample)
-            ax.set_xticks([])
-            ax.set_yticks([])
-        plt.tight_layout()
-        plt.savefig(
-            f'{working_dir}/figures/reference/zeng_reference_{data_type}_{selection}.png',
-            dpi=200, bbox_inches='tight', pad_inches=0)
+# plot each slice 
+for selection in [
+    'class_color', 'subclass_color', 'supertype_color',
+    'parcellation_division_color', 'parcellation_structure_color',
+    'parcellation_substructure_color']:
+    fig, axes = plt.subplots(1, 4, figsize=(25, 7))
+    fig.suptitle('Zeng ABCA Reference', fontsize=16)
+    for ax, (sample, data) in zip(axes, adata_combined.obs.groupby('sample')):
+        ax.scatter(data['x'], data['y'], s=0.8, c=data[selection])
+        ax.set_title(sample)
+        ax.set_xticks([])
+        ax.set_yticks([])
+    plt.tight_layout()
+    plt.savefig(
+        f'{working_dir}/figures/reference/zeng_reference_{selection}.png',
+        dpi=200, bbox_inches='tight', pad_inches=0)
 
 ########################################################
 
