@@ -231,13 +231,13 @@ for cell_type in de_results.select('cell_type').unique().to_series():
 FDR_CUTOFF = 0.1
 GENES_TO_LABEL = {
     # Contrast: Pregnant vs. Nulliparous
-    ('PREG_vs_CTRL', 'Oligo NN'): ['Sgk1', 'Hif3a', 'Fkbp5', 'Hccs'],
+    ('PREG_vs_CTRL', 'Oligo NN'): ['Sgk1', 'Hif3a', 'Fkbp5', 'Hccs', 'Ptgds'],
     ('PREG_vs_CTRL', 'Microglia NN'): ['Ccnd3', 'Fkbp5', 'Ndufa5'],
-    ('PREG_vs_CTRL', 'Astro-TE NN'): ['Mfsd2a', 'Fkbp5', 'Cnr1'],
-    ('PREG_vs_CTRL', 'Endo NN'): ['Kdr', 'Ccn2', 'Igfbp3', 'Zbtb16'],
+    ('PREG_vs_CTRL', 'Astro-TE NN'): ['Mfsd2a', 'Fkbp5', 'Cnr1', 'Ptgds'],
+    ('PREG_vs_CTRL', 'Endo NN'): ['Kdr', 'Ccn2', 'Igfbp3', 'Zbtb16', 'Flt4'],
     ('PREG_vs_CTRL', 'Ependymal NN'): ['Pcdh15'],
     ('PREG_vs_CTRL', 'OPC NN'): ['Cox6c'],
-    ('PREG_vs_CTRL', 'L2/3 IT CTX Glut'): ['Zbtb18', 'Ckb', 'Cox6c', 'Hspa9'],
+    ('PREG_vs_CTRL', 'L2/3 IT CTX Glut'): ['Zbtb18', 'Ckb', 'Cox6c', 'Hspa9', 'Hspa8'],
     ('PREG_vs_CTRL', 'L4/5 IT CTX Glut'): ['Hmgcs1'],
     ('PREG_vs_CTRL', 'L5 IT CTX Glut'): ['Tshz2', 'Glul'],
     ('PREG_vs_CTRL', 'L6 CT CTX Glut'): ['Sdk1'],
@@ -303,7 +303,7 @@ groups = cell_type_order_df.group_by('type', maintain_order=True).all()
 height_ratios = groups['cell_type'].list.len().to_list()
 major_types = groups['type'].to_list()
 
-fig = plt.figure(figsize=(9, 13))
+fig = plt.figure(figsize=(9, 15))
 outer_gs = gridspec.GridSpec(
     len(major_types), 1, figure=fig, height_ratios=height_ratios, hspace=0.1
 )
@@ -324,12 +324,12 @@ for i, group_type in enumerate(major_types):
     
     inner_gs = gridspec.GridSpecFromSubplotSpec(
         1, 4, subplot_spec=outer_gs[i],
-        width_ratios=[10, 2.5, 10, 2.5], wspace=0.05
+        width_ratios=[3.5, 10, 3.5, 10], wspace=0.05
     )
-    ax1 = fig.add_subplot(inner_gs[0])
-    ax1_bar = fig.add_subplot(inner_gs[1])
-    ax2 = fig.add_subplot(inner_gs[2])
-    ax2_bar = fig.add_subplot(inner_gs[3])
+    ax1_bar = fig.add_subplot(inner_gs[0])
+    ax1 = fig.add_subplot(inner_gs[1])
+    ax2_bar = fig.add_subplot(inner_gs[2])
+    ax2 = fig.add_subplot(inner_gs[3])
     all_axes.append((ax1, ax1_bar, ax2, ax2_bar))
 
     axes_config = [
@@ -384,17 +384,24 @@ for i, group_type in enumerate(major_types):
                     label_y = ct_y - label_offset
                     ct_data = ct_df.to_dicts()
                     ct_data.sort(key=lambda x: x['logFC'])
-                    gene_width = 0.12 * (max_fc * 2)
+                    gene_width = 0.15 * (max_fc * 2)
                     x_positions = [r['logFC'] for r in ct_data]
-                    adjusted_x = []
-                    if len(x_positions) == 1:
-                        adjusted_x = x_positions
-                    else:
-                        adjusted_x = [x_positions[0]]
-                        for i in range(1, len(x_positions)):
-                            ideal_x = x_positions[i]
-                            min_x = adjusted_x[-1] + gene_width
-                            adjusted_x.append(max(ideal_x, min_x))
+                    n = len(x_positions)
+                    adjusted_x = x_positions.copy()
+                    
+                    for iteration in range(20):
+                        changed = False
+                        for i in range(n):
+                            if i > 0 and adjusted_x[i] - adjusted_x[i-1] < gene_width:
+                                overlap = gene_width - (adjusted_x[i] - adjusted_x[i-1])
+                                adjusted_x[i-1] -= overlap / 2
+                                adjusted_x[i] += overlap / 2
+                                changed = True
+                        for i in range(n):
+                            adjusted_x[i] = max(-max_fc * 0.92, 
+                                              min(max_fc * 0.92, adjusted_x[i]))
+                        if not changed:
+                            break
                     
                     for i, record in enumerate(ct_data):
                         ax_main.text(adjusted_x[i], label_y, record['gene'], 
@@ -420,37 +427,43 @@ for i, group_type in enumerate(major_types):
         
         for idx, ct in enumerate(group_cell_types):
             if ct in counts_dict:
-                total_degs = int(counts_dict[ct]['up'] + counts_dict[ct]['down'])
-                if total_degs > 0:
-                    ax_bar.text(bar_xlim * 0.95, idx, str(total_degs), 
+                up = int(counts_dict[ct]['up'])
+                down = int(counts_dict[ct]['down'])
+                if up > 0:
+                    ax_bar.text(bar_xlim * 0.95, idx, str(up), 
                                ha='right', va='center', fontsize=7,
+                               color='black', zorder=100)
+                if down > 0:
+                    ax_bar.text(-bar_xlim * 0.95, idx, str(down), 
+                               ha='left', va='center', fontsize=7,
                                color='black', zorder=100)
         
         y_ticks = range(len(group_cell_types))
         ax_main.set_yticks(y_ticks)
-        ax_main.set_yticklabels(group_cell_types)
+        ax_main.set_yticklabels([])
         ax_bar.set_yticks(y_ticks)
-        ax_bar.set_yticklabels(group_cell_types)
+        ax_bar.set_yticklabels(group_cell_types, fontsize=11)
         ax_main.set_ylim(len(group_cell_types)-0.5, -0.5)
         ax_bar.set_ylim(len(group_cell_types)-0.5, -0.5)
             
-        for ax in [ax_main, ax_bar]: ax.tick_params(length=0)
+        for ax in [ax_main, ax_bar]: 
+            ax.tick_params(length=0, labelsize=10)
             
 for i, (ax1, ax1_bar, ax2, ax2_bar) in enumerate(all_axes):
-    plt.setp(ax1_bar.get_yticklabels(), visible=False)
-    plt.setp(ax2.get_yticklabels(), visible=False)
+    plt.setp(ax1.get_yticklabels(), visible=False)
     plt.setp(ax2_bar.get_yticklabels(), visible=False)
-    ax1.set_ylabel(None)
+    plt.setp(ax2.get_yticklabels(), visible=False)
+    ax1_bar.set_ylabel(None)
     
     if i == 0:
         ax1.set_title('Pregnant vs Nulliparous', fontsize=14)
         ax2.set_title('Postpartum vs Pregnant', fontsize=14)
     
     if i == len(all_axes) - 1:
-        ax1.set_xlabel('log2(Fold Change)', fontsize=12)
         ax1_bar.set_xlabel('# DEGs', fontsize=12)
-        ax2.set_xlabel('log2(Fold Change)', fontsize=12)
+        ax1.set_xlabel('log2(Fold Change)', fontsize=12)
         ax2_bar.set_xlabel('# DEGs', fontsize=12)
+        ax2.set_xlabel('log2(Fold Change)', fontsize=12)
     else:
         plt.setp(ax1.get_xticklabels(), visible=False)
         plt.setp(ax1_bar.get_xticklabels(), visible=False)
@@ -459,7 +472,7 @@ for i, (ax1, ax1_bar, ax2, ax2_bar) in enumerate(all_axes):
 
 cbar_ax = fig.add_axes([1.0, 0.65, 0.015, 0.2])
 cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=cbar_ax)
-cbar.set_label('-log10(FDR)', size=12)
+cbar.set_label('-log10(FDR)', size=13)
 
 fig.tight_layout(rect=[0, 0, 0.98, 1])
 os.makedirs(f'{working_dir}/figures', exist_ok=True)
@@ -475,8 +488,141 @@ plt.close()
 
 #region DEG exemplars ##########################################################
 
+genes_cells = [
+    # Theme 1: Neuronal Suppression & Recovery
+    ('Ckb', 'L2/3 IT CTX Glut'),
+    ('Ubc', 'L2/3 IT CTX Glut'),
+    ('Tshz2', 'L5 IT CTX Glut'),
 
+    # Theme 2: Complex & Lasting Neuronal Changes
+    ('Cnr1', 'STR D1 Gaba'),
 
+    # Theme 3: Non-Neuronal Activation & Remodeling
+    ('Sgk1', 'Oligo NN'),
+    ('Kdr', 'Endo NN'),
+    ('Ccnd3', 'Microglia NN'),
+    ('Edn1', 'Endo NN')
+]
+
+condition_colors = {
+    'CTRL': '#7209b7',
+    'PREG': '#b5179e',
+    'POSTPART': '#f72585'
+}
+
+de_results = pl.read_csv(f'{working_dir}/output/data/de_results.csv')
+
+# adata_norm = adata_curio.copy()
+# sc.pp.normalize_total(adata_norm, target_sum=1e4)
+# sc.pp.log1p(adata_norm)
+
+print("\n=== DEBUGGING GENE AVAILABILITY ===")
+print(f"Total genes to plot: {len(genes_cells)}")
+print(f"Figure expects: 8 panels (8x1)")
+for gene, cell_type in genes_cells:
+    print(f"\n{gene} in {cell_type}:")
+    print(f"  Gene in adata_curio.var_names: {gene in adata_curio.var_names}")
+    print(f"  Cell type in obs: {cell_type in adata_curio.obs['subclass'].unique()}")
+    if gene in adata_curio.var_names and cell_type in adata_curio.obs['subclass'].unique():
+        cell_mask = adata_curio.obs['subclass'] == cell_type
+        n_cells = cell_mask.sum()
+        print(f"  Num cells: {n_cells}")
+        if n_cells > 0:
+            gene_expr = adata_curio[cell_mask, gene].X.toarray().flatten()
+            print(f"  Num nonzero: {(gene_expr > 0).sum()}")
+            print(f"  Mean expr: {gene_expr.mean():.4f}")
+
+fig, axes = plt.subplots(8, 1, figsize=(2.5, 16))
+
+for idx, (gene, cell_type) in enumerate(genes_cells):
+    ax = axes[idx]
+    
+    print(f"\nPlotting {idx}: {gene} in {cell_type}")
+    
+    cell_mask = adata_curio.obs['subclass'] == cell_type
+    raw_subset = adata_curio[cell_mask, gene]
+    norm_subset = adata_norm[cell_mask, gene]
+    
+    expr_data = []
+    positions = []
+    colors = []
+    
+    for pos, cond in enumerate(['CTRL', 'PREG', 'POSTPART']):
+        cond_mask = raw_subset.obs['condition'] == cond
+        raw_expr = raw_subset[cond_mask].X.toarray().flatten()
+        norm_expr = norm_subset[cond_mask].X.toarray().flatten()
+        
+        nonzero_mask = raw_expr > 0
+        expr_filtered = norm_expr[nonzero_mask]
+        
+        print(f"  {cond}: {len(raw_expr)} cells, {nonzero_mask.sum()} nonzero")
+        
+        expr_data.append(expr_filtered)
+        positions.append(pos)
+        colors.append(condition_colors[cond])
+    
+    parts = ax.violinplot(expr_data, positions=positions, 
+                         widths=0.5, showmeans=False, showextrema=False)
+    
+    for i, pc in enumerate(parts['bodies']):
+        pc.set_facecolor(colors[i])
+        pc.set_alpha(0.8)
+        pc.set_edgecolor('black')
+        pc.set_linewidth(1)
+    
+    medians = []
+    for i, expr in enumerate(expr_data):
+        med = np.median(expr) if len(expr) > 0 else 0
+        medians.append(med)
+        ax.plot(i, med, 'o', color='white', 
+               markersize=6, markeredgecolor='black', markeredgewidth=1.5)
+    
+    ax.plot([0, 1, 2], medians, 'k-', linewidth=1.5, alpha=0.7, zorder=1)
+    
+    sig_df = de_results.filter(
+        (pl.col('gene') == gene) & 
+        (pl.col('cell_type') == cell_type) &
+        (pl.col('FDR') < 0.10)
+    )
+    
+    median_range = max(medians) - min(medians) if max(medians) > min(medians) else 1
+    for row in sig_df.iter_rows(named=True):
+        if row['contrast'] == 'PREG_vs_CTRL':
+            x_pos = 0.5
+            y_pos = max(medians[0], medians[1]) + 0.15 * median_range
+        elif row['contrast'] == 'POSTPART_vs_PREG':
+            x_pos = 1.5
+            y_pos = max(medians[1], medians[2]) + 0.15 * median_range
+        else:
+            continue
+        ax.text(x_pos, y_pos, '*', ha='center', va='bottom', 
+               fontsize=14, fontweight='bold', color='black')
+    
+    ax.set_title(f'{gene}\n{cell_type}', fontsize=10, pad=8)
+    
+    if idx == 7:
+        ax.set_xticks([0, 1, 2])
+        ax.set_xticklabels(['Nulliparous', 'Pregnant', 'Postpartum'], 
+                          fontsize=11, rotation=45, ha='right')
+    else:
+        ax.set_xticks([])
+        ax.set_xticklabels([])
+    
+    ax.set_ylabel('')
+    
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(0.8)
+
+fig.text(0.01, 0.5, 'Normalized expression', va='center', rotation='vertical', 
+         fontsize=12)
+
+plt.tight_layout(rect=[0.06, 0, 1, 1])
+plt.savefig(f'{working_dir}/figures/key_gene_patterns.png', 
+            dpi=300, bbox_inches='tight')
+plt.savefig(f'{working_dir}/figures/key_gene_patterns.svg', 
+            bbox_inches='tight')
+plt.close()
 
 #endregion
 
@@ -712,19 +858,17 @@ datasets = [
     {
         'name': 'gaba',
         'cell_types': ['Sst Gaba', 'Pvalb Gaba', 'Vip Gaba', 
-                       'STR D1 Gaba', 'LSX Nkx2-1 Gaba'],
+                    'STR D1 Gaba', 'LSX Nkx2-1 Gaba', 'Lamp5 Gaba'], # Note: Lamp5 Gaba added
         'pathways': ['GOBP_CELLULAR_RESPIRATION',
-                     'GOBP_STEROID_METABOLIC_PROCESS',
-                     'GOBP_REGULATION_OF_SYNAPTIC_PLASTICITY',
-                     'GOBP_CELL_CELL_ADHESION_VIA_PLASMA_MEMBRANE_ADHESION_MOLECULES',
-                     'GOBP_PROTON_TRANSMEMBRANE_TRANSPORT',
-                     'GOBP_NEURON_PROJECTION_ORGANIZATION'],
+                    'GOBP_ELECTRON_TRANSPORT_CHAIN',
+                    'GOBP_REGULATION_OF_SYNAPTIC_PLASTICITY',
+                    'GOBP_POTASSIUM_ION_TRANSPORT',
+                    'GOBP_MITOCHONDRIAL_TRANSLATION'],
         'labels': ['Cellular Respiration',
-                   'Steroid Metabolic Process',
-                   'Regulation of Synaptic Plasticity',
-                   'Cell-Cell Adhesion via PM Molecules',
-                   'Proton Transmembrane Transport',
-                   'Neuron Projection Organization']
+                'Electron Transport Chain',
+                'Regulation of Synaptic Plasticity',
+                'Potassium Ion Transport',
+                'Mitochondrial Translation']
     },
     {
         'name': 'nn',
@@ -735,8 +879,10 @@ datasets = [
                      'GOBP_RESPONSE_TO_HORMONE',
                      'GOBP_ATP_SYNTHESIS_COUPLED_ELECTRON_TRANSPORT',
                      'GOBP_ENDOTHELIAL_CELL_MIGRATION'],
-        'labels': ['Vasculature Development', 'Cell Adhesion', 
-                   'Response to Hormone', 'ATP Synthesis Electron Transport',
+        'labels': ['Vasculature Development', 
+                   'Cell Adhesion', 
+                   'Response to Hormone', 
+                   'ATP Synthesis Electron Transport',
                    'Endothelial Cell Migration']
     }
 ]
@@ -875,110 +1021,6 @@ cbar.ax.tick_params(labelsize=9)
 plt.savefig(f'{working_dir}/figures/go_heatmaps.png', 
             dpi=300, bbox_inches='tight')
 plt.savefig(f'{working_dir}/figures/go_heatmaps.svg',
-            bbox_inches='tight')
-plt.close()
-
-#endregion
-
-#region Key gene expression patterns ###########################################
-
-genes_cells = [
-    # Glutamatergic Neurons (4)
-    ('Tshz2', 'L5 IT CTX Glut'),
-    ('Ckb', 'L2/3 IT CTX Glut'),
-    ('Rxfp1', 'CLA-EPd-CTX Car3 Glut'),
-    ('Fkbp5', 'L2/3 IT CTX Glut'),
-
-    # GABAergic Neurons (4)
-    ('Prlr', 'LSX Nkx2-1 Gaba'),
-    ('Cnr1', 'STR D1 Gaba'),
-    ('Gabrg3', 'Sst Chodl Gaba'),
-    ('Npy', 'LSX Nkx2-1 Gaba'),
-
-    # Non-Neuronal Cells (4)
-    ('Sgk1', 'Oligo NN'),
-    ('Pcdh15', 'Ependymal NN'),
-    ('Ptgds', 'Astro-TE NN'),
-    ('Ccnd3', 'Microglia NN')
-]
-
-condition_colors = {
-    'CTRL': '#7209b7',
-    'PREG': '#b5179e',
-    'POSTPART': '#f72585'
-}
-
-adata_norm = adata_curio.copy()
-sc.pp.normalize_total(adata_norm, target_sum=1e4)
-sc.pp.log1p(adata_norm)
-
-fig, axes = plt.subplots(6, 2, figsize=(4.5, 13))
-axes = axes.flatten()
-
-for idx, (gene, cell_type) in enumerate(genes_cells):
-    ax = axes[idx]
-    
-    cell_mask = adata_curio.obs['subclass'] == cell_type
-    raw_subset = adata_curio[cell_mask, gene]
-    norm_subset = adata_norm[cell_mask, gene]
-    
-    expr_data = []
-    positions = []
-    colors = []
-    
-    for pos, cond in enumerate(['CTRL', 'PREG', 'POSTPART']):
-        cond_mask = raw_subset.obs['condition'] == cond
-        raw_expr = raw_subset[cond_mask].X.toarray().flatten()
-        norm_expr = norm_subset[cond_mask].X.toarray().flatten()
-        
-        nonzero_mask = raw_expr > 0
-        expr_filtered = norm_expr[nonzero_mask]
-        
-        expr_data.append(expr_filtered)
-        positions.append(pos)
-        colors.append(condition_colors[cond])
-    
-    parts = ax.violinplot(expr_data, positions=positions, 
-                         widths=0.5, showmeans=False, showextrema=False)
-    
-    for i, pc in enumerate(parts['bodies']):
-        pc.set_facecolor(colors[i])
-        pc.set_alpha(0.8)
-        pc.set_edgecolor('black')
-        pc.set_linewidth(1)
-    
-    for i, expr in enumerate(expr_data):
-        ax.plot(i, np.median(expr), 'o', color='white', 
-               markersize=6, markeredgecolor='black', markeredgewidth=1.5)
-    
-    ax.set_title(f'{gene}\n{cell_type}', fontsize=10, pad=8)
-    
-    if idx >= 10:
-        ax.set_xticks([0, 1, 2])
-        ax.set_xticklabels(['Nulliparous', 'Pregnant', 'Postpartum'], 
-                          fontsize=12, rotation=45, ha='right')
-    else:
-        ax.set_xticks([])
-        ax.set_xticklabels([])
-    
-    # ax.set_yscale('log')
-    
-    if idx % 2 == 0:
-        ax.set_ylabel('')
-    else:
-        ax.set_ylabel('')
-    
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(0.8)
-
-fig.text(0.02, 0.5, 'Normalized expression', va='center', rotation='vertical', 
-         fontsize=12)
-
-plt.tight_layout(rect=[0.03, 0, 1, 1])
-plt.savefig(f'{working_dir}/figures/key_gene_patterns.png', 
-            dpi=300, bbox_inches='tight')
-plt.savefig(f'{working_dir}/figures/key_gene_patterns.svg', 
             bbox_inches='tight')
 plt.close()
 
