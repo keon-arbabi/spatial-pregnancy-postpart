@@ -18,7 +18,7 @@ plt.rcParams['svg.fonttype'] = 'none'
 plt.rcParams['font.family'] = 'DejaVu Sans'
 plt.rcParams['figure.dpi'] = 500
 
-workdir = 'projects/rrg-wainberg/karbabi/spatial-pregnancy-postpart'
+workdir = '/home/karbabi/projects/spatial-pregnancy-postpart'
 input_dir = f'{workdir}/gsmap/input'
 output_dir = f'{workdir}/gsmap/output'
 figures_dir = f'{workdir}/figures/gsmap'
@@ -465,10 +465,68 @@ def plot_gwas_heatmap(
     )
     plt.close(fig)
 
+def export_gwas_heatmap_table(
+    output_dir, conditions, traits_to_include: Optional[List[str]] = None,
+    output_file: Optional[str] = None
+):
+    """Export GWAS heatmap data to a CSV table."""
+    sample_map = {s: c for c, L in conditions.items() for s in L}
+    files = [f for f in Path(output_dir).glob(
+        '*/cauchy_combination/*.Cauchy.csv.gz'
+    ) if sample_map.get(f.parts[-3])]
+
+    df = pl.concat([
+        pl.scan_csv(f).with_columns(
+            condition=pl.lit(sample_map.get(f.parts[-3])),
+            trait=pl.lit(
+                f.name.replace(f.parts[-3] + '_', '')
+                .replace('.Cauchy.csv.gz', '')
+            )
+        ) for f in files
+    ])
+
+    agg_data = df\
+        .with_columns(
+            p_log=(-pl.col('p_cauchy').log10()).fill_null(0.0))\
+        .group_by(['condition', 'trait', 'annotation'])\
+        .agg(pl.col('p_log').median())\
+        .collect()\
+        .to_pandas()
+    
+    # Calculate average across conditions for each trait-annotation pair
+    avg_data = agg_data.groupby(['trait', 'annotation'])['p_log'].mean().reset_index()
+    avg_data.columns = ['trait', 'annotation', 'avg_score']
+    
+    # Pivot to wide format with conditions as columns
+    wide_data = agg_data.pivot(
+        index=['trait', 'annotation'], 
+        columns='condition', 
+        values='p_log'
+    ).reset_index()
+    
+    # Merge with average scores
+    result = pd.merge(wide_data, avg_data, on=['trait', 'annotation'])
+    
+    # Filter traits if specified
+    if traits_to_include:
+        result = result[result['trait'].isin(traits_to_include)]
+    
+    # Sort by average score descending
+    result = result.sort_values('avg_score', ascending=False)
+    
+    # Save to file
+    if output_file:
+        result.to_csv(output_file, index=False)
+        print(f"Saved GWAS heatmap data to {output_file}")
+    
+    return result
+
 def analyze_trait_associations(
     output_dir, conditions, traits_of_interest: List[str]
 ):
     from scipy.stats import mannwhitneyu, kruskal
+    from statsmodels.stats.multitest import multipletests
+    
     sample_map = {s: c for c, L in conditions.items() for s in L}
     all_samples = sorted([s for L in conditions.values() for s in L])
 
@@ -477,6 +535,7 @@ def analyze_trait_associations(
         if (p := Path(output_dir) / sample / 'report' / trait /
                 'gsMap_plot' / f'{sample}_{trait}_gsMap_plot.csv').exists()
     ]
+    
     df = pl.concat([
         pl.scan_csv(f).with_columns(
             sample=pl.lit(f.parts[-5]),
@@ -502,6 +561,7 @@ def analyze_trait_associations(
         else:
             kruskal_p = np.nan
         
+        # Pairwise Mann-Whitney U tests
         if len(ctrl) >= 10 and len(preg) >= 10:
             _, preg_ctrl_p = mannwhitneyu(
                 preg, ctrl, alternative='two-sided')
@@ -536,11 +596,18 @@ def analyze_trait_associations(
             })
     
     results_df = pd.DataFrame(results)
+    
+    # Apply FDR correction across ALL tests (comparisons × traits × cell types)
     if not results_df.empty:
-        results_df['p_adj'] = results_df.groupby('comparison')['p_value']\
-            .transform(lambda x: pd.Series(
-                np.minimum(x * len(x) / (~x.isna()).sum(), 1)
-            ))
+        valid_pvals = ~results_df['p_value'].isna()
+        results_df['p_adj'] = np.nan
+        if valid_pvals.sum() > 0:
+            _, p_adj_vals, _, _ = multipletests(
+                results_df.loc[valid_pvals, 'p_value'],
+                method='fdr_bh'
+            )
+            results_df.loc[valid_pvals, 'p_adj'] = p_adj_vals
+    
     return results_df
 
 def plot_trait_boxplots(
@@ -672,8 +739,7 @@ def plot_trait_boxplots(
     plt.close(fig)
 
 def plot_spatial_gwas(
-    output_dir, figures_dir, conditions, trait, cell_types, 
-    bg_point_size=5, fg_point_size=15
+    output_dir, figures_dir, conditions, trait, point_size=5
 ):
     fig, axes = plt.subplots(
         1, 3, figsize=(15, 5), facecolor='white', sharey=True
@@ -703,12 +769,6 @@ def plot_spatial_gwas(
         return
         
     combined_df = pd.concat(all_dfs, ignore_index=True)
-    
-    is_selected_type = combined_df['annotation'].isin(cell_types)
-    combined_df['alpha'] = np.where(is_selected_type, 1.0, 0.4)
-    combined_df['edgecolor'] = np.where(is_selected_type, 'black', 'none')
-    combined_df['linewidth'] = np.where(is_selected_type, 0.5, 0.0)
-    combined_df['size'] = np.where(is_selected_type, fg_point_size, bg_point_size)
 
     vmin = combined_df['logp'].min()
     vmax = combined_df['logp'].max()
@@ -718,13 +778,14 @@ def plot_spatial_gwas(
         if condition in conditions:
             ax = axes[i]
         plot_df = combined_df[combined_df['condition'] == condition]
-        plot_df = plot_df.sort_values(by='size').reset_index(drop=True)
+        # Sort by logp so higher scores are plotted on top
+        plot_df = plot_df.sort_values(by='logp').reset_index(drop=True)
         
         ax.scatter(
             x=plot_df['sx'], y=plot_df['sy'], c=plot_df['logp'],
-            alpha=plot_df['alpha'], s=plot_df['size'],
-            edgecolors=plot_df['edgecolor'], linewidths=plot_df['linewidth'],
-                cmap='GnBu', vmin=vmin, vmax=vmax, rasterized=True
+            alpha=1.0, s=point_size,
+            edgecolors='none', linewidths=0,
+            cmap='GnBu', vmin=vmin, vmax=vmax, rasterized=True
         )
 
         ax.set_title(condition.capitalize())
@@ -752,12 +813,12 @@ def plot_spatial_gwas(
 
 #region prep data ##############################################################
 
-if not os.path.exists(f'{input_dir}/gsMap_resource'):
-    os.makedirs(input_dir, exist_ok=True)
-    run(f'wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_resource.tar.gz '
-        f'-P {input_dir}')
-    run(f'tar -xvzf {input_dir}/gsMap_resource.tar.gz -C {input_dir}')
-    run(f'rm {input_dir}/gsMap_resource.tar.gz')
+# if not os.path.exists(f'{input_dir}/gsMap_resource'):
+#     os.makedirs(input_dir, exist_ok=True)
+#     run(f'wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_resource.tar.gz '
+#         f'-P {input_dir}')
+#     run(f'tar -xvzf {input_dir}/gsMap_resource.tar.gz -C {input_dir}')
+#     run(f'rm {input_dir}/gsMap_resource.tar.gz')
 
 adata_curio = sc.read_h5ad(
     f'{workdir}/output/data/adata_query_curio_final.h5ad')
@@ -854,7 +915,8 @@ traits = []
 for gwas_file in sorted(os.listdir(gwas_formatted_dir)):
     if gwas_file.endswith('.sumstats.gz'):
         trait = gwas_file.replace('.sumstats.gz', '')
-        traits.append(trait)
+        if trait not in traits:  # Only add unique traits
+            traits.append(trait)
 
 for sample_name in all_sample_names:
     for trait_name in traits:
@@ -876,30 +938,30 @@ for sample_name in all_sample_names:
 
 #region analysis ###############################################################
 
-traits = ['MDD', 'Neuroticism', 'ADHD', 'Autism', 'PTSD']
+traits_selected = ['MDD', 'Neuroticism', 'ADHD', 'Autism', 'PTSD']
 
 plot_trait_ranking(output_dir, figures_dir, conditions)
 
-plot_gwas_heatmap(adata, output_dir, figures_dir, conditions, traits)
+plot_gwas_heatmap(adata, output_dir, figures_dir, conditions, traits_selected)
 
-results = analyze_trait_associations(output_dir, conditions, ['MDD'])
-# results.to_csv(f'{working_dir}/output/data/curio/MDD_association_summary.csv', index=False)
-print(f'\nKruskal-Wallis test results:')
-kruskal_results = results[['trait', 'annotation', 'kruskal_p']]\
-    .drop_duplicates().sort_values('kruskal_p')
-print(kruskal_results.to_string())
-print(f'\nSignificant pairwise comparisons (p_adj < 0.05):')
-sig_results = results[results['p_adj'] < 0.05]\
+heatmap_table = export_gwas_heatmap_table(
+    output_dir, conditions, traits_selected,
+    output_file=f'{workdir}/output/curio/gwas_heatmap_data.csv'
+)
+
+results = analyze_trait_associations(output_dir, conditions, traits)\
+    .sort_values('p_adj')
+    
+results_filt = results[(results['trait'] == 'MDD') & (results['p_adj'] < 0.05)]\
     .sort_values('p_adj')[[
         'annotation', 'comparison', 'logfc', 'p_value', 'p_adj']]
-print(sig_results.to_string())
+
+results_filt.to_csv(
+    f'{workdir}/output/curio/association_summary_mdd.csv', index=False)
 
 plot_trait_boxplots(
-    results, output_dir, conditions, figures_dir, ['MDD'], 
-    cell_types_to_plot=[
-        'SI-MPO-LPO Lhx8 Gaba', 'MPO-ADP Lhx8 Gaba', 'NDB-SI-MA-STRv Lhx8 Gaba',
-        'STR Prox1 Lhx6 Gaba', 'LSX Nkx2-1 Gaba', 'LSX Prdm12 Zeb2 Gaba'
-    ],
+    results_filt, output_dir, conditions, figures_dir, ['MDD'], 
+    cell_types_to_plot=['L2/3 IT CTX Glut', 'MPO-ADP Lhx8 Gaba', 'LSX Nkx2-1 Gaba'],
     p_threshold=0.01
 )
 
@@ -908,13 +970,5 @@ plot_spatial_gwas(
     figures_dir=figures_dir,
     conditions=conditions,
     trait='MDD',
-    cell_types=[
-        'SI-MPO-LPO Lhx8 Gaba', 'MPO-ADP Lhx8 Gaba',
-        'STR Prox1 Lhx6 Gaba', 
-        'LSX Nkx2-1 Gaba', 'LSX Prdm12 Zeb2 Gaba'
-    ],
-    bg_point_size=3,
-    fg_point_size=12
+    point_size=2
 )
-
-#endregion
